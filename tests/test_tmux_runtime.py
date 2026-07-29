@@ -10,6 +10,38 @@ from agent_team.errors import AgentTeamError, IntegrityError
 from agent_team.util import read_json
 
 
+def test_has_session_uses_a_deterministic_per_run_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs):
+        commands.append(command)
+        return type(
+            "Result",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": "no server running"},
+        )()
+
+    monkeypatch.setattr(tmux_runtime, "tmux_executable", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(tmux_runtime.subprocess, "run", run)
+
+    assert tmux_runtime.has_session("at-first-run") is False
+    assert commands == [
+        [
+            "/usr/bin/tmux",
+            "-L",
+            tmux_runtime.server_name("at-first-run"),
+            "has-session",
+            "-t",
+            tmux_runtime.session_name("at-first-run"),
+        ]
+    ]
+    assert tmux_runtime.server_name("at-first-run") != tmux_runtime.server_name(
+        "at-second-run"
+    )
+
+
 def _external_team(workspace: Path):
     return make_team(
         run_id="at-test-tmux-runtime",
@@ -116,7 +148,7 @@ def test_ensure_workers_persists_new_pane_identity_before_returning(
 ) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "roles").mkdir(parents=True)
-    calls: list[tuple[str, ...]] = []
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
     monkeypatch.setattr(tmux_runtime, "tmux_executable", lambda: "/usr/bin/tmux")
     monkeypatch.setattr(tmux_runtime, "has_session", lambda _run_id: False)
     monkeypatch.setattr(
@@ -147,13 +179,16 @@ def test_ensure_workers_persists_new_pane_identity_before_returning(
     monkeypatch.setattr(
         tmux_runtime,
         "_run",
-        lambda *args, **_kwargs: calls.append(args),
+        lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
     result = tmux_runtime.ensure_workers(run_dir, _external_team(workspace))
 
     assert result["created"] == ["developer"]
-    assert calls[0][0] == "new-session"
+    assert calls[0][0][0] == "new-session"
+    assert calls[0][1]["server"] == tmux_runtime.server_name(
+        "at-test-tmux-runtime"
+    )
     worker = read_json(run_dir / "roles" / "developer.json")
     assert worker["worker_pid"] == 1234
     assert worker["worker_start_id"] == "stable-start"

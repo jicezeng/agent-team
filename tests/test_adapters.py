@@ -295,6 +295,14 @@ def test_claude_launch_reads_text_prompt_from_stdin(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "executable", lambda: __import__("pathlib").Path("/bin/claude"))
     monkeypatch.setattr(adapter, "executable_version", lambda: "2.1.25")
     monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.claude_internal_tmpdir",
+        lambda: Path("/tmp/claude-501"),
+    )
 
     start = adapter.prepare_launch(
         launch_context(adapter=adapter, session_policy="resume", session_ref=None)
@@ -320,10 +328,83 @@ def test_claude_launch_reads_text_prompt_from_stdin(monkeypatch) -> None:
     assert "--strict-mcp-config" in expected
     assert "--tools" in expected
     assert "--plugin-dir" in expected
+    assert "--settings" in expected
+    settings = json.loads(expected[expected.index("--settings") + 1])
+    assert settings == {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "autoAllowBashIfSandboxed": True,
+            "allowUnsandboxedCommands": False,
+            "excludedCommands": [
+                "/opt/agent-team/bin/agent-team handoff *",
+                "/opt/agent-team/bin/agent-team complete *",
+                "/opt/agent-team/bin/agent-team block *",
+            ],
+            "filesystem": {
+                "allowWrite": ["/tmp/claude-501"],
+            },
+        }
+    }
+    allowed_index = expected.index("--allowedTools")
+    denied_index = expected.index("--disallowedTools")
+    assert expected[allowed_index + 1 : denied_index] == [
+        "Bash(/opt/agent-team/bin/agent-team handoff *)",
+        "Bash(/opt/agent-team/bin/agent-team complete *)",
+        "Bash(/opt/agent-team/bin/agent-team block *)",
+    ]
+    assert "Bash(/opt/agent-team/bin/agent-team cancel *)" in expected
+    assert "Bash(/opt/agent-team/bin/agent-team origin-*)" in expected
     assert start.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert resumed.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert LaunchSpec.from_json(start.to_json()) == start
     assert LaunchSpec.from_json(resumed.to_json()) == resumed
+
+
+def test_claude_profile_rejects_relative_internal_tmpdir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_TMPDIR", "relative-tmp")
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+
+    with pytest.raises(AgentTeamError) as rejected:
+        ClaudeCodeAdapter().profile_mappings()
+
+    assert rejected.value.code == "CLAUDE_CODE_TMPDIR_INVALID"
+
+
+def test_claude_version_probe_uses_an_isolated_config_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = ClaudeCodeAdapter()
+    observed_config_dir: Path | None = None
+
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/claude"))
+
+    def run(command, **kwargs):
+        nonlocal observed_config_dir
+        assert command == ["/bin/claude", "--version"]
+        observed_config_dir = Path(kwargs["env"]["CLAUDE_CONFIG_DIR"])
+        assert observed_config_dir.is_dir()
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        assert kwargs["timeout"] == 10
+        return __import__("subprocess").CompletedProcess(
+            command,
+            0,
+            stdout="2.1.25 (Claude Code)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_team.adapters.claude_code.subprocess.run", run)
+
+    assert adapter.executable_version() == "2.1.25 (Claude Code)"
+    assert observed_config_dir is not None
+    assert not observed_config_dir.exists()
 
 
 def test_codex_launch_uses_frozen_permissions_for_start_and_resume(

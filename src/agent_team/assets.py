@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import sys
 from pathlib import Path
 
 from .errors import AgentTeamError
@@ -45,3 +47,16 @@ def effective_claude_plugin() -> Path:
     if installed.exists() and installed.is_dir() and not installed.is_symlink():
         return installed.resolve(strict=True)
     return claude_plugin_source()
+
+
+def effective_agent_team_cli() -> Path:
+    located = shutil.which("agent-team")
+    if located:
+        return Path(located).resolve(strict=True)
+    candidate = Path(sys.executable).parent / "agent-team"
+    if candidate.exists() and candidate.is_file():
+        return candidate.resolve(strict=True)
+    raise AgentTeamError(
+        "AGENT_TEAM_CLI_NOT_FOUND",
+        "cannot locate the agent-team console script",
+    )

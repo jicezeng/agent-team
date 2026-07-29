@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
-from agent_team.assets import effective_claude_plugin
+from agent_team.assets import effective_agent_team_cli, effective_claude_plugin
+from agent_team.errors import AgentTeamError
 
 from .base import (
     AdapterEvidence,
@@ -15,14 +19,102 @@ from .base import (
 )
 
 
+def claude_internal_tmpdir() -> Path:
+    base = Path(os.environ.get("CLAUDE_CODE_TMPDIR", "/tmp")).expanduser()
+    if not base.is_absolute():
+        raise AgentTeamError(
+            "CLAUDE_CODE_TMPDIR_INVALID",
+            "CLAUDE_CODE_TMPDIR must be an absolute path",
+        )
+    if os.name == "nt":
+        suffix = "claude"
+    else:
+        getuid = getattr(os, "getuid", lambda: 0)
+        suffix = f"claude-{getuid()}"
+    return base / suffix
+
+
 class ClaudeCodeAdapter(HarnessAdapter):
     adapter_id = "claude-code"
     executable_name = "claude"
 
-    def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
-        fixed = [
+    def executable_version(self) -> str:
+        # Claude Code writes debug bookkeeping under CLAUDE_CONFIG_DIR even for
+        # ``--version``. Profile validation may run from another Harness's
+        # sandbox while staging a cross-Harness handoff, where the user's real
+        # ~/.claude directory is intentionally not writable. Keep this
+        # non-authenticating probe isolated in a private, short-lived directory
+        # so capability checks do not mutate user configuration or depend on
+        # the sender Harness's filesystem permissions.
+        with tempfile.TemporaryDirectory(
+            prefix="agent-team-claude-version-"
+        ) as config_dir:
+            env = os.environ.copy()
+            env["CLAUDE_CONFIG_DIR"] = config_dir
+            result = subprocess.run(
+                [str(self.executable()), "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+                env=env,
+            )
+        if result.returncode != 0:
+            raise AgentTeamError(
+                "HARNESS_PROBE_FAILED",
+                f"{self.executable_name} --version failed: "
+                f"{result.stderr.strip()}",
+            )
+        return (result.stdout or result.stderr).strip()
+
+    @staticmethod
+    def _permission_mapping() -> list[str]:
+        cli = str(effective_agent_team_cli())
+        formal_commands = [
+            f"{cli} handoff *",
+            f"{cli} complete *",
+            f"{cli} block *",
+        ]
+        sandbox_settings = json.dumps(
+            {
+                "sandbox": {
+                    "enabled": True,
+                    "failIfUnavailable": True,
+                    "autoAllowBashIfSandboxed": True,
+                    "allowUnsandboxedCommands": False,
+                    "excludedCommands": formal_commands,
+                    "filesystem": {
+                        "allowWrite": [str(claude_internal_tmpdir())],
+                    },
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        forbidden_commands = [
+            f"Bash({cli} cancel *)",
+            f"Bash({cli} recover *)",
+            f"Bash({cli} unlock *)",
+            f"Bash({cli} init *)",
+            f"Bash({cli} start *)",
+            f"Bash({cli} install *)",
+            f"Bash({cli} origin-*)",
+            f"Bash({cli} _*)",
+        ]
+        return [
             "--permission-mode",
             "acceptEdits",
+            "--settings",
+            sandbox_settings,
+            "--allowedTools",
+            *(f"Bash({command})" for command in formal_commands),
+            "--disallowedTools",
+            *forbidden_commands,
+        ]
+
+    def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
+        fixed = [
+            *self._permission_mapping(),
             "--setting-sources",
             "",
             "--strict-mcp-config",

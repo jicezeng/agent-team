@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shlex
 import shutil
 import subprocess
@@ -28,13 +29,33 @@ def session_name(run_id: str) -> str:
     return f"agent-team-{cleaned}"[:80]
 
 
+def server_name(run_id: str) -> str:
+    """Return the per-Run tmux server socket label.
+
+    A shared tmux server keeps the environment from the process that first
+    created it. Reusing that server for a later Run can therefore launch
+    Workers with stale Harness credentials, endpoints, models, or proxy
+    settings. A deterministic per-Run server makes the first ``new-session``
+    inherit the current Agent-Team process environment without putting secrets
+    on a tmux command line.
+    """
+
+    digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:24]
+    return f"agent-team-{digest}"
+
+
 def change_channel(run_id: str, role_id: str) -> str:
     return f"agent-team:{run_id}:{role_id}:changed"
 
 
-def _run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    *args: str,
+    check: bool = True,
+    server: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    server_args = ["-L", server] if server is not None else []
     result = subprocess.run(
-        [tmux_executable(), *args],
+        [tmux_executable(), *server_args, *args],
         capture_output=True,
         text=True,
         check=False,
@@ -48,7 +69,16 @@ def _run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def has_session(run_id: str) -> bool:
-    return _run("has-session", "-t", session_name(run_id), check=False).returncode == 0
+    return (
+        _run(
+            "has-session",
+            "-t",
+            session_name(run_id),
+            check=False,
+            server=server_name(run_id),
+        ).returncode
+        == 0
+    )
 
 
 def list_windows(run_id: str) -> dict[str, dict[str, Any]]:
@@ -60,6 +90,7 @@ def list_windows(run_id: str) -> dict[str, dict[str, Any]]:
         session_name(run_id),
         "-F",
         "#{window_name}\t#{window_panes}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}",
+        server=server_name(run_id),
     )
     windows: dict[str, dict[str, Any]] = {}
     for line in result.stdout.splitlines():
@@ -240,6 +271,7 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
             "-n",
             first.role_id,
             _worker_shell_command(run_dir, first.role_id),
+            server=server_name(team.run_id),
         )
         created.append(first.role_id)
         newly_created.add(first.role_id)
@@ -264,6 +296,7 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
                 "-t",
                 window["tmux_pane_id"],
                 _worker_shell_command(run_dir, role.role_id),
+                server=server_name(team.run_id),
             )
             created.append(role.role_id)
             record_created_worker(role.role_id)
@@ -277,6 +310,7 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
             "-n",
             role.role_id,
             _worker_shell_command(run_dir, role.role_id),
+            server=server_name(team.run_id),
         )
         created.append(role.role_id)
         record_created_worker(role.role_id)
@@ -290,6 +324,7 @@ def signal_change(run_id: str, role_id: str) -> bool:
             "-S",
             change_channel(run_id, role_id),
             check=False,
+            server=server_name(run_id),
         )
     except (AgentTeamError, OSError):
         return False
@@ -308,6 +343,7 @@ def capture_pane(run_id: str, role_id: str) -> str | None:
         "-t",
         f"{session_name(run_id)}:{role_id}",
         check=False,
+        server=server_name(run_id),
     )
     if result.returncode != 0:
         return None
@@ -329,4 +365,14 @@ def attach(run_id: str, role_id: str | None = None) -> int:
     target = session_name(run_id)
     if role_id:
         target = f"{target}:{role_id}"
-    return subprocess.call([tmux_executable(), "attach-session", "-r", "-t", target])
+    return subprocess.call(
+        [
+            tmux_executable(),
+            "-L",
+            server_name(run_id),
+            "attach-session",
+            "-r",
+            "-t",
+            target,
+        ]
+    )

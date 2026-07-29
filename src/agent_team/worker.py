@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -10,6 +9,7 @@ from typing import Any
 
 from .adapters import get_adapter
 from .adapters.base import LaunchSpec, ProcessResult, TurnLaunchContext
+from .assets import effective_agent_team_cli
 from .config import Role, load_team
 from .errors import (
     AgentTeamError,
@@ -72,16 +72,7 @@ ROLE_REQUIRED = {
 
 
 def _cli_path() -> str:
-    located = shutil.which("agent-team")
-    if located:
-        return str(Path(located).resolve(strict=True))
-    candidate = Path(sys.executable).parent / "agent-team"
-    if candidate.exists():
-        return str(candidate.resolve(strict=True))
-    raise AgentTeamError(
-        "AGENT_TEAM_CLI_NOT_FOUND",
-        "worker cannot locate the agent-team console script",
-    )
+    return str(effective_agent_team_cli())
 
 
 def _write_role_snapshot(run_dir: Path, role_id: str) -> dict[str, Any]:

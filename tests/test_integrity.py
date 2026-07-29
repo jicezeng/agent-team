@@ -1,0 +1,479 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from agent_team.bootstrap import initialize_run, start_run
+from agent_team.config import Role, make_team, parse_team
+from agent_team.errors import IntegrityError, InvalidArgument
+from agent_team.journal import scan_journal
+from agent_team.observation import derive_observation
+from agent_team.origin import origin_action, wait_origin
+from agent_team.state import (
+    ensure_workspace_lock,
+    file_lock,
+    read_owner,
+    state_paths,
+)
+from agent_team.turns import validate_outbox
+from agent_team.util import is_uncommitted_atomic_temporary, rfc3339
+
+
+def _run(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    run_id: str,
+) -> Path:
+    request, protocol = request_protocol
+    team = make_team(
+        run_id=run_id,
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+    return initialize_run(team=team, request_path=request, protocol_path=protocol)
+
+
+@pytest.mark.parametrize("filename", ["REQUEST.md", "PROTOCOL.md", "team.json"])
+def test_kickoff_inputs_are_immutable(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    filename: str,
+) -> None:
+    run_dir = _run(
+        workspace, request_protocol, f"at-test-{filename.split('.')[0].lower()}"
+    )
+    start_run(run_dir)
+    path = run_dir / filename
+    path.write_bytes(path.read_bytes() + b"\nchanged")
+
+    with pytest.raises(IntegrityError):
+        scan_journal(run_dir)
+
+
+def test_journal_rejects_unhashable_event_type_as_corruption(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(workspace, request_protocol, "at-test-event-type")
+    start_run(run_dir)
+    event_path = run_dir / "events" / "0001-kickoff-0001.json"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["event_type"] = []
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+
+    with pytest.raises(IntegrityError, match="invalid event type"):
+        scan_journal(run_dir)
+
+
+def test_journal_rejects_unhashable_block_reason_as_corruption(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(workspace, request_protocol, "at-test-block-reason")
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    payload = run_dir / "turns" / claim["turn_id"] / "block.md"
+    payload.write_text("# Block\n\nNeed input.\n", encoding="utf-8")
+    origin_action(
+        run_dir,
+        action="block",
+        turn_id=claim["turn_id"],
+        claim=claim["claim"],
+        from_role="reviewer",
+        source_file=payload,
+    )
+    event_path = run_dir / "events" / "0002-block-0002.json"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["block_reason"] = []
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+
+    with pytest.raises(IntegrityError, match="block fields"):
+        scan_journal(run_dir)
+
+
+@pytest.mark.parametrize("field", ["adapter", "session_policy"])
+def test_team_rejects_unhashable_external_discriminators(
+    workspace: Path,
+    field: str,
+) -> None:
+    team = make_team(
+        run_id=f"at-test-team-{field.replace('_', '-')}",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    team["roles"]["developer"][field] = []
+
+    with pytest.raises(IntegrityError):
+        parse_team(team)
+
+
+@pytest.mark.parametrize(
+    ("max_turns", "max_wall_time_seconds"),
+    [
+        (1 << 31, 300),
+        (2, 1 << 31),
+    ],
+)
+def test_team_rejects_unrepresentable_safety_limits(
+    workspace: Path,
+    max_turns: int,
+    max_wall_time_seconds: int,
+) -> None:
+    with pytest.raises(InvalidArgument, match="limits must be integers"):
+        make_team(
+            run_id="at-test-limit-range",
+            workspace=workspace,
+            origin_harness="codex",
+            roles={"reviewer": Role("reviewer", "origin")},
+            initial_role="reviewer",
+            max_turns=max_turns,
+            max_wall_time_seconds=max_wall_time_seconds,
+        )
+
+
+def test_unstarted_run_has_no_owner(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(workspace, request_protocol, "at-test-unstarted")
+    observation = derive_observation(run_dir)
+    assert observation["run_status"] == "UNSTARTED"
+    assert observation["workspace_owner"] == "not_acquired"
+    assert observation["recommended_action"] == "START"
+
+
+def test_workspace_lock_creation_accepts_concurrent_winner(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_team import state
+
+    _, lock_path, _ = state_paths(workspace)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_bytes(b"")
+    real_exists = state.path_entry_exists
+    monkeypatch.setattr(
+        state,
+        "path_entry_exists",
+        lambda path: False if path == lock_path else real_exists(path),
+    )
+
+    assert ensure_workspace_lock(workspace) == lock_path
+
+
+def test_run_staging_directory_uses_atomic_temporary_name(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, protocol = request_protocol
+    team = make_team(
+        run_id="at-test-run-staging-name",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+    from agent_team import bootstrap
+
+    observed: list[bool] = []
+
+    def fail_before_commit(source: Path, _target: Path) -> None:
+        observed.append(is_uncommitted_atomic_temporary(Path(source)))
+        raise OSError("injected directory commit failure")
+
+    monkeypatch.setattr(bootstrap.os, "rename", fail_before_commit)
+
+    with pytest.raises(OSError, match="directory commit failure"):
+        initialize_run(
+            team=team,
+            request_path=request,
+            protocol_path=protocol,
+        )
+
+    assert observed == [True]
+    assert not (workspace / ".agent-team" / "runs" / team.run_id).exists()
+
+
+def test_start_retains_owner_if_kickoff_commit_becomes_visible_then_errors(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-kickoff-visible-error",
+    )
+    from agent_team import bootstrap
+
+    real_commit = bootstrap.commit_event
+
+    def commit_then_fail(*args, **kwargs):
+        real_commit(*args, **kwargs)
+        raise OSError("injected post-rename failure")
+
+    monkeypatch.setattr(bootstrap, "commit_event", commit_then_fail)
+
+    with pytest.raises(OSError, match="post-rename failure"):
+        start_run(run_dir)
+
+    assert scan_journal(run_dir).status == "RUNNING"
+    assert read_owner(workspace)["run_id"] == run_dir.name
+
+
+def test_dangling_owner_symlink_is_corruption_not_missing_owner(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-dangling-owner",
+    )
+    start_run(run_dir)
+    _, _, owner_path = state_paths(workspace)
+    owner_path.unlink()
+    owner_path.symlink_to(owner_path.with_name("missing-owner.json"))
+
+    with pytest.raises(IntegrityError, match="non-regular"):
+        read_owner(workspace)
+
+    with pytest.raises(IntegrityError, match="non-regular"):
+        derive_observation(run_dir)
+
+
+def test_uncommitted_event_atomic_temporary_is_not_a_journal_event(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-event-atomic-temporary",
+    )
+    start_run(run_dir)
+    temporary = (
+        run_dir
+        / "events"
+        / ".0002-handoff-0002.json.tmp-999-0123456789abcdef"
+    )
+    temporary.write_text("partial", encoding="utf-8")
+
+    projection = scan_journal(run_dir)
+
+    assert projection.status == "RUNNING"
+    assert len(projection.events) == 1
+
+
+def test_uncommitted_turn_staging_directory_is_not_a_claim(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-turn-atomic-temporary",
+    )
+    start_run(run_dir)
+    temporary = (
+        run_dir / "turns" / ".turn-0001.tmp-999-0123456789abcdef"
+    )
+    temporary.mkdir()
+    (temporary / "input.md").write_text("partial", encoding="utf-8")
+
+    claim = wait_origin(run_dir, timeout=0)
+
+    assert claim["turn_id"] == "turn-0001"
+    assert (run_dir / "turns" / "turn-0001" / "runtime.json").exists()
+    assert temporary.exists()
+    assert scan_journal(run_dir).status == "RUNNING"
+
+
+def test_uncommitted_root_marker_temporary_does_not_bind_state_root(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    root = workspace / ".agent-team"
+    root.mkdir()
+    (root / ".root.json.tmp-999-0123456789abcdef").write_text(
+        "partial",
+        encoding="utf-8",
+    )
+
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-root-atomic-temporary",
+    )
+
+    assert (workspace / ".agent-team" / "root.json").exists()
+    assert run_dir.exists()
+
+
+def test_init_rejects_symbolic_link_request(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    request, protocol = request_protocol
+    linked = request.parent / "linked-request.md"
+    linked.symlink_to(request)
+    team = make_team(
+        run_id="at-test-symlink-request",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    with pytest.raises(InvalidArgument, match="non-symlink"):
+        initialize_run(
+            team=team,
+            request_path=linked,
+            protocol_path=protocol,
+        )
+
+
+def test_init_rejects_nonempty_state_root_without_marker(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    stale = workspace / ".agent-team" / "runs" / "at-stale"
+    stale.mkdir(parents=True)
+
+    with pytest.raises(InvalidArgument, match="root.json is missing"):
+        _run(workspace, request_protocol, "at-test-missing-root-marker")
+
+
+def test_runtime_terminal_event_must_cross_link_to_journal(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-runtime-terminal-cross-link",
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    payload = run_dir / "turns" / claim["turn_id"] / "completion.md"
+    payload.write_text("# Completion\n\nDone.\n", encoding="utf-8")
+    origin_action(
+        run_dir,
+        action="complete",
+        turn_id=claim["turn_id"],
+        claim=claim["claim"],
+        from_role="reviewer",
+        source_file=payload,
+    )
+    runtime_path = run_dir / "turns" / claim["turn_id"] / "runtime.json"
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["terminal_event_id"] = "cancel-9999"
+    runtime_path.write_text(
+        json.dumps(runtime, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(IntegrityError, match="terminat"):
+        scan_journal(run_dir)
+
+
+def test_journal_corruption_has_priority_over_mutable_runtime_damage(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-journal-priority",
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    (run_dir / "turns" / claim["turn_id"] / "runtime.json").write_text(
+        "{broken runtime",
+        encoding="utf-8",
+    )
+    event_path = run_dir / "events" / "0001-kickoff-0001.json"
+    event_path.write_text("{broken event", encoding="utf-8")
+
+    with pytest.raises(IntegrityError) as captured:
+        scan_journal(run_dir)
+
+    assert str(event_path) in captured.value.message
+
+
+def test_missing_referenced_turn_input_is_corruption_not_io_error(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    run_dir = _run(
+        workspace,
+        request_protocol,
+        "at-test-missing-turn-input",
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    (run_dir / "turns" / claim["turn_id"] / "input.md").unlink()
+
+    with pytest.raises(IntegrityError, match="turn input is missing"):
+        derive_observation(run_dir)
+
+
+def test_lock_file_with_additional_hard_link_is_rejected(tmp_path: Path) -> None:
+    lock = tmp_path / "journal.lock"
+    lock.write_bytes(b"")
+    os.link(lock, tmp_path / "second-name.lock")
+
+    with pytest.raises(IntegrityError, match="not a regular file"):
+        with file_lock(lock, exclusive=False):
+            raise AssertionError("invalid lock was acquired")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("to_role", "../reviewer"),
+        ("payload_path", "handoffs/0001-kickoff.md"),
+        ("created_at", "not-a-time"),
+        ("action", []),
+    ],
+)
+def test_outbox_requires_canonical_identity_fields(field: str, value: object) -> None:
+    outbox = {
+        "schema_version": 1,
+        "turn_id": "turn-0001",
+        "action": "handoff",
+        "to_role": "reviewer",
+        "block_reason": None,
+        "payload_path": "turns/turn-0001/outbox-payload.md",
+        "payload_sha256": "0" * 64,
+        "created_at": rfc3339(),
+    }
+    outbox[field] = value
+
+    with pytest.raises(IntegrityError, match="outbox|RFC 3339"):
+        validate_outbox(outbox, turn_id="turn-0001")

@@ -1,0 +1,9 @@
+{
+  "name": "agent-team",
+  "description": "Bootstrap and coordinate temporary Codex and Claude Code agent teams through the Agent-Team v0.1 runtime.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Agent-Team contributors"
+  },
+  "license": "Apache-2.0"
+}

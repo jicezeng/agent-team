@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from .journal import scan_journal
+from .processes import process_group_exists, process_identity_state
+from .state import read_owner, release_owner
+from .turns import iter_runtimes
+
+
+def release_terminal_owner_locked(run_dir: Path) -> bool:
+    """Release an exact terminal Owner only after fresh process checks.
+
+    The caller must hold the Workspace operation lock and the Run lock in that
+    order. ``locked_run`` provides that lock scope for normal lifecycle paths.
+    """
+    projection = scan_journal(run_dir)
+    if projection.status not in {"COMPLETED", "CANCELLED"}:
+        return False
+    for runtime in iter_runtimes(run_dir, team=projection.team):
+        if runtime["phase"] != "finalized":
+            return False
+        if runtime["executor"] != "worker":
+            continue
+        if runtime["group_quiescent"] is not True:
+            return False
+        supervisor_pid = runtime["supervisor_pid"]
+        if supervisor_pid is not None and process_identity_state(
+            supervisor_pid,
+            runtime["supervisor_start_id"],
+        ) not in {"gone", "reused"}:
+            return False
+        runner_pgid = runtime["runner_pgid"]
+        if runner_pgid is not None:
+            if process_group_exists(runner_pgid):
+                return False
+            if process_identity_state(
+                runtime["runner_pid"],
+                runtime["runner_start_id"],
+                pgid=runner_pgid,
+            ) not in {"gone", "reused"}:
+                return False
+    owner = read_owner(projection.team.workspace)
+    if owner is None:
+        return True
+    if owner["run_id"] != projection.team.run_id:
+        # A historical terminal Run may be inspected after a newer Run has
+        # legitimately acquired the Workspace.
+        return False
+    return release_owner(projection.team.workspace, projection.team.run_id)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,28 @@ TEAM_REQUIRED = {
     "initial_role",
     "limits",
 }
+TEAM_V2_REQUIRED = TEAM_REQUIRED | {"observability"}
 MAX_LIMIT_VALUE = (1 << 31) - 1
+DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
+REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservabilityPolicy:
+    audit_mode: str = "standard"
+    redaction: str = "standard"
+    max_trace_bytes: int = DEFAULT_MAX_TRACE_BYTES
+    raw_retention: str = "redacted"
+    required_payload_sections: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "audit_mode": self.audit_mode,
+            "redaction": self.redaction,
+            "max_trace_bytes": self.max_trace_bytes,
+            "raw_retention": self.raw_retention,
+            "required_payload_sections": list(self.required_payload_sections),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,10 +76,12 @@ class Team:
     initial_role: str
     max_turns: int
     max_wall_time_seconds: int
+    observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
+    config_schema_version: int = 2
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -73,6 +96,7 @@ class Team:
                 "max_turns": self.max_turns,
                 "max_wall_time_seconds": self.max_wall_time_seconds,
             },
+            "observability": self.observability.to_json(),
         }
 
     def canonical_bytes(self) -> bytes:
@@ -109,8 +133,12 @@ def _require_exact(
 
 
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
-    _require_exact(value, TEAM_REQUIRED, "team.json")
-    if value["schema_version"] != 1:
+    schema_version = value.get("schema_version")
+    if schema_version == 1:
+        _require_exact(value, TEAM_REQUIRED, "team.json")
+    elif schema_version == 2:
+        _require_exact(value, TEAM_V2_REQUIRED, "team.json")
+    else:
         raise IntegrityError("unsupported team.json schema")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
@@ -222,6 +250,93 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         or wall > MAX_LIMIT_VALUE
     ):
         raise IntegrityError("max_wall_time_seconds must be a positive integer")
+    if schema_version == 1:
+        observability = ObservabilityPolicy(
+            redaction="none",
+            raw_retention="keep",
+        )
+    else:
+        observability_value = value["observability"]
+        if not isinstance(observability_value, dict):
+            raise IntegrityError("team.json observability must be an object")
+        _require_exact(
+            observability_value,
+            {
+                "audit_mode",
+                "redaction",
+                "max_trace_bytes",
+                "raw_retention",
+                "required_payload_sections",
+            },
+            "team.json observability",
+        )
+        audit_mode = observability_value["audit_mode"]
+        redaction = observability_value["redaction"]
+        max_trace_bytes = observability_value["max_trace_bytes"]
+        raw_retention = observability_value["raw_retention"]
+        required_sections = observability_value["required_payload_sections"]
+        if audit_mode not in {"standard", "full"}:
+            raise IntegrityError("observability audit_mode is invalid")
+        if redaction not in {"standard", "none"}:
+            raise IntegrityError("observability redaction is invalid")
+        if (
+            isinstance(max_trace_bytes, bool)
+            or not isinstance(max_trace_bytes, int)
+            or max_trace_bytes < 1024
+            or max_trace_bytes > MAX_LIMIT_VALUE
+        ):
+            raise IntegrityError(
+                "observability max_trace_bytes must be an integer in "
+                f"1024..{MAX_LIMIT_VALUE}"
+            )
+        if raw_retention not in {"redacted", "keep", "delete"}:
+            raise IntegrityError("observability raw_retention is invalid")
+        if raw_retention == "redacted" and redaction != "standard":
+            raise IntegrityError(
+                "redacted raw retention requires the standard redaction policy"
+            )
+        if (
+            not isinstance(required_sections, list)
+            or not all(
+                isinstance(section, str) and section.strip()
+                for section in required_sections
+            )
+            or len({section.casefold() for section in required_sections})
+            != len(required_sections)
+        ):
+            raise IntegrityError(
+                "observability required_payload_sections is invalid"
+            )
+        observability = ObservabilityPolicy(
+            audit_mode=audit_mode,
+            redaction=redaction,
+            max_trace_bytes=max_trace_bytes,
+            raw_retention=raw_retention,
+            required_payload_sections=tuple(required_sections),
+        )
+        if audit_mode == "full":
+            origin_roles = sorted(
+                role_id for role_id, role in roles.items() if role.binding == "origin"
+            )
+            if origin_roles:
+                raise IntegrityError(
+                    "full audit mode requires every business role to use an "
+                    f"External binding: {', '.join(origin_roles)}"
+                )
+            missing_sections = [
+                section
+                for section in REQUIRED_AUDIT_PAYLOAD_SECTIONS
+                if section not in observability.required_payload_sections
+            ]
+            if missing_sections:
+                raise IntegrityError(
+                    "full audit mode requires payload sections: "
+                    + ", ".join(REQUIRED_AUDIT_PAYLOAD_SECTIONS)
+                )
+            if raw_retention == "delete":
+                raise IntegrityError(
+                    "full audit mode cannot delete the retained Harness stream"
+                )
     return Team(
         run_id,
         workspace,
@@ -230,6 +345,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         initial,
         max_turns,
         wall,
+        observability,
+        schema_version,
     )
 
 
@@ -246,6 +363,7 @@ def make_team(
     initial_role: str,
     max_turns: int,
     max_wall_time_seconds: int,
+    observability: ObservabilityPolicy | None = None,
 ) -> Team:
     validate_run_id(run_id)
     try:
@@ -282,5 +400,10 @@ def make_team(
         initial_role,
         max_turns,
         max_wall_time_seconds,
+        observability or ObservabilityPolicy(),
+        2,
     )
-    return parse_team(team.to_json())
+    try:
+        return parse_team(team.to_json())
+    except IntegrityError as exc:
+        raise InvalidArgument(exc.message) from exc

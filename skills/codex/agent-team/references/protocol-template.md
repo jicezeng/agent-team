@@ -33,6 +33,11 @@ Describe natural-language routing, loops, disagreement handling, and required
 rechecks. Every route is selected by the active role and committed through the
 CLI. Do not compile business verdicts into machine state.
 
+For External roles, state that the Agent-Team Skill is guidance only and has no
+terminal arguments. Require exactly one `$AGENT_TEAM_CLI handoff`, `complete`,
+or `block` command at the end of each Turn; repeated Skill invocations do not
+route or complete work.
+
 ## Completion condition
 
 Give an observable business condition and name the Completion Authority.
@@ -53,6 +58,14 @@ List the direct input and evidence each role receives. Kickoff, Handoff, and
 Resume payloads are all frozen as the next Turn's `input.md`. Disclose that
 multiple Origin roles share host context; use separate External sessions for
 independent or blind review.
+
+## Observability policy
+
+Record `standard` or `full`, raw retention, redaction, and byte limits. Full
+audit requires every business role to be External and reserves Origin for
+control-plane work. Require non-empty `## Decision rationale` and
+`## Evidence` in every formal role payload. State that only Harness-exposed
+reasoning summaries can be captured, never private hidden chain-of-thought.
 
 ## Block and resume policy
 

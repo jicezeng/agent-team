@@ -2,7 +2,7 @@
 
 > **版本**：v0.1<br>
 > **日期**：2026-07-25<br>
-> **最近修订**：2026-07-28<br>
+> **最近修订**：2026-07-29<br>
 > **状态**：Stage 1 MVP 设计基线
 > **目标读者**：产品负责人、架构师、Codex/Claude Code 开发者、开源贡献者
 
@@ -793,7 +793,7 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "run_id": "at-20260725-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -816,6 +816,16 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
   "limits": {
     "max_turns": 20,
     "max_wall_time_seconds": 7200
+  },
+  "observability": {
+    "audit_mode": "standard",
+    "redaction": "standard",
+    "max_trace_bytes": 67108864,
+    "raw_retention": "redacted",
+    "required_payload_sections": [
+      "Decision rationale",
+      "Evidence"
+    ]
   }
 }
 ```
@@ -830,6 +840,21 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 固定 Validator 还必须保证：`run_id` 与最终 Run 目录名完全相同；规范化 `workspace` 与 `.agent-team/root.json` 相同；`roles` 非空且所有 Key 都满足 Role ID 规则；`initial_role` 正好引用其中一个 Role；`origin.session_mode` 在 Stage 1 固定为 `embedded`。任一不变量在 Kickoff 前失败都拒绝 `start`，Kickoff 后被改写则由配置 Hash 直接进入 `CORRUPTED`。
 
 `limits.max_turns` 与 `limits.max_wall_time_seconds` 都必须是正整数；`init` 在二者小于 `1` 时拒绝配置，保证 Kickoff 至少允许创建首个业务 Turn。
+
+`observability.audit_mode=standard|full` 固定本 Run 的审计边界。`standard`
+允许 Origin Business Role，但必须把这类 Turn 标记为只覆盖正式输入、正式输出和
+Workspace 边界，不能声称采集到宿主的内部 Tool Stream。`full` 要求所有 Business
+Role 都使用 External Binding，Origin 只承担 Bootstrap、等待、终态审计和用户交付；
+任一 Turn 的 Raw Capture 或 Normalized Trace 被大小上限截断时，Runtime 提交
+Recovery Block，不能把不完整审计当作正常完成。
+
+`redaction=standard|none`、`max_trace_bytes` 和
+`raw_retention=redacted|keep|delete` 分别固定派生 Trace 的启发式脱敏策略、每 Turn
+stdout/stderr Source Byte 与 Normalized Trace Byte 上限，以及 Raw Stream 在
+Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_sections`
+是大小写不敏感、不可重复的 Markdown 标题闭集；Full Audit 至少要求
+`Decision rationale` 与 `Evidence`。Schema 1 的历史 Run 继续按
+`redaction=none, raw_retention=keep` 读取，不就地改写 `team.json`。
 
 外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。每个 Profile 必须显式设置所有权限相关参数，不能把可变的用户默认配置当作 Profile 的一部分；Bootstrap 显式选择并记录该值，不得根据 Role ID 或 `PROTOCOL.md` 中的 `read-only` 自动映射。
 
@@ -952,6 +977,7 @@ Worker 在启动 Harness 前冻结 `workspace-facts-before.json`，并原子创�
   "adapter_completed": false,
   "termination_kind": null,
   "terminal_event_id": null,
+  "trace_manifest_sha256": null,
   "created_at": "2026-07-25T21:43:23-07:00",
   "updated_at": "2026-07-25T21:44:00-07:00"
 }
@@ -960,6 +986,11 @@ Worker 在启动 Harness 前冻结 `workspace-facts-before.json`，并原子创�
 External Runtime 必须同时记录非空 `launch_profile` 与 `launch_profile_sha256`；Origin 和管理 Runtime 的两者都必须为 `null`。启动许可中的两值必须与 External Runtime、`team.json` 和本次 `LaunchSpec` 完全一致。
 
 `created_at` 在 Runtime 首次提交时写入且不得改变，`updated_at` 随原子替换前进。Status 的 `active_turn.age_seconds` 只按 `observed_at - created_at` 计算并下限取 `0`，不使用文件时间或会被更新的 `updated_at`。
+
+`trace_manifest_sha256` 只适用于 External Turn，初始为 `null`。Supervisor 已退出且
+Runner Group 被证明清空后，Worker 生成 Turn Trace Manifest，把其原始字节
+SHA-256 一次性写入该字段；非空后不可替换。Schema 2 Run 中已经执行且
+`phase=finalized` 的 External Turn 缺少该锚点属于损坏。
 
 每个外部 Worker 在进入事件循环前原子创建或替换 `roles/<role-id>.json`：
 
@@ -1383,9 +1414,47 @@ Event 提交顺序：
 
 Harness stdout / stderr 仍逐 Turn 写入 `process/stream.jsonl`。Supervisor 在启动 Runner 前创建空文件并 `fsync` 文件及其父目录，之后作为唯一写者追加记录。Worker 日志、Raw Stream 和可选的 `stderr.log` 都以 no-follow、append、close-on-exec 方式打开，在文件描述符上验证普通文件并由唯一写者持有；路径被替换不能把后续写入重定向到 Run Store 外。`seq` 在 Turn 内从 `1` 开始并按其观察到字节块的顺序递增；它保证每条来源管道内部的字节顺序，不声称还原两个独立管道在 Harness 内的绝对发出先后。每条外层 `RawStreamChunk` 固定包含 `schema_version`、`seq`、`observed_at`、`source=stdout|stderr`、`encoding=utf-8|base64` 和 `data`。有效 UTF-8 直接保存，否则 Base64 编码，保证任意原始字节都能形成合法 JSONL。`stderr.log` 只是便于阅读的镜像，不参与 Evidence 或状态推导。
 
+Supervisor 对两个来源合计执行 `max_trace_bytes` Source Byte 上限，并在关闭
+Stream FD 后原子写入不可变的 `process/capture.json`。该文件记录
+`source_bytes`、`stored_source_bytes`、`dropped_source_bytes`、
+`chunks_observed`、`chunks_stored`、`truncated` 与 `closed_at`。为保证
+Process Evidence 不因审计存储上限改变，Supervisor 仍对当前收到的完整字节执行
+在线 Framing；但超限字节不进入 Raw Store，Full Audit 因而必须 Block。
+
 两类日志的 `observed_at` 都使用 UTC RFC 3339；排序与重放只认 `producer_seq` 或 `seq`，不认墙钟先后。
 
 Worker 日志和外层 Stream JSONL 都以完整换行记录为读取边界；Supervisor 崩溃留下的末尾半条外层记录只作为日志截断忽略，不能据此生成 Adapter Evidence、改变 Run Status 或把历史内容补猜出来。Supervisor 使用确定性 Framer：分别按 `source`、`seq` 解码并拼接完整 `RawStreamChunk`，只在读到 Harness 换行时向 Adapter 发出一条完整 `StreamRecord`。后者固定包含 `source`、`first_seq`、`last_seq`、取最后一个 Chunk 值的 `observed_at`、`encoding=utf-8|base64`，以及包含换行分隔符的可逆 `data`。Harness 在 EOF 前留下的未换行字节仍可从 Raw Stream 恢复，但不产生 Evidence。Supervisor 在持久化由某条 `StreamRecord` 派生的 Evidence Snapshot 前，必须先完整追加并 `fsync` 覆盖该记录的所有 Raw Stream Chunk；普通无 Evidence Chunk 可以批量刷新，但 Turn 收口前必须 `fsync`。Evidence 提交和 Turn 收口前还要复核路径仍指向所持有的 Raw Stream inode；不一致时不得交付 Outbox。Supervisor 退出后任何恢复路径都不得重放 Raw Stream 生成新 Evidence。
+
+Turn 进入 Quiescent 边界后，Worker 可重放**已保留** Stream 来生成只读审计派生物，
+但该重放不得产生或升级上述 Process Evidence、Session、Event 或业务结论。每个
+Adapter 的 `normalize_stream_record()` 把记录映射为统一 `trace.jsonl`：
+`agent_message`、`tool_call`、`tool_result`、`file_change`、`usage`、
+`error`、`reasoning_summary` 以及 Session/Turn/Diagnostic Fallback。无法识别的
+结构化记录仍以 `harness_event` 保存，非 JSON 记录以 `diagnostic` 保存，因此
+上限内的内容不会因为缺少专用映射而静默消失。每条 Trace Event 含连续
+`trace_seq`、Run/Turn/Role/Adapter、`observed_at` 和指向原始
+`source + first_seq + last_seq` 的 `raw_ref`。`reasoning_summary` 只表示
+Harness 明确导出的摘要，Runtime 不请求、推断或伪造隐藏 Chain of Thought。
+
+同一收口事务随后写入不可变 `trace-manifest.json`。Manifest 包含冻结的
+Observability Policy、Capture/截断/脱敏/事件计数、Tool 与 Usage 汇总，以及
+`input.md`、LaunchSpec、Capture、保留的 Raw/Stderr、Outbox/Formal Payload、
+Harness Final Message 和 `trace.jsonl` 中实际存在项的相对路径、Byte Size 与
+SHA-256。`trace.jsonl` 必须被 Manifest 覆盖；Manifest Hash 按 13.3 写入
+Runtime。Observation、Transcript 与 Recovery 都重新校验 Runtime Anchor、
+Manifest 身份、Policy、Artifact Hash/Size、Trace Sequence、Raw Ref 和 Summary。
+
+Retention 在 Manifest 提交前执行：`redacted` 把 Raw Chunk 重写为带原始 Seq
+范围的 Schema 2 Redacted Record，并同步重写 `stderr.log`；`keep` 保留原始
+Schema 1 Chunk；`delete` 在 Normalized Trace 成功落盘后删除 Raw/Stderr。标准
+Redaction 同时处理常见 Token Pattern 与 JSON Sensitive Key，但它是启发式防线，
+不是 Secret Manager。Normalized Trace 不保留私有 `thinking` 或通用 `reasoning`
+正文，但 Retained Raw 是另一条隐私边界：`redacted` 仅执行启发式 Secret
+替换，Harness 主动输出的 Tool 参数/结果、Prompt、代码乃至 Thinking/Reasoning
+仍可能保留；`keep` 则保留原始 Stream。Request、Protocol、Frozen Input、
+LaunchSpec、正式 Payload 和 Workspace Artifact 为了权威性保持原始字节，不受
+派生 Trace Redaction 改写。首版没有 TTL 或自动 Purge；保留项与 Run Store
+同生命周期。
 
 用户可以执行：
 
@@ -1393,9 +1462,15 @@ Worker 日志和外层 Stream JSONL 都以完整换行记录为读取边界；Su
 agent-team attach <run-id>
 agent-team attach <run-id> --role developer
 agent-team diagnose <run-id> --role developer
+agent-team transcript <run-id> --role developer --json
+agent-team tail <run-id> --role developer --follow --jsonl
 ```
 
 `attach` 在 Stage 1 始终使用 tmux 只读 Client；纯 Origin Run 返回 `NO_TMUX_RUNTIME`，但仍可使用 `status` / `diagnose` 读取 Run Store。`capture-pane` 和人类日志只提供线索，不能改变结构化诊断结论。直接操作外部 Harness TUI 不属于正常工作流。
+
+`transcript` 输出选中 Turn 的 Policy-filtered Frozen Input、Harness Prompt、统一
+Events、Formal Output 与 Turn/Run Usage Summary；`tail` 支持 Role/Turn Filter
+和 Live Follow。两者都是只读审计面，不能成为路由或 Completion 的事实来源。
 
 ---
 
@@ -1553,6 +1628,13 @@ Worker 崩溃时，已被当前 Turn Runtime 记录的 Supervisor 可以在 Run 
 
 Input Event 是本 Turn 的直接输入。若它是 Resume，Prompt 必须明确标注该 Payload 对所引用 Block 的补充指令优先于 `PROTOCOL.md` 和旧 Handoff，但不能覆盖 `REQUEST.md`、仓库强制要求或不可变 Run 配置。
 
+若 `required_payload_sections` 非空，Prompt 在动作说明前列出每个必需 Markdown
+Heading。CLI 在复制与 Hash Payload 之前执行同一 Validator：标题按大小写不敏感
+精确匹配，标题到下一标题之间必须有非空内容。缺失、空节或非 UTF-8 Payload 返回
+`PAYLOAD_CONTRACT_VIOLATION`，不创建 Outbox。Full Audit 固定要求
+`## Decision rationale` 和 `## Evidence`，用于保存可审计的显式判断与可复现实证，
+而不是要求 Agent 暴露隐藏 Chain of Thought。
+
 不同 External Session 之间不默认注入其他角色的完整会话记录。绑定同一个 Origin Session 的多个逻辑角色天然共享宿主会话上下文，不具备这种隔离，具体边界见 19.3。
 
 ## 16.4 Deferred Delivery
@@ -1647,6 +1729,9 @@ class HarnessAdapter(Protocol):
     def probe(self) -> CapabilityReport: ...
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec: ...
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None: ...
+    def normalize_stream_record(
+        self, record: StreamRecord
+    ) -> list[NormalizedTraceEvent]: ...
     def classify_result(
         self,
         result: ProcessResult,
@@ -1917,7 +2002,19 @@ Coordination Skill 在同一 Origin Session 的下一次用户 Agent Turn 开始
 ## Protocol basis
 
 根据 PROTOCOL.md 的哪一条，现在应当交给该角色。
+
+## Decision rationale
+
+为何选择本次动作和目标角色；记录可审计的显式判断，不记录或声称隐藏思维链。
+
+## Evidence
+
+接收方可复现的检查、命令、结果、Hash 与 Artifact 路径。
 ```
+
+当 Run 配置 `required_payload_sections` 时，对应标题和非空正文是 CLI
+接受 Handoff、Completion 与 Agent Block 的前置条件；它们不是由模型自由文本
+推断出的 Verdict。
 
 ## 19.2 System Facts 附录
 

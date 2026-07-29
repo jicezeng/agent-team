@@ -356,6 +356,7 @@ class StreamRecorder:
         turn_id: str,
         adapter_id: str,
         snapshot: dict[str, Any],
+        max_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         self.run_dir = run_dir
         self.turn_id = turn_id
@@ -370,6 +371,13 @@ class StreamRecorder:
         self.adapter = get_adapter(adapter_id)
         self.evidence = AdapterEvidenceSnapshot()
         self.snapshot = snapshot
+        self.max_bytes = max_bytes
+        self.source_bytes = 0
+        self.stored_source_bytes = 0
+        self.dropped_source_bytes = 0
+        self.chunks_observed = 0
+        self.chunks_stored = 0
+        self.truncated = False
         stream_info = os.fstat(self.stream_fd)
         self.stream_identity = (stream_info.st_dev, stream_info.st_ino)
 
@@ -378,6 +386,20 @@ class StreamRecorder:
         os.fsync(self.stderr_fd)
         os.close(self.stream_fd)
         os.close(self.stderr_fd)
+        atomic_json(
+            self.process_dir / "capture.json",
+            {
+                "schema_version": 1,
+                "source_bytes": self.source_bytes,
+                "stored_source_bytes": self.stored_source_bytes,
+                "dropped_source_bytes": self.dropped_source_bytes,
+                "chunks_observed": self.chunks_observed,
+                "chunks_stored": self.chunks_stored,
+                "truncated": self.truncated,
+                "closed_at": rfc3339(),
+            },
+            immutable=True,
+        )
 
     def stream_path_is_original(self) -> bool:
         try:
@@ -394,30 +416,43 @@ class StreamRecorder:
 
     async def record(self, source: str, data: bytes) -> None:
         async with self.lock:
+            self.chunks_observed += 1
+            self.source_bytes += len(data)
             self.seq += 1
             seq = self.seq
             observed_at = rfc3339()
+            remaining = max(0, self.max_bytes - self.stored_source_bytes)
+            stored_data = data[:remaining]
+            dropped = len(data) - len(stored_data)
+            self.stored_source_bytes += len(stored_data)
+            self.dropped_source_bytes += dropped
+            if dropped:
+                self.truncated = True
+            if stored_data:
+                self.chunks_stored += 1
             try:
-                text = data.decode("utf-8")
+                text = stored_data.decode("utf-8")
                 encoding = "utf-8"
                 stored = text
             except UnicodeDecodeError:
                 encoding = "base64"
-                stored = base64.b64encode(data).decode("ascii")
-            outer = {
-                "schema_version": 1,
-                "seq": seq,
-                "observed_at": observed_at,
-                "source": source,
-                "encoding": encoding,
-                "data": stored,
-            }
-            line = (
-                json.dumps(outer, ensure_ascii=False, separators=(",", ":")) + "\n"
-            ).encode("utf-8")
-            write_all(self.stream_fd, line)
-            if source == "stderr":
-                write_all(self.stderr_fd, data)
+                stored = base64.b64encode(stored_data).decode("ascii")
+            if stored_data:
+                outer = {
+                    "schema_version": 1,
+                    "seq": seq,
+                    "observed_at": observed_at,
+                    "source": source,
+                    "encoding": encoding,
+                    "data": stored,
+                }
+                line = (
+                    json.dumps(outer, ensure_ascii=False, separators=(",", ":"))
+                    + "\n"
+                ).encode("utf-8")
+                write_all(self.stream_fd, line)
+                if source == "stderr":
+                    write_all(self.stderr_fd, stored_data)
             if self.first_seq[source] is None:
                 self.first_seq[source] = seq
             self.buffers[source].extend(data)
@@ -575,11 +610,13 @@ async def supervise_turn(
             # A terminal Event won the race before Runner creation.
             return 0
         _save_snapshot(run_dir, turn_id, snapshot, initial=True)
+        policy = projection.team.observability
     recorder = StreamRecorder(
         run_dir=run_dir,
         turn_id=turn_id,
         adapter_id=launch.adapter_id,
         snapshot=snapshot,
+        max_bytes=policy.max_trace_bytes,
     )
     status_r, status_w = os.pipe()
     os.set_inheritable(status_w, True)
@@ -823,6 +860,8 @@ async def supervise_turn(
         }
     )
     await recorder.close()
+    # The Worker anchors and validates the normalized trace after it verifies
+    # the Runner process group is quiescent; do not finalize here.
     with locked_run(run_dir, exclusive=True):
         _save_snapshot(run_dir, turn_id, snapshot)
     return 0 if group_quiescent else 1

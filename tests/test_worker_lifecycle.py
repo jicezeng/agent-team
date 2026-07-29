@@ -14,7 +14,12 @@ import pytest
 from agent_team.adapters.base import LaunchSpec
 from agent_team.adapters.codex import CodexAdapter
 from agent_team.bootstrap import initialize_run, start_run
-from agent_team.config import Role, make_team
+from agent_team.config import (
+    REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    ObservabilityPolicy,
+    Role,
+    make_team,
+)
 from agent_team.errors import AgentTeamError, IntegrityError
 from agent_team.journal import scan_journal
 from agent_team.management import cancel_run, recover_run, unlock_workspace
@@ -34,6 +39,7 @@ from agent_team.turns import (
     create_business_turn_locked,
     iter_runtimes,
     load_runtime,
+    render_turn_prompt,
     save_runtime,
     stage_external_action_locked,
     validate_runtime,
@@ -85,6 +91,7 @@ def _external_run(
     max_turns: int = 4,
     max_wall_time_seconds: int = 300,
     include_origin_reviewer: bool = False,
+    observability: ObservabilityPolicy | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     request, protocol = request_protocol
     adapter = _BootstrapAdapter()
@@ -125,6 +132,7 @@ def _external_run(
         initial_role="developer",
         max_turns=max_turns,
         max_wall_time_seconds=max_wall_time_seconds,
+        observability=observability,
     )
     run_dir = initialize_run(
         team=team,
@@ -154,6 +162,34 @@ def _external_run(
     assert runtime is not None
     assert continuity_error is None
     return run_dir, runtime
+
+
+def test_external_turn_prompt_disambiguates_skill_from_formal_cli(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-prompt-formal-cli",
+    )
+
+    prompt = render_turn_prompt(
+        run_dir,
+        runtime,
+        cli_path="/opt/agent-team/bin/agent-team",
+        session_ref=None,
+    )
+
+    assert "documentation, not an action interface" in prompt
+    assert "has no `--complete`, `--summary`" in prompt
+    assert "Do not invoke the Skill again to transition state" in prompt
+    assert (
+        "`/opt/agent-team/bin/agent-team handoff "
+        "--to <role-id> --file <payload>`"
+    ) in prompt
 
 
 def test_init_rejects_launcher_that_detaches_from_managed_group(
@@ -947,6 +983,104 @@ def test_normal_exit_without_outbox_commits_stalled_no_action(
     assert persisted["phase"] == "finalized"
     assert persisted["outcome"] == "stalled"
     assert persisted["workspace_facts_after_sha256"] is not None
+
+
+def test_external_action_enforces_audited_rationale_and_evidence_contract(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-payload-contract",
+        observability=ObservabilityPolicy(
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    payload = turn_dir / "completion-source.md"
+    payload.write_text("# Completion\n\nDone.\n", encoding="utf-8")
+
+    with locked_run(run_dir, exclusive=True):
+        with pytest.raises(AgentTeamError) as rejected:
+            stage_external_action_locked(
+                run_dir,
+                runtime=runtime,
+                action="complete",
+                source_file=payload,
+                to_role=None,
+            )
+        assert rejected.value.code == "PAYLOAD_CONTRACT_VIOLATION"
+        payload.write_text(
+            "# Completion\n\n"
+            "## Decision rationale\n\n"
+            "The requested change is complete.\n\n"
+            "## Evidence\n\n"
+            "The targeted tests pass.\n",
+            encoding="utf-8",
+        )
+        accepted = stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="complete",
+            source_file=payload,
+            to_role=None,
+        )
+
+    assert accepted["code"] == "ACTION_ACCEPTED"
+
+
+def test_full_audit_mode_blocks_a_turn_when_capture_is_truncated(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-full-audit-truncated",
+        observability=ObservabilityPolicy(
+            audit_mode="full",
+            max_trace_bytes=1024,
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(run_dir, runtime)
+        atomic_json(
+            turn_dir / "process" / "capture.json",
+            {
+                "schema_version": 1,
+                "source_bytes": 2048,
+                "stored_source_bytes": 1024,
+                "dropped_source_bytes": 1024,
+                "chunks_observed": 2,
+                "chunks_stored": 1,
+                "truncated": True,
+                "closed_at": rfc3339(),
+            },
+            immutable=True,
+        )
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+
+    assert event is not None
+    assert event["event_type"] == "block"
+    assert event["block_reason"] == "recovery"
+    persisted = load_runtime(
+        turn_dir,
+        team=scan_journal(run_dir).team,
+    )
+    assert persisted["phase"] == "finalized"
+    assert persisted["trace_manifest_sha256"] is not None
+    assert derive_observation(run_dir)["run_status"] == "BLOCKED"
 
 
 def test_external_handoff_on_final_business_turn_blocks_without_staging_outbox(

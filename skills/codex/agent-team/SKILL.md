@@ -15,6 +15,24 @@ receiving an Origin event. Use
 [protocol-template.md](references/protocol-template.md) when generating the
 run-specific protocol.
 
+## Existing External Turn
+
+Check this before Bootstrap. If `AGENT_TEAM_RUN_ID`, `AGENT_TEAM_ROLE_ID`, and
+`AGENT_TEAM_TURN_ID` are present, or the current prompt starts with
+`# Agent-Team role turn`, you are already an External business role inside an
+existing Run:
+
+1. Do not Bootstrap, wait, Resume, Cancel, or invoke this Skill again.
+2. This Skill is documentation only. It has no `--complete`, `--summary`, or
+   other action arguments; repeated Skill calls cannot change Run state.
+3. Read [coordination.md](references/coordination.md), then execute only the
+   dynamic role and frozen input named by the current prompt.
+4. End the Turn with exactly one shell invocation of the absolute
+   `$AGENT_TEAM_CLI` command shown in the prompt:
+   `handoff --to ... --file ...`, `complete --file ...`, or
+   `block --file ...`.
+5. Stop business work after that CLI command succeeds.
+
 ## Bootstrap
 
 1. Preserve the user's exact request in a local `REQUEST.md`.
@@ -30,21 +48,30 @@ run-specific protocol.
 5. Choose each External Launch Profile explicitly from `agent-team doctor`
    output. Never infer it from a role name or a natural-language `read-only`
    restriction.
-6. Write Request and Protocol outside `.agent-team`, then run:
+6. Choose and record the observability policy. Use `full` only when every
+   business role is External and the Origin is control-plane only; otherwise
+   use `standard` and disclose that Origin role internals are not captured.
+   Keep standard redaction and redacted raw retention unless the user
+   explicitly requests another privacy tradeoff.
+7. Write Request and Protocol outside `.agent-team`, then run:
 
 ```bash
 agent-team init \
   --request <REQUEST.md> \
   --protocol <PROTOCOL.md> \
-  --role <role>=origin \
-  --role <role>=codex:resume:default \
+  --role <role>=<binding-spec> \
   --initial-role <role> \
   --max-turns <positive-int> \
-  --max-wall-time-seconds <positive-int>
+  --max-wall-time-seconds <positive-int> \
+  --audit-mode <standard|full> \
+  --trace-redaction standard \
+  --max-trace-bytes 67108864 \
+  --raw-retention redacted \
+  --require-rationale-evidence
 agent-team start <run-id>
 ```
 
-7. Save the returned Run ID and immediately call
+8. Save the returned Run ID and immediately call
    `agent-team wait-origin --run <run-id> --timeout 90`.
 
 ## Origin loop
@@ -62,8 +89,8 @@ agent-team start <run-id>
 - On the next user Agent turn, first call `wait-origin` with the prior Claim to
   finalize an `exited` Origin runtime.
 - On `TEAM_COMPLETED`, inspect the Completion Package, final facts, artifacts,
-  tests, and loop history; deliver an evidence-backed summary rather than
-  forwarding one sentence.
+  tests, loop history, `transcript --json`, and anchored trace manifests;
+  deliver an evidence-backed summary rather than forwarding one sentence.
 - On `TEAM_BLOCKED`, show the Block to the user and end the Agent turn.
   Read-only diagnosis or deterministic `recover` may precede the response, but
   never Resume in the same turn.
@@ -82,9 +109,10 @@ bindings, workspace, profile, or limits require Cancel plus a new Run.
 ## Structured control
 
 Use `status --json` and `diagnose --json`; act on the structured envelope,
-`health`, `recommended_action`, and evidence paths. Never parse Pane text,
-human-readable Status, Harness prose, or logs to decide routing, completion,
-Resume, Unlock, or recovery.
+`health`, `recommended_action`, and evidence paths. Use `transcript --json`
+and `tail --jsonl --role <role>` only for audit and observation. Never parse
+Pane text, human-readable Status, Harness prose, or logs to decide routing,
+completion, Resume, Unlock, or recovery.
 
 Never share, guess, or replace another Origin session's Claim. Claim loss has
 no takeover path in v0.1: diagnose read-only, cancel the old Run, confirm the

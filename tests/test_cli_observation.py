@@ -12,8 +12,10 @@ from agent_team.observation import diagnose
 from agent_team.origin import origin_context, wait_origin
 from agent_team.state import state_paths
 from agent_team.turns import iter_runtimes
+from agent_team.util import atomic_json, atomic_write, canonical_json_bytes, rfc3339
 
 from test_origin_flow import make_origin_run
+from test_worker_lifecycle import _external_run
 
 
 def _tree_mtimes(root: Path) -> dict[str, int]:
@@ -267,3 +269,93 @@ def test_attach_pure_origin_run_returns_no_tmux_without_probing_tmux(
     assert stopped.value.code == 1
     result = json.loads(capsys.readouterr().out)
     assert result["error"]["code"] == "NO_TMUX_RUNTIME"
+
+
+def test_transcript_and_tail_expose_normalized_role_filtered_events(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-test-transcript-tail",
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    process_dir = turn_dir / "process"
+    process_dir.mkdir(mode=0o700)
+    inner = [
+        {"type": "thread.started", "thread_id": "thread-1"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "message-1",
+                "type": "agent_message",
+                "text": "Review complete.",
+            },
+        },
+        {
+            "type": "turn.completed",
+            "usage": {"input_tokens": 20, "output_tokens": 5},
+        },
+    ]
+    stream = b"".join(
+        canonical_json_bytes(
+            {
+                "schema_version": 1,
+                "seq": seq,
+                "observed_at": rfc3339(),
+                "source": "stdout",
+                "encoding": "utf-8",
+                "data": json.dumps(value) + "\n",
+            }
+        )
+        for seq, value in enumerate(inner, start=1)
+    )
+    atomic_write(process_dir / "stream.jsonl", stream)
+    atomic_json(process_dir / "launch.json", {"stdin": "Review the current tree."})
+
+    with pytest.raises(SystemExit) as transcript_exit:
+        main(
+            [
+                "transcript",
+                run_dir.name,
+                "--workspace",
+                str(workspace),
+                "--role",
+                "developer",
+                "--json",
+            ]
+        )
+
+    assert transcript_exit.value.code == 0
+    transcript = json.loads(capsys.readouterr().out)["data"]
+    assert transcript["turn_count"] == 1
+    assert transcript["turns"][0]["role_id"] == "developer"
+    assert transcript["turns"][0]["prompt"] == "Review the current tree."
+    assert [
+        event["event_type"] for event in transcript["turns"][0]["events"]
+    ] == ["session", "agent_message", "usage"]
+    assert transcript["summary"]["usage"]["input_tokens"] == 20
+
+    with pytest.raises(SystemExit) as tail_exit:
+        main(
+            [
+                "tail",
+                run_dir.name,
+                "--workspace",
+                str(workspace),
+                "--role",
+                "developer",
+                "--lines",
+                "1",
+                "--jsonl",
+            ]
+        )
+
+    assert tail_exit.value.code == 0
+    tailed = json.loads(capsys.readouterr().out)
+    assert tailed["event_type"] == "usage"
+    assert tailed["role_id"] == "developer"

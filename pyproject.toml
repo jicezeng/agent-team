@@ -34,7 +34,7 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q --basetemp=.pytest-tmp"
 testpaths = ["tests"]
 
 [dependency-groups]

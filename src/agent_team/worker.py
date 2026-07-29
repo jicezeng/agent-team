@@ -34,6 +34,7 @@ from .supervisor import (
     validate_supervisor,
 )
 from .tmux_runtime import session_name, signal_change
+from .trace import finalize_turn_trace, validate_trace_manifest
 from .turns import (
     commit_session,
     commit_technical_block_locked,
@@ -156,12 +157,47 @@ def _terminal_outcome(terminal: dict[str, Any]) -> str:
     return "failed"
 
 
+def _anchor_turn_trace(
+    run_dir: Path,
+    runtime: dict[str, Any],
+) -> dict[str, Any] | None:
+    if (
+        runtime["executor"] != "worker"
+        or runtime["launch_nonce"] is None
+        or runtime["group_quiescent"] is not True
+    ):
+        return None
+    team = load_team(run_dir)
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    role = team.roles[runtime["role_id"]]
+    expected = runtime["trace_manifest_sha256"]
+    if expected is not None:
+        return validate_trace_manifest(
+            turn_dir,
+            expected_sha256=expected,
+            expected_run_id=team.run_id,
+            expected_role_id=runtime["role_id"],
+            expected_adapter_id=role.adapter or "",
+            expected_policy=team.observability,
+        )
+    manifest, manifest_hash = finalize_turn_trace(
+        run_id=team.run_id,
+        turn_dir=turn_dir,
+        role_id=runtime["role_id"],
+        adapter_id=role.adapter or "",
+        policy=team.observability,
+    )
+    runtime["trace_manifest_sha256"] = manifest_hash
+    return manifest
+
+
 def _finalize_existing_terminal(
     run_dir: Path,
     runtime: dict[str, Any],
     terminal: dict[str, Any],
 ) -> None:
     team = load_team(run_dir)
+    _anchor_turn_trace(run_dir, runtime)
     runtime["terminal_event_id"] = terminal["event_id"]
     runtime["outcome"] = _terminal_outcome(terminal)
     if runtime["group_quiescent"] is False:
@@ -558,6 +594,7 @@ def finalize_external_turn_locked(
         save_runtime(turn_dir, runtime, team=team)
         return event
     _copy_supervisor_result(runtime, supervisor)
+    trace_manifest = _anchor_turn_trace(run_dir, runtime)
     session_unavailable = _session_was_made_unavailable_by_turn(
         run_dir,
         role=role,
@@ -613,6 +650,28 @@ def finalize_external_turn_locked(
             runtime=runtime,
             reason="permission",
             message="Harness emitted structured permission-required evidence.",
+        )
+        runtime["outcome"] = "failed"
+        runtime["phase"] = "finalized"
+        runtime["terminal_event_id"] = event["event_id"]
+        save_runtime(turn_dir, runtime, team=team)
+        return event
+    if (
+        team.observability.audit_mode == "full"
+        and trace_manifest is not None
+        and (
+            trace_manifest["capture"].get("truncated") is True
+            or trace_manifest["capture"].get("normalized_trace_truncated") is True
+        )
+    ):
+        event = commit_technical_block_locked(
+            run_dir,
+            runtime=runtime,
+            reason="recovery",
+            message=(
+                "Full audit mode requires a complete Turn trace, but the configured "
+                "trace size limit truncated Harness or normalized output."
+            ),
         )
         runtime["outcome"] = "failed"
         runtime["phase"] = "finalized"

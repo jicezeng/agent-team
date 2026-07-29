@@ -139,6 +139,12 @@ class StreamRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizedTraceEvent:
+    event_type: str
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterEvidence:
     agent_execution_started: bool = False
     adapter_completed: bool = False
@@ -265,6 +271,32 @@ class HarnessAdapter(abc.ABC):
     @abc.abstractmethod
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None:
         raise NotImplementedError
+
+    def normalize_stream_record(
+        self,
+        record: StreamRecord,
+    ) -> list[NormalizedTraceEvent]:
+        value = self.parse_json_record(record)
+        if value is not None:
+            return [
+                NormalizedTraceEvent(
+                    "harness_event",
+                    {
+                        "source": record.source,
+                        "payload": value,
+                    },
+                )
+            ]
+        return [
+            NormalizedTraceEvent(
+                "diagnostic",
+                {
+                    "source": record.source,
+                    "encoding": record.encoding,
+                    "text": record.data,
+                },
+            )
+        ]
 
     def classify_result(
         self,

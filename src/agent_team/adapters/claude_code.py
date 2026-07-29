@@ -14,6 +14,7 @@ from .base import (
     AdapterEvidence,
     HarnessAdapter,
     LaunchSpec,
+    NormalizedTraceEvent,
     StreamRecord,
     TurnLaunchContext,
 )
@@ -231,3 +232,162 @@ class ClaudeCodeAdapter(HarnessAdapter):
                     observed_session_ref=session_ref,
                 )
         return None
+
+    def normalize_stream_record(
+        self,
+        record: StreamRecord,
+    ) -> list[NormalizedTraceEvent]:
+        value = self.parse_json_record(record)
+        if value is None:
+            return super().normalize_stream_record(record)
+        kind = value.get("type")
+        session_ref = (
+            value.get("session_id")
+            if isinstance(value.get("session_id"), str)
+            else None
+        )
+        if kind == "system" and value.get("subtype") == "init":
+            return [
+                NormalizedTraceEvent(
+                    "session",
+                    {
+                        "state": "started",
+                        "session_ref": session_ref,
+                        "model": value.get("model"),
+                        "permission_mode": value.get("permissionMode"),
+                        "tools": value.get("tools"),
+                        "plugins": value.get("plugins"),
+                    },
+                )
+            ]
+        if kind in {"assistant", "user"}:
+            message = value.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return super().normalize_stream_record(record)
+            events: list[NormalizedTraceEvent] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if kind == "assistant" and block_type == "text":
+                    events.append(
+                        NormalizedTraceEvent(
+                            "agent_message",
+                            {
+                                "session_ref": session_ref,
+                                "direction": "assistant",
+                                "text": block.get("text", ""),
+                            },
+                        )
+                    )
+                elif kind == "assistant" and block_type in {
+                    "server_tool_use",
+                    "tool_use",
+                }:
+                    events.append(
+                        NormalizedTraceEvent(
+                            "tool_call",
+                            {
+                                "session_ref": session_ref,
+                                "tool_call_id": block.get("id"),
+                                "tool": block.get("name"),
+                                "input": block.get("input"),
+                                "payload": block,
+                            },
+                        )
+                    )
+                elif kind == "user" and block_type in {
+                    "tool_result",
+                    "web_search_tool_result",
+                }:
+                    events.append(
+                        NormalizedTraceEvent(
+                            "tool_result",
+                            {
+                                "session_ref": session_ref,
+                                "tool_call_id": block.get("tool_use_id"),
+                                "content": block.get("content"),
+                                "is_error": block.get("is_error", False),
+                                "payload": block,
+                            },
+                        )
+                    )
+                elif kind == "assistant" and block_type == "reasoning_summary":
+                    # Only explicit, harness-exposed reasoning_summary blocks
+                    # are retained as reasoning_summary events. Per acceptance
+                    # area 2, only Harness-exposed reasoning summaries may be
+                    # captured; generic "reasoning" blocks are private chain-
+                    # of-thought and receive the same opaque redaction treatment
+                    # as raw "thinking" blocks.
+                    reasoning_text = block.get("summary") or block.get("text") or ""
+                    if reasoning_text:
+                        events.append(
+                            NormalizedTraceEvent(
+                                "reasoning_summary",
+                                {
+                                    "session_ref": session_ref,
+                                    "text": reasoning_text,
+                                },
+                            )
+                        )
+                elif kind == "assistant" and block_type in {"thinking", "reasoning"}:
+                    # Private extended thinking content is never retained in
+                    # normalized traces. It is not a harness-exposed reasoning
+                    # summary, and acceptance area 2 explicitly requires only
+                    # Harness-exposed reasoning summaries be captured. We emit
+                    # a lightweight diagnostic event that preserves sequence
+                    # reference without leaking private content.
+                    events.append(
+                        NormalizedTraceEvent(
+                            "diagnostic",
+                            {
+                                "session_ref": session_ref,
+                                "block_type": block_type,
+                                "redacted_private_reasoning": True,
+                            },
+                        )
+                    )
+                else:
+                    events.append(
+                        NormalizedTraceEvent(
+                            "harness_event",
+                            {
+                                "source": record.source,
+                                "kind": kind,
+                                "payload": block,
+                            },
+                        )
+                    )
+            return events or super().normalize_stream_record(record)
+        if kind == "result":
+            if value.get("subtype") == "success" and not value.get(
+                "is_error",
+                False,
+            ):
+                return [
+                    NormalizedTraceEvent(
+                        "usage",
+                        {
+                            "state": "completed",
+                            "session_ref": session_ref,
+                            "usage": value.get("usage", {}),
+                            "total_cost_usd": value.get("total_cost_usd"),
+                            "duration_ms": value.get("duration_ms"),
+                            "duration_api_ms": value.get("duration_api_ms"),
+                            "num_turns": value.get("num_turns"),
+                        },
+                    )
+                ]
+            return [
+                NormalizedTraceEvent(
+                    "error",
+                    {
+                        "session_ref": session_ref,
+                        "subtype": value.get("subtype"),
+                        "errors": value.get("errors"),
+                        "permission_denials": value.get("permission_denials"),
+                    },
+                )
+            ]
+        return super().normalize_stream_record(record)

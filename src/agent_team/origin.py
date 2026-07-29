@@ -38,6 +38,7 @@ from .turns import (
     load_runtime,
     runtime_for_input,
     save_runtime,
+    validate_payload_contract,
 )
 from .util import (
     parse_rfc3339,
@@ -680,6 +681,10 @@ def origin_action(
             return {"code": "TEAM_BLOCKED", "event": event}
         relative_source = safe_relative(source_file, run_dir)
         payload = read_regular(resolve_run_path(run_dir, relative_source))
+        validate_payload_contract(
+            payload,
+            required_sections=team.observability.required_payload_sections,
+        )
         try:
             before, after, recovery_message = _freeze_origin_after(run_dir, runtime)
         except RecoverableTurnArtifactError as exc:

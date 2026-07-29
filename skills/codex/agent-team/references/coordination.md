@@ -16,10 +16,14 @@
 External commands:
 
 ```bash
-agent-team handoff --to <role-id> --file <payload>
-agent-team complete --file <payload>
-agent-team block --file <payload>
+"$AGENT_TEAM_CLI" handoff --to <role-id> --file <payload>
+"$AGENT_TEAM_CLI" complete --file <payload>
+"$AGENT_TEAM_CLI" block --file <payload>
 ```
+
+The Skill is guidance only and has no terminal action arguments. Never call
+the Skill with `--complete`, `--summary`, or similar arguments, and never
+invoke it repeatedly in place of one of the CLI commands above.
 
 Origin roles must use the Claim-bearing `origin-*` variants. Origin Handoff and
 Resume submit and wait in the same command.
@@ -41,10 +45,15 @@ Resume submit and wait in the same command.
 
 Use these sections: From, To, My responsibility in this turn, Work completed,
 Artifacts and workspace state, Verified observations, My judgment and claims,
-Uncertainties and disagreements, Requested next action, Protocol basis.
+Uncertainties and disagreements, Requested next action, Protocol basis,
+Decision rationale, Evidence. When the Run enforces the audited payload
+contract, `## Decision rationale` and `## Evidence` must both contain concrete,
+non-empty content.
 
 Separate facts from judgments. Include commands and results that the receiver
-can reproduce. Expose unresolved uncertainty and disagreement.
+can reproduce. Expose unresolved uncertainty and disagreement. Record explicit
+reasoning appropriate for audit; never claim or reconstruct hidden
+chain-of-thought.
 
 ## Instruction and evidence order
 

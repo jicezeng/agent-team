@@ -21,7 +21,13 @@ from .assets import (
     installed_codex_skill,
 )
 from .bootstrap import initialize_run, parse_role_spec, start_run
-from .config import generate_run_id, load_team, make_team
+from .config import (
+    REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    ObservabilityPolicy,
+    generate_run_id,
+    load_team,
+    make_team,
+)
 from .errors import (
     AgentTeamError,
     IntegrityError,
@@ -55,6 +61,12 @@ from .state import (
 )
 from .supervisor import run_supervisor
 from .tmux_runtime import attach as attach_tmux
+from .trace import (
+    build_transcript,
+    flattened_trace_events,
+    render_trace_event,
+    render_transcript,
+)
 from .turns import load_runtime, stage_external_action_locked
 from .util import (
     envelope,
@@ -624,6 +636,23 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--origin-harness", default="codex")
     init.add_argument("--max-turns", type=int, default=20)
     init.add_argument("--max-wall-time-seconds", type=int, default=7200)
+    init.add_argument(
+        "--audit-mode",
+        choices=("standard", "full"),
+        default="standard",
+    )
+    init.add_argument(
+        "--trace-redaction",
+        choices=("standard", "none"),
+        default="standard",
+    )
+    init.add_argument("--max-trace-bytes", type=int, default=64 * 1024 * 1024)
+    init.add_argument(
+        "--raw-retention",
+        choices=("redacted", "keep", "delete"),
+        default="redacted",
+    )
+    init.add_argument("--require-rationale-evidence", action="store_true")
     init.add_argument("--run-id")
 
     start = sub.add_parser("start")
@@ -641,6 +670,22 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             command.add_argument("--role")
             command.add_argument("--json", action="store_true")
+
+    transcript = sub.add_parser("transcript")
+    transcript.add_argument("run_id", nargs="?")
+    transcript.add_argument("--workspace")
+    transcript.add_argument("--role")
+    transcript.add_argument("--turn")
+    transcript.add_argument("--json", action="store_true")
+
+    tail = sub.add_parser("tail")
+    tail.add_argument("run_id", nargs="?")
+    tail.add_argument("--workspace")
+    tail.add_argument("--role")
+    tail.add_argument("--turn")
+    tail.add_argument("--lines", type=int, default=50)
+    tail.add_argument("--follow", action="store_true")
+    tail.add_argument("--jsonl", action="store_true")
 
     attach = sub.add_parser("attach")
     attach.add_argument("run_id")
@@ -743,6 +788,18 @@ def dispatch(args: argparse.Namespace) -> int:
                 raise InvalidArgument(f"duplicate role: {role_id}")
             roles[role_id] = role
         run_id = args.run_id or generate_run_id()
+        required_sections = (
+            REQUIRED_AUDIT_PAYLOAD_SECTIONS
+            if args.audit_mode == "full" or args.require_rationale_evidence
+            else ()
+        )
+        observability = ObservabilityPolicy(
+            audit_mode=args.audit_mode,
+            redaction=args.trace_redaction,
+            max_trace_bytes=args.max_trace_bytes,
+            raw_retention=args.raw_retention,
+            required_payload_sections=required_sections,
+        )
         team = make_team(
             run_id=run_id,
             workspace=workspace,
@@ -751,6 +808,7 @@ def dispatch(args: argparse.Namespace) -> int:
             initial_role=args.initial_role,
             max_turns=args.max_turns,
             max_wall_time_seconds=args.max_wall_time_seconds,
+            observability=observability,
         )
         run_dir = initialize_run(
             team=team,
@@ -843,6 +901,58 @@ def dispatch(args: argparse.Namespace) -> int:
                 f"{args.role!r} is not an External role in this run",
             )
         return attach_tmux(args.run_id, args.role)
+    if command == "transcript":
+        run_dir, corruption = _observation_run_dir(args.run_id, args.workspace)
+        if corruption is not None:
+            raise IntegrityError(corruption)
+        data = build_transcript(
+            run_dir,
+            role_id=args.role,
+            turn_id=args.turn,
+        )
+        if args.json:
+            _json(envelope("transcript", data=data))
+        else:
+            print(render_transcript(data))
+        return 0
+    if command == "tail":
+        if args.lines < 1:
+            raise InvalidArgument("--lines must be a positive integer")
+        run_dir, corruption = _observation_run_dir(args.run_id, args.workspace)
+        if corruption is not None:
+            raise IntegrityError(corruption)
+        seen: set[tuple[str, int]] = set()
+        first = True
+        while True:
+            transcript_data = build_transcript(
+                run_dir,
+                role_id=args.role,
+                turn_id=args.turn,
+            )
+            events = flattened_trace_events(transcript_data)
+            if first and not args.follow:
+                events = events[-args.lines :]
+            elif first:
+                events = events[-args.lines :]
+            else:
+                events = [
+                    event
+                    for event in events
+                    if (event["turn_id"], event["trace_seq"]) not in seen
+                ]
+            for event in events:
+                seen.add((event["turn_id"], event["trace_seq"]))
+                if args.jsonl:
+                    _json(event)
+                else:
+                    print(render_trace_event(event), flush=True)
+            if not args.follow:
+                return 0
+            first = False
+            observation = derive_observation(run_dir)
+            if observation["run_status"] in {"COMPLETED", "CANCELLED"}:
+                return 0
+            time.sleep(0.5)
     if command == "cancel":
         _json(cancel_run(_run_dir(args.run_id, args.workspace)))
         return 0
@@ -971,6 +1081,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             "status",
             "watch",
             "diagnose",
+            "transcript",
+            "tail",
             "attach",
             "cancel",
             "recover",

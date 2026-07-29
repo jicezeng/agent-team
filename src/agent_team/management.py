@@ -57,6 +57,7 @@ from .util import (
     sha256_bytes,
 )
 from .worker import (
+    _anchor_turn_trace,
     _load_launch_spec_for_runtime,
     _validate_external_process_chain,
     finalize_external_turn_locked,
@@ -738,6 +739,7 @@ def _recover_unique_damaged_runtime_locked(
         "terminal_event_id": event["event_id"],
         "updated_at": rfc3339(),
     }
+    _anchor_turn_trace(run_dir, final)
     validate_runtime(final, team=team)
     replace_damaged_runtime(turn_dir, final, team=team)
     projection = scan_journal(run_dir)

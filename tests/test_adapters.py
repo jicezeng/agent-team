@@ -44,6 +44,41 @@ def test_codex_structured_evidence() -> None:
     assert snapshot.observed_session_ref == "thread-1"
 
 
+def test_codex_normalizes_mcp_tool_lifecycle() -> None:
+    adapter = CodexAdapter()
+    started = adapter.normalize_stream_record(
+        record(
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "mcp-1",
+                    "type": "mcp_tool_call",
+                    "arguments": {"query": "status"},
+                    "status": "in_progress",
+                },
+            }
+        )
+    )
+    completed = adapter.normalize_stream_record(
+        record(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "mcp-1",
+                    "type": "mcp_tool_call",
+                    "result": {"ok": True},
+                    "status": "completed",
+                },
+            }
+        )
+    )
+
+    assert started[0].event_type == "tool_call"
+    assert started[0].data["tool"] == "mcp_tool_call"
+    assert completed[0].event_type == "tool_result"
+    assert completed[0].data["output"] == {"ok": True}
+
+
 def test_claude_structured_evidence() -> None:
     adapter = ClaudeCodeAdapter()
     snapshot = AdapterEvidenceSnapshot()
@@ -73,6 +108,142 @@ def test_claude_structured_evidence() -> None:
     assert snapshot.agent_execution_started
     assert snapshot.adapter_completed
     assert snapshot.observed_session_ref == "session-1"
+
+
+def test_claude_normalizes_messages_tools_reasoning_and_usage() -> None:
+    adapter = ClaudeCodeAdapter()
+    values = [
+        {
+            "type": "assistant",
+            "session_id": "session-1",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "Checked the boundary."},
+                    {"type": "text", "text": "I found one issue."},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"file_path": "src/app.py"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "session_id": "session-1",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "file contents",
+                    }
+                ]
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "session-1",
+            "is_error": False,
+            "usage": {"input_tokens": 10, "output_tokens": 4},
+            "total_cost_usd": 0.01,
+            "duration_ms": 1200,
+            "num_turns": 2,
+        },
+    ]
+
+    events = [
+        event
+        for value in values
+        for event in adapter.normalize_stream_record(record(value))
+    ]
+
+    assert [event.event_type for event in events] == [
+        "diagnostic",
+        "agent_message",
+        "tool_call",
+        "tool_result",
+        "usage",
+    ]
+    assert events[0].data["redacted_private_reasoning"] is True
+    assert "Checked the boundary" not in json.dumps([event.data for event in events])
+    assert events[2].data["tool"] == "Read"
+    assert events[3].data["tool_call_id"] == "tool-1"
+    assert events[4].data["total_cost_usd"] == 0.01
+
+
+def test_claude_exposed_reasoning_summary_is_retained() -> None:
+    adapter = ClaudeCodeAdapter()
+    events = adapter.normalize_stream_record(
+        record(
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {
+                    "content": [
+                        {"type": "reasoning_summary", "summary": "Exposed summary text."},
+                    ]
+                },
+            }
+        )
+    )
+    assert len(events) == 1
+    assert events[0].event_type == "reasoning_summary"
+    assert events[0].data["text"] == "Exposed summary text."
+    assert "Checked the boundary" not in json.dumps(events[0].data)
+
+
+def test_claude_private_thinking_text_is_never_in_trace() -> None:
+    adapter = ClaudeCodeAdapter()
+    secret_reasoning = "SECRET_PRIVATE_REASONING_DO_NOT_LEAK_XYZ"
+    events = adapter.normalize_stream_record(
+        record(
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": secret_reasoning},
+                        {"type": "text", "text": "Public response text."},
+                    ]
+                },
+            }
+        )
+    )
+    event_types = [event.event_type for event in events]
+    assert event_types == ["diagnostic", "agent_message"]
+    serialized = json.dumps([event.data for event in events])
+    assert secret_reasoning not in serialized
+    assert events[0].data["redacted_private_reasoning"] is True
+    assert events[1].data["text"] == "Public response text."
+
+
+def test_claude_generic_reasoning_text_is_never_in_trace() -> None:
+    adapter = ClaudeCodeAdapter()
+    secret_reasoning = "SECRET_GENERIC_REASONING_DO_NOT_LEAK_ABC"
+    events = adapter.normalize_stream_record(
+        record(
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {
+                    "content": [
+                        {"type": "reasoning", "text": secret_reasoning},
+                        {"type": "text", "text": "Public response text."},
+                    ]
+                },
+            }
+        )
+    )
+    event_types = [event.event_type for event in events]
+    assert event_types == ["diagnostic", "agent_message"]
+    serialized = json.dumps([event.data for event in events])
+    assert secret_reasoning not in serialized
+    assert events[0].data["redacted_private_reasoning"] is True
+    assert events[0].data["block_type"] == "reasoning"
+    assert events[1].data["text"] == "Public response text."
 
 
 def test_claude_structured_missing_session_is_normalized_and_sticky() -> None:

@@ -17,6 +17,7 @@ from .supervisor import (
     validate_supervisor,
 )
 from .tmux_runtime import capture_pane, list_windows, session_name
+from .trace import validate_trace_manifest
 from .turns import (
     active_runtime,
     iter_runtimes,
@@ -423,6 +424,31 @@ def _validate_authoritative_snapshots(
                         f"turns/{turn_id}/runtime.json",
                         f"turns/{turn_id}/process/supervisor.json",
                     )
+        trace_hash = runtime["trace_manifest_sha256"]
+        if trace_hash is not None:
+            manifest = validate_trace_manifest(
+                turn_dir,
+                expected_sha256=trace_hash,
+                expected_run_id=team.run_id,
+                expected_role_id=runtime["role_id"],
+                expected_adapter_id=team.roles[runtime["role_id"]].adapter,
+                expected_policy=team.observability,
+            )
+            evidence.append(f"turns/{turn_id}/trace-manifest.json")
+            evidence.extend(
+                f"turns/{turn_id}/{artifact['path']}"
+                for artifact in manifest["artifacts"]
+            )
+        elif (
+            team.config_schema_version >= 2
+            and runtime["phase"] == "finalized"
+            and runtime["agent_execution_started"] is True
+            and runtime["group_quiescent"] is True
+        ):
+            raise IntegrityError(
+                f"finalized External Turn lacks an anchored trace: {turn_id}",
+                f"turns/{turn_id}/trace-manifest.json",
+            )
     return evidence, incomplete_recovery_artifacts
 
 
@@ -1341,6 +1367,13 @@ def diagnose(
                 and stat.S_ISREG(stream.lstat().st_mode)
             ):
                 paths.append(f"turns/{turn_dir.name}/process/stream.jsonl")
+            trace = turn_dir / "trace.jsonl"
+            if (
+                trace.exists()
+                and not trace.is_symlink()
+                and stat.S_ISREG(trace.lstat().st_mode)
+            ):
+                paths.append(f"turns/{turn_dir.name}/trace.jsonl")
     pane = None
     if role_id:
         try:

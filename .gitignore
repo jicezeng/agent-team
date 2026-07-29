@@ -1,4 +1,8 @@
 .venv/
+.agent-team/
+.pytest-tmp/
+.tmp/
+pytest-of-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/

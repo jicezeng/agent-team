@@ -7,8 +7,14 @@ from pathlib import Path
 import pytest
 
 from agent_team.bootstrap import initialize_run, start_run
-from agent_team.config import Role, make_team, parse_team
-from agent_team.errors import IntegrityError, InvalidArgument
+from agent_team.config import (
+    REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    ObservabilityPolicy,
+    Role,
+    make_team,
+    parse_team,
+)
+from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 from agent_team.journal import scan_journal
 from agent_team.observation import derive_observation
 from agent_team.origin import origin_action, wait_origin
@@ -18,7 +24,7 @@ from agent_team.state import (
     read_owner,
     state_paths,
 )
-from agent_team.turns import validate_outbox
+from agent_team.turns import validate_outbox, validate_payload_contract
 from agent_team.util import is_uncommitted_atomic_temporary, rfc3339
 
 
@@ -149,6 +155,143 @@ def test_team_rejects_unrepresentable_safety_limits(
             max_turns=max_turns,
             max_wall_time_seconds=max_wall_time_seconds,
         )
+
+
+def test_legacy_team_schema_preserves_pre_observability_semantics(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-legacy-team",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["schema_version"] = 1
+    value.pop("observability")
+
+    parsed = parse_team(value)
+
+    assert parsed.config_schema_version == 1
+    assert parsed.observability == ObservabilityPolicy(
+        redaction="none",
+        raw_retention="keep",
+    )
+
+
+def test_full_audit_mode_requires_all_business_roles_to_be_external(
+    workspace: Path,
+) -> None:
+    with pytest.raises(InvalidArgument, match="every business role"):
+        make_team(
+            run_id="at-test-full-audit-origin",
+            workspace=workspace,
+            origin_harness="codex",
+            roles={"reviewer": Role("reviewer", "origin")},
+            initial_role="reviewer",
+            max_turns=2,
+            max_wall_time_seconds=300,
+            observability=ObservabilityPolicy(
+                audit_mode="full",
+                required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+            ),
+        )
+
+
+def test_full_audit_mode_accepts_external_roles_and_required_sections(
+    workspace: Path,
+) -> None:
+    team = make_team(
+        run_id="at-test-full-audit-external",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "codex",
+                "fresh",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+        observability=ObservabilityPolicy(
+            audit_mode="full",
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    )
+
+    assert team.observability.audit_mode == "full"
+    assert team.roles["reviewer"].binding == "external"
+
+
+def test_full_audit_mode_rejects_raw_trace_deletion(
+    workspace: Path,
+) -> None:
+    with pytest.raises(InvalidArgument, match="cannot delete"):
+        make_team(
+            run_id="at-test-full-audit-delete",
+            workspace=workspace,
+            origin_harness="codex",
+            roles={
+                "reviewer": Role(
+                    "reviewer",
+                    "external",
+                    "codex",
+                    "fresh",
+                    "default",
+                    "0" * 64,
+                )
+            },
+            initial_role="reviewer",
+            max_turns=2,
+            max_wall_time_seconds=300,
+            observability=ObservabilityPolicy(
+                audit_mode="full",
+                raw_retention="delete",
+                required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"# Complete\n\nDone.\n", "missing"),
+        (
+            b"# Complete\n\n## Decision rationale\n\n## Evidence\n\nTests pass.\n",
+            "empty",
+        ),
+    ],
+)
+def test_audited_payload_contract_rejects_missing_or_empty_sections(
+    payload: bytes,
+    message: str,
+) -> None:
+    with pytest.raises(AgentTeamError, match=message) as rejected:
+        validate_payload_contract(
+            payload,
+            required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        )
+    assert getattr(rejected.value, "code", None) == "PAYLOAD_CONTRACT_VIOLATION"
+
+
+def test_audited_payload_contract_accepts_explicit_rationale_and_evidence() -> None:
+    validate_payload_contract(
+        (
+            "# Completion\n\n"
+            "## Decision rationale\n\n"
+            "The implementation meets the declared invariants.\n\n"
+            "## Evidence\n\n"
+            "`uv run pytest` passed.\n"
+        ).encode(),
+        required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    )
 
 
 def test_unstarted_run_has_no_owner(

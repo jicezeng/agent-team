@@ -6,8 +6,14 @@ persists every formal handoff in an immutable journal, keeps external Codex or
 Claude Code sessions resumable, and returns completion or a user-visible Block
 to the current Origin session.
 
-The normative contract is
-[`agent-team_technical_design_v0.1.md`](agent-team_technical_design_v0.1.md).
+Documentation is split by purpose:
+
+- [`agent-team_prd_v0.1.md`](agent-team_prd_v0.1.md) defines the product scope,
+  requirements, acceptance criteria, and limitations;
+- [`agent-team_technical_design_v0.1.md`](agent-team_technical_design_v0.1.md)
+  is the normative runtime and recovery contract;
+- this README is the installation and operating guide.
+
 Stage 1 deliberately keeps business workflow in `PROTOCOL.md`; the runtime
 structures transport, ownership, process safety, session continuity, and
 recovery rather than trying to parse reviewer verdicts from model prose.

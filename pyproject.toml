@@ -30,6 +30,7 @@ include = [
   "/tests",
   "/docs",
   "/README.md",
+  "/agent-team_prd_v0.1.md",
   "/agent-team_technical_design_v0.1.md",
 ]
 

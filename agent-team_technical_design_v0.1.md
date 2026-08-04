@@ -2,13 +2,17 @@
 
 > **版本**：v0.1<br>
 > **日期**：2026-07-25<br>
-> **最近修订**：2026-07-29<br>
-> **状态**：Stage 1 MVP 设计基线
+> **最近修订**：2026-08-03<br>
+> **状态**：Stage 1 v0.1 已实现规范<br>
 > **目标读者**：产品负责人、架构师、Codex/Claude Code 开发者、开源贡献者
 
 ---
 
 ## 1. 文档摘要
+
+产品问题、用户范围、功能需求和发布验收由
+[`agent-team_prd_v0.1.md`](agent-team_prd_v0.1.md) 定义；本文只保留理解实现所需
+的产品上下文，并作为运行时数据、状态转换、进程安全、恢复和观测行为的规范。
 
 Agent-Team 是一个**由自然语言即时定义、跨 Agent Harness 运行、以主动 Handoff 驱动的临时 Agent 团队运行时**。
 
@@ -26,7 +30,7 @@ Agent-Team 是一个**由自然语言即时定义、跨 Agent Harness 运行、�
 
 例如：
 
-> 落地 Stage 2。你作为 Reviewer，一个 Claude Code 作为 Developer。Developer 每轮修改后交给 Reviewer；Reviewer 只审查不修改，审查意见交回 Developer 独立判断并处理；持续循环，直到 Reviewer 确认没有 P3 及以上问题，最后由当前 Codex 交付结果。
+> 实现当前仓库中的目标功能。你作为 Reviewer，一个 Claude Code 作为 Developer。Developer 每轮修改后交给 Reviewer；Reviewer 只审查不修改，审查意见交回 Developer 独立判断并处理；持续循环，直到 Reviewer 确认没有 P3 及以上问题，最后由当前 Codex 交付结果。
 
 Agent-Team 不把这个示例固化为产品流程。另一个任务可以临时定义 Planner、Backend、Frontend、Integrator、QA 等完全不同的角色、Harness 和拓扑。
 
@@ -42,7 +46,7 @@ Stage 1 的核心取舍是：
 - 使用 tmux 承载各角色 Worker，并通过 Harness 原生 Session Resume 保持每个 Agent 的会话连续性；
 - Agent 主动调用 `agent-team handoff` / `complete` 或对应的 Origin 命令完成正式交接，系统不从终端输出中猜测下一步。
 
-Stage 1 首先验证两个最关键的产品假设：
+Stage 1 已通过 Codex/Codex 与 Claude Code/Codex 的真实循环验证两个关键产品假设：
 
 1. Agent 能否根据本次动态协议，在正确时机主动 Handoff；
 2. 不同 Harness 的多个 Agent 能否在保持各自会话的情况下，形成连续、有价值的协作。
@@ -77,7 +81,7 @@ Agent-Team 希望建立一种新的使用方式：
 
 ### 3.2 它是什么
 
-- 一个安装在 Codex、Claude Code 等 Harness 中的通用 Skill；
+- 一个 Codex Bootstrap Skill，以及供 Claude Code External Turn 使用的 Plugin Skill；
 - 一个很轻的本地 CLI；
 - 一个基于 tmux 的角色进程和会话承载层；
 - 一套 Agent 主动 Handoff 协议；
@@ -180,7 +184,7 @@ agent-team complete --file <completion.md>
 
 ### 5.5 tmux 承载 Worker，而不是直接操纵 Harness TUI
 
-对每个 External Binding，tmux Window 运行一个长期存活的 `agent-team worker`。每个业务 Turn 再由一个短生命周期的 `agent-team turn-supervisor` 承载 Harness；纯 Origin Run 不创建 tmux Runtime。
+对每个 External Binding，tmux Window 运行一个长期存活的 `agent-team _worker`。每个业务 Turn 再由一个短生命周期的 `agent-team _turn-supervisor` 承载 Harness；纯 Origin Run 不创建 tmux Runtime。
 
 这样可以同时获得：
 
@@ -354,7 +358,10 @@ Stage 1 不机器校验该权限，依靠协议和 Skill；Stage 2 下沉为 Tra
 
 完成判定角色可以不是 Origin。它提交 Completion Package 后，Origin Session 读取结果并向用户展示。
 
-Stage 1 只支持 `embedded_poll`：只要当前 Origin Turn 仍在等待，就可以自动收到结果；若该 Turn 已结束，Event 仍会持久保存，用户回到原 Session 继续后即可交付。自动重新激活一个已经结束的宿主 Turn 不属于 Stage 1。
+Stage 1 使用 `session_mode=embedded` 与 `wait-origin` 协作式轮询：只要当前 Origin
+Turn 仍在等待，就可以自动收到结果；若该 Turn 已结束，Event 仍会持久保存，用户
+回到原 Session 继续后即可交付。自动重新激活一个已经结束的宿主 Turn 不属于
+Stage 1。
 
 ---
 
@@ -380,7 +387,7 @@ Stage 1 只支持 `embedded_poll`：只要当前 Origin Turn 仍在等待，就�
 
 用户输入：
 
-> 落地 Stage 2。你作为 Reviewer，一个 Claude Code 作为 Developer。Developer 每轮修改后交给 Reviewer；Reviewer 只审查不修改；意见给回 Developer 独立判断并处理，直至 Reviewer 没有 P3 以上问题。本次任务最后由你交付。
+> 实现当前仓库中的目标功能。你作为 Reviewer，一个 Claude Code 作为 Developer。Developer 每轮修改后交给 Reviewer；Reviewer 只审查不修改；意见给回 Developer 独立判断并处理，直至 Reviewer 没有 P3 以上问题。本次任务最后由你交付。
 
 Bootstrap 结果：
 
@@ -420,9 +427,9 @@ Agent-Team 不需要预置这一流程，只需动态生成对应自然语言协
 
 ---
 
-## 8. 阶段划分
+## 8. 版本范围与后续方向
 
-## 8.1 Stage 1：自然语言协议 MVP
+## 8.1 Stage 1：v0.1 已实现范围
 
 核心能力：
 
@@ -438,31 +445,34 @@ Agent-Team 不需要预置这一流程，只需动态生成对应自然语言协
 - Workspace Ownership Marker；
 - Origin Session 最终交付；
 - 本地文件持久化；
+- 结构化 Status / Diagnose / Watch；
+- External Turn Normalized Trace、Manifest Hash Anchor、Transcript / Tail；
+- Full Audit、启发式 Redaction、Trace Byte Limit 和 Raw Retention Policy；
 - 人工可观测和介入。
 
-## 8.2 Stage 2：结构化可靠性
+## 8.2 Stage 2：候选方向，非 v0.1 承诺
 
 在真实失败案例基础上增加：
 
 - Workflow IR；
 - 结构化条件和状态转换；
 - Typed Handoff；
-- Evidence；
+- Typed Evidence Schema；
 - Candidate Revision；
 - Transition Guard；
 - SQLite；
-- 分布式 Lease、跨机器幂等和无人值守自动重放；
 - Completion Authority 强制；
 - 宿主唤醒与结构化长连接 Adapter；
 - 自动评测。
 
-## 8.3 Stage 3：并行与分布式
+## 8.3 Stage 3：候选方向，非 v0.1 承诺
 
 - Fan-out / Join；
 - 多 Worktree；
 - 并行角色；
 - 合并和冲突处理；
 - 多机器 Worker；
+- 分布式 Lease 与跨机器幂等；
 - Web 控制台；
 - 远程 Agent Runtime。
 
@@ -830,6 +840,9 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 }
 ```
 
+示例中的 `"..."` 只表示省略，不是可提交值；实际
+`launch_profile_sha256` 必须是 Adapter Probe 返回的 64 个小写十六进制字符。
+
 `REQUEST.md`、`PROTOCOL.md` 和 `team.json` 在 Kickoff Event 提交后不可变。需要改变原始请求、协议、团队定义或安全上限时创建新 Run，不在运行中修改这些配置。
 
 `roles.<role-id>` 是由 `binding` 区分的闭合集合：
@@ -864,7 +877,7 @@ Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `wor
 
 Stage 1 只接受一个 Git Worktree 根目录：规范化后的 `workspace` 必须等于 `git rev-parse --show-toplevel` 的规范化结果。非 Git 目录、Worktree 子目录或同时包含多个仓库的上层目录都在 `init` 阶段明确拒绝，不提供非 Git Snapshot 分支。
 
-Stage 1 同时拒绝启用了 Sparse Checkout 的 Worktree，以及索引中包含 `160000` Gitlink 的仓库。Coordination Skill 也明确禁止运行中启用 Sparse Checkout 或新增 Gitlink；用户任务若本身要求这些操作，Bootstrap 应在 Kickoff 前说明 Stage 1 不支持并停止，而不是先执行再让 Run 损坏。首版不为缺省未检出的 Sparse 路径或 Submodule 工作树定义另一套 Snapshot 语义。
+Stage 1 同时拒绝启用了 Sparse Checkout 的 Worktree，以及索引中包含 `160000` Gitlink 的仓库。Coordination Skill 也明确禁止运行中启用 Sparse Checkout 或新增 Gitlink；用户任务若本身要求这些操作，Bootstrap 应在 Kickoff 前说明 Stage 1 不支持并停止，而不是先执行再让 Run 损坏。v0.1 不为缺省未检出的 Sparse 路径或 Submodule 工作树定义另一套 Snapshot 语义。
 
 这里故意没有：
 
@@ -1010,7 +1023,7 @@ SHA-256 一次性写入该字段；非空后不可替换。Schema 2 Run 中已�
 
 领取 Kickoff、Handoff 或 Resume Event 时，Runtime 先校验 Event Payload Hash，再把其当前字节原子复制为不可变的 `turns/<turn-id>/input.md`；`input_payload_sha256` 必须等于 Event 中的 `payload_sha256`。因此每个业务 Turn 都有统一的当前输入，不把 Resume 指令降级成仅存在于 Journal 中的附注。
 
-Stage 1 中一个 External 业务 Turn 只允许一次 Harness 启动，不引入自动启动重试。Worker 先调用无副作用的 `prepare_launch()`；失败就直接提交 Start Failure Block。准备成功后，Worker 生成不可猜测的 `launch_nonce`，再启动短生命周期的 `agent-team turn-supervisor`。
+Stage 1 中一个 External 业务 Turn 只允许一次 Harness 启动，不引入自动启动重试。Worker 先调用无副作用的 `prepare_launch()`；失败就直接提交 Start Failure Block。准备成功后，Worker 生成不可猜测的 `launch_nonce`，再启动短生命周期的 `agent-team _turn-supervisor`。
 
 Supervisor 不加入受管 Harness 进程组。它必须先原子创建一份 `state=starting` 的自身快照：
 
@@ -1036,7 +1049,7 @@ Supervisor 不加入受管 Harness 进程组。它必须先原子创建一份 `s
 }
 ```
 
-只有这份快照提交完成后，Supervisor 才以 `start_new_session` 启动 `agent-team harness-runner`。Runner 成为新 Session 和新进程组的 Leader，并且必须在读取任何启动许可前，自行原子创建不可变的 `process/runner.json`：
+只有这份快照提交完成后，Supervisor 才以 `start_new_session` 启动 `agent-team _harness-runner`。Runner 成为新 Session 和新进程组的 Leader，并且必须在读取任何启动许可前，自行原子创建不可变的 `process/runner.json`：
 
 ```json
 {
@@ -1302,11 +1315,11 @@ A 同时启动 B 和 C
 ```text
 agent-team-at-20260725-7f3a
 ├── developer
-│   └── agent-team worker --role developer
+│   └── agent-team _worker --role developer
 ├── qa
-│   └── agent-team worker --role qa
+│   └── agent-team _worker --role qa
 └── architect
-    └── agent-team worker --role architect
+    └── agent-team _worker --role architect
 ```
 
 Origin 绑定角色默认不创建 Window，因为其会话已经由用户当前 Codex/Claude Code 承载。
@@ -1327,7 +1340,7 @@ Origin 绑定角色默认不创建 Window，因为其会话已经由用户当前
 
 ```text
 tmux Pane
-└── agent-team worker
+└── agent-team _worker
       ├── 定时检查 Durable Event Journal
       ├── 可选等待 tmux wait-for 变更提示
       ├── 为每个 Turn 启动短生命周期 Supervisor
@@ -1453,7 +1466,7 @@ Redaction 同时处理常见 Token Pattern 与 JSON Sensitive Key，但它是启
 替换，Harness 主动输出的 Tool 参数/结果、Prompt、代码乃至 Thinking/Reasoning
 仍可能保留；`keep` 则保留原始 Stream。Request、Protocol、Frozen Input、
 LaunchSpec、正式 Payload 和 Workspace Artifact 为了权威性保持原始字节，不受
-派生 Trace Redaction 改写。首版没有 TTL 或自动 Purge；保留项与 Run Store
+派生 Trace Redaction 改写。v0.1 没有 TTL 或自动 Purge；保留项与 Run Store
 同生命周期。
 
 用户可以执行：
@@ -1751,7 +1764,7 @@ Adapter 不拥有 Worker、PID、重试或 Cancel 生命周期。Session Ref 解
 
 ## 17.2 Stage 1 External Adapter 范围
 
-首版实现：
+v0.1 实现：
 
 - `claude-code`
 - `codex`
@@ -1829,7 +1842,9 @@ codex exec resume <session-id> --json <resume-profile-args> - < turn-prompt.md
 
 Origin Executor 不是 Harness Adapter，不执行 Capability Probe，不创建 Worker Runtime，也没有 Launch Profile。
 
-Stage 1 的 Origin Executor 只有 `embedded_poll`：当前 Agent Turn 通过 CLI 短轮询读取 Event。普通 Session Resume 只保证用户稍后可以继续原会话，不代表系统能够自动唤醒一个已经结束的 Agent Turn。
+Stage 1 的 Origin Executor 使用 `session_mode=embedded`，当前 Agent Turn 通过
+`wait-origin` 短轮询读取 Event。普通 Session Resume 只保证用户稍后可以继续原
+会话，不代表系统能够自动唤醒一个已经结束的 Agent Turn。
 
 当 Event 目标 Role 绑定 Origin：
 
@@ -1858,7 +1873,8 @@ Stage 1 的 Origin Executor 只有 `embedded_poll`：当前 Agent Turn 通过 CL
 
 ## 18.1 Stage 1 交付边界
 
-Stage 1 只实现 `embedded_poll`，因此 `team.json` 不保存可配置的交付模式字段，也不探测宿主唤醒能力。
+Stage 1 只实现固定的 `session_mode=embedded` 与 `wait-origin` 协作式轮询，因此
+`team.json` 不保存其他可配置交付模式，也不探测宿主唤醒能力。
 
 它保证：
 
@@ -1926,7 +1942,8 @@ Stage 1 不提供 Origin Claim Takeover。若活跃 Claim 丢失或原 Origin Se
 
 ## 18.5 Origin Turn 中断与恢复
 
-`embedded_poll` 模式下，用户关闭客户端、主动中断或 Harness 结束当前 Agent Turn，不会丢失 Team Run：
+在 Embedded Origin 协作式轮询下，用户关闭客户端、主动中断或 Harness 结束当前
+Agent Turn，不会丢失 Team Run：
 
 1. 外部 Worker 继续依据 Event Journal 工作；
 2. 面向 Origin 的 Event 保留在 Journal；
@@ -2146,7 +2163,7 @@ Stage 1 不校验：
 - 当前角色是否有 Completion Authority；
 - Handoff 内容是否完整。
 
-这些正是 MVP 需要观察的核心行为。
+这些正是 v0.1 需要观察的核心行为。
 
 ---
 
@@ -2284,10 +2301,14 @@ Stage 1 没有宿主用户消息的签名能力，也不能机器判断一段自
         │   │   ├── outbox-payload.md
         │   │   ├── outbox.json
         │   │   ├── runtime.json
+        │   │   ├── trace.jsonl
+        │   │   ├── trace-manifest.json
         │   │   ├── process/
         │   │   │   ├── supervisor.json
         │   │   │   ├── runner.json
+        │   │   │   ├── launch.json
         │   │   │   ├── launch-authorized.json
+        │   │   │   ├── capture.json
         │   │   │   ├── stream.jsonl
         │   │   │   └── stderr.log
         │   │   ├── workspace-facts-before.json
@@ -2329,7 +2350,12 @@ Stage 1 的 Workspace 必须是规范化后的 Git Worktree 根目录。`init` �
 
 默认不修改仓库 `.gitignore`、`.git/info/exclude` 或其他 Git 元数据。Agent-Team 自己的 Snapshot、Diff Stat 和状态命令显式排除 `.agent-team/`；用户可以在自己的 Git 配置中忽略这个保留目录，但不得把它加入索引。需要版本化的协议、Handoff 或报告应显式复制到保留目录之外。
 
-保留目录和用户状态目录默认以 `0700`、其中普通文件以 `0600` 创建。Harness 原始输出仍可能包含敏感业务内容，因此 `doctor` 必须在 `.agent-team/` 未被用户 Git ignore 时给出明确警告，Coordination Skill 禁止执行会把该目录加入索引的 `git add`。Stage 1 不尝试用不完整的关键字规则“自动脱敏”，也不把本地 Run Store 当作秘密管理系统。
+保留目录和用户状态目录默认以 `0700`、其中普通文件以 `0600` 创建。Harness 原始
+输出仍可能包含敏感业务内容，因此 `doctor` 必须在 `.agent-team/` 未被用户 Git
+ignore 时给出明确警告，Coordination Skill 禁止执行会把该目录加入索引的
+`git add`。Stage 1 的 Standard Redaction 会启发式替换常见 Token Pattern 和
+Sensitive Key，但不保证覆盖全部秘密或 Harness 主动输出的私有文本；本地 Run
+Store 不是秘密管理系统，具体边界见 15.5。
 
 Turn 边界的“Git 可见业务 Snapshot”按 13.4 的唯一算法采集，并固定排除 ignored 路径、`.agent-team/` 和 Git 内部元数据；Agent-Team 自身日志、Runtime 和锁变化不能被计为业务修改。`REQUEST.md`、`PROTOCOL.md` 和 `team.json` 的完整性由 Kickoff Hash 单独校验。
 
@@ -2488,14 +2514,24 @@ agent-team init [options]
 agent-team start <run-id>
 agent-team status [<run-id>] [--json]
 agent-team watch [<run-id>] [--jsonl]
-agent-team attach <run-id> [--role <role-id>]
 agent-team diagnose [<run-id>] [--role <role-id>] [--json]
+agent-team transcript [<run-id>] [--role <role-id>] [--turn <turn-id>] [--json]
+agent-team tail [<run-id>] [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
+agent-team attach <run-id> [--role <role-id>]
 agent-team cancel <run-id>
 agent-team recover <run-id>
 agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-stopped]
 ```
 
-`status`、`watch` 和 `diagnose` 省略 Run ID 时，只从当前 Workspace 的固定 Owner 解析活跃 Run；Owner 不存在就返回 `RUN_NOT_FOUND` / Exit `3` 并要求显式 Run ID，Owner 损坏或无法在既有 Workspace 锁下安全读取则返回 `OBSERVATION_IO_ERROR` / Exit `4`，都不猜测“最近一个”审计目录。显式 Run ID 没有最终 Run Directory 且未被当前有效 Owner 引用时同样是 `RUN_NOT_FOUND`；有效 Owner 指向丢失的 Run Directory 则是可确定的完整性故障，返回该 Run 的最小 Corrupted 报告。文本输出与结构化输出必须由 27.1 的同一派生对象渲染。
+`status`、`watch`、`diagnose`、`transcript` 和 `tail` 省略 Run ID 时，只从当前
+Workspace 的固定 Owner 解析活跃 Run；Owner 不存在就返回 `RUN_NOT_FOUND` /
+Exit `3` 并要求显式 Run ID，Owner 损坏或无法在既有 Workspace 锁下安全读取则
+返回 `OBSERVATION_IO_ERROR` / Exit `4`，都不猜测“最近一个”审计目录。显式
+Run ID 没有最终 Run Directory 且未被当前有效 Owner 引用时同样是
+`RUN_NOT_FOUND`；有效 Owner 指向丢失的 Run Directory 则是可确定的完整性故障，
+返回该 Run 的最小 Corrupted 报告。Status/Watch/Diagnose 的文本与结构化输出必须
+由 27.1 的同一派生对象渲染；Transcript/Tail 按 27.5/27.6 校验 Trace Manifest
+与 Runtime Anchor 后读取审计派生物。
 
 `init` 只校验并原子提交尚未运行的 Run Store，包括在固定 Workspace 操作锁下建立或验证 `.agent-team/root.json`、拒绝任何可配置状态目录、Git 跟踪该保留目录、非 Git Worktree 根目录、Sparse Checkout、Gitlink、per-role CWD，并按各 External Role 的 Session Policy 验证实际需要的 Launch Profile 路径。固定 Owner 已存在时不允许新建 State Root 或 Run；State Root 可以在其他预检失败后保留，但最终 Run 目录只能由 22.3 的整目录提交产生。`start` 先完成无需 Ownership 的预检，再从固定状态目录获取 Workspace Ownership；随后完成 Snapshot 可行性检查，成功才把 `REQUEST.md` / `PROTOCOL.md` / `team.json` Hash 写入唯一 Kickoff Event 并创建外部 Role Worker。重复 `start` 不得创建第二个 Kickoff：UNSTARTED 的同 Run 继续启动事务；已有 Kickoff 时执行与 `recover` 相同的状态收口，只有 Owner 仍完整属于本 Run 的 Running / Blocked Run 才补建缺失 Worker；Owner 丢失直接进入 `CORRUPTED`，Completed / Cancelled 只做身份验证、确定性技术收口和满足 22.4 条件后的安全 Owner 释放。
 
@@ -2550,26 +2586,28 @@ Origin 写命令显式携带 Run、Claim，以及业务动作所需的 Turn 和�
 
 ## 24. Skill 与插件打包
 
-建议仓库：
+当前仓库：
 
 ```text
 agent-team/
 ├── pyproject.toml
+├── README.md
+├── agent-team_prd_v0.1.md
+├── agent-team_technical_design_v0.1.md
 ├── src/agent_team/
 ├── skills/
-│   ├── codex/
-│   │   └── agent-team/
-│   │       ├── SKILL.md
-│   │       ├── references/
-│   │       └── scripts/
-│   └── shared/
-│       └── COORDINATION.md
+│   └── codex/agent-team/
+│       ├── SKILL.md
+│       ├── agents/openai.yaml
+│       └── references/
 ├── plugins/
-│   └── claude-code/
-│       └── agent-team/
-├── templates/
+│   └── claude-code/agent-team/
+│       ├── .claude-plugin/plugin.json
+│       └── skills/agent-team/
+│           ├── SKILL.md
+│           └── references/
 ├── tests/
-└── docs/
+└── docs/validation/
 ```
 
 ### 24.1 Codex
@@ -2582,13 +2620,14 @@ Codex 侧 Skill 包含：
 - 下一用户 Agent Turn 先确认并收口旧 `phase=exited` Origin Runtime 的规则；
 - `status --json` / `diagnose --json` 的固定信封和 Recommended Action 处理；建议码不授予 Resume、Unlock 或 Claim 权限；
 - 协议模板；
-- CLI 脚本引用。
+- CLI 命令引用。
 
 ### 24.2 Claude Code
 
-外部 Claude Code Session 通过 `--plugin-dir` 加载 Agent-Team Coordination Skill，或由 Turn Prompt 显式要求读取共享 Coordination 文档。
+外部 Claude Code Session 通过 `--plugin-dir` 加载 Agent-Team Coordination Skill；
+Turn Prompt 同时显式要求读取 Plugin 内的 `references/coordination.md`。
 
-首版建议两种方式同时使用：
+当前实现同时使用两层指令：
 
 - Plugin 提供稳定规则；
 - Turn Prompt 提供本次 Run 路径、角色和当前 Input Event；Resume Payload 不得被旧 Handoff 遮蔽。
@@ -2770,7 +2809,11 @@ Stage 1 不声称能强制中断宿主当前模型采样，也不把 Origin 越�
 
 ## 27.1 结构化输出合同
 
-`doctor --json`、`status --json` 和 `diagnose --json` 各输出一个 JSON 对象；`watch --jsonl` 每行输出一个完整 JSON 对象。结构化模式无论成功或失败，信封都是 stdout 的唯一内容，不混入进度、日志、ANSI 或更新提示；面向人的附加说明只写 stderr。共同信封为：
+`doctor --json`、`status --json`、`diagnose --json` 和 `transcript --json` 各输出
+一个 JSON 信封；`watch --jsonl` 每行输出一个完整 Snapshot 信封。`tail --jsonl`
+成功时每行直接输出一个 Normalized Trace Event，失败时仍输出错误信封。结构化模式
+的 stdout 不混入进度、日志、ANSI 或更新提示；面向人的附加说明只写 stderr。
+Status/Diagnose/Watch 的共同信封为：
 
 ```json
 {
@@ -3037,11 +3080,47 @@ TMUX_RUNTIME_MISSING
 - Watch 不 Claim Token、不发送 tmux 提示、不触发恢复；输出失败也不影响 Team Run；
 - `COMPLETED | CANCELLED` 若仍处于自动清理的 `recommended_action=WAIT` 就继续观察；否则在发出最终 Snapshot 后正常退出。任何 `health=corrupted` 报告输出后都退出，Blocked 状态保持观察直到用户中断或 Run 继续。
 
-Stage 1 不引入 Prometheus、OpenTelemetry、远程日志服务、告警规则或常驻观测进程；本地结构化投影、关联日志和原始审计文件已经覆盖 MVP 的操作与恢复需求。
+Stage 1 不引入 Prometheus、OpenTelemetry、远程日志服务、告警规则或常驻观测进程；本地结构化投影、关联日志和原始审计文件已经覆盖 v0.1 的操作与恢复需求。
 
 Origin Binding 没有 Worker Pane、受管子进程或宿主采样日志；Observation 只能报告已持久化的 Claim、Turn Phase 和 Event，不能显示当前模型生成进度，也不能据持续时间推断宿主 Agent 已卡死。
 
-## 27.5 人工介入
+## 27.5 `agent-team transcript`
+
+`transcript` 是按 Run、Role 或 Turn 重建审计上下文的只读接口。每个选中 Turn 固定
+返回：
+
+- Turn ID、业务序号、Role、Executor、Adapter、Phase 和 Outcome；
+- 冻结 `input.md` 的路径、Hash 与按 Run Redaction Policy 处理的内容；
+- External LaunchSpec 中的 Harness Prompt；
+- Normalized Trace Events；
+- 正式 Outbox Action、目标、Payload 路径、Hash 与内容；
+- Trace Manifest Hash、Turn Summary 和 Origin Trace Coverage。
+
+Run Summary 聚合 Event Type、Tool Call/Result，以及 Harness 实际提供的 Token、Cost
+和 Duration 数值。不同 Harness 的 Usage 字段不是统一计费合同；缺失值不得猜造。
+
+已 Finalize 且带 Runtime Anchor 的 External Turn 必须先验证 Manifest Hash、Policy、
+Artifact Hash/Size、Trace Sequence、Raw Ref 和 Summary；任一不一致都按完整性故障
+失败。仍在运行且尚无 Manifest 的 External Turn 可以从当前已持久化 Raw Stream
+生成临时只读视图，但不能把它当作完整或已锚定审计。Origin Turn 没有内部 Tool
+Stream，`origin_trace_coverage=formal_boundaries_only`。
+
+`--json` 使用标准成功信封，`data` 为完整 Transcript；文本模式由同一对象渲染。
+
+## 27.6 `agent-team tail`
+
+`tail` 复用 Transcript 的 Role/Turn 过滤与 Trace 校验，只展平 Normalized Events：
+
+- 首次输出最后 `--lines` 条，`--lines` 必须为正整数；
+- `--follow` 每 0.5 秒重新读取，按 `(turn_id, trace_seq)` 去重；
+- Completed 或 Cancelled 在输出当前最终事件后退出；
+- `--jsonl` 成功时每行是一个完整 Trace Event，不再嵌套 Transcript 信封；
+- 文本模式显示时间、Turn、Role、Event Type 和简要 Data。
+
+Tail 是审计和人工观察面，不是 Event Journal，也不能用于路由、Completion、Resume
+或 Recovery 结论。
+
+## 27.7 人工介入
 
 Stage 1 支持：
 
@@ -3056,91 +3135,64 @@ Stage 1 不支持向任意下一 Turn 注入独立 Human Note，不支持在线�
 
 ---
 
-## 28. 技术实现建议
+## 28. 当前实现结构
 
 ## 28.1 语言与依赖
 
-Stage 1 推荐：
+v0.1 当前实现使用：
 
-- Python 3.11+；
-- 尽量只使用标准库；
+- Python 3.11+ 与标准库；
 - `argparse` 构建 CLI；
-- `asyncio.create_subprocess_exec` 管理 Turn Supervisor，由组外 Supervisor 管理 Runner / Harness 进程组；
-- `fcntl` 文件锁；
-- JSON + Markdown；
-- tmux CLI；
-- macOS / Linux 上满足 22.1 本地原子文件语义的文件系统。
+- `asyncio.create_subprocess_exec` 管理 Worker / Supervisor，Runner 最终原地
+  `exec` Harness；
+- `fcntl.flock`、同目录原子 `rename` 与 `fsync` 实现本地持久化协议；
+- JSON / JSONL 保存机器状态和 Trace，Markdown 保存自然语言协议与 Payload；
+- tmux CLI 承载 External Worker；
+- Hatchling 构建 wheel/sdist，pytest 作为开发测试依赖。
 
-选择 Python 的原因：
-
-- 第一阶段验证速度优先；
-- Codex/Claude Code 可直接修改；
-- 子进程、文件和 JSONL 处理简单；
-- 后续可继续使用 SQLite 标准库；
-- 无需过早引入服务端。
+运行时没有数据库、服务端或第三方 Python 依赖。支持边界是满足 22.1 文件系统与
+进程能力要求的 macOS / Linux。
 
 ## 28.2 模块布局
 
+以下是当前仓库中的实际布局，不是未来目录建议：
+
 ```text
 src/agent_team/
-├── cli.py
-├── commands/
-│   ├── environment.py
-│   ├── init.py
-│   ├── start.py
-│   ├── turn_actions.py
-│   ├── cancel.py
-│   ├── unlock.py
-│   ├── origin_actions.py
-│   ├── inspect.py
-│   └── recover.py
-├── bootstrap/
-│   ├── protocol_templates.py
-│   └── validator.py
-├── runtime/
-│   ├── run_store.py
-│   ├── event_journal.py
-│   ├── worker.py
-│   ├── supervisor.py
-│   ├── runner.py
-│   ├── process_identity.py
-│   ├── state_root.py
-│   ├── workspace_owner.py
-│   ├── workspace_facts.py
-│   ├── observation.py
-│   ├── recovery.py
-│   ├── tmux.py
-│   ├── turn.py
-│   └── origin.py
-├── adapters/
-│   ├── base.py
-│   ├── claude_code.py
-│   └── codex.py
-├── prompts/
-│   ├── role_turn.py
-│   └── origin_delivery.py
-├── security/
-│   ├── paths.py
-│   └── integrity.py
-└── util/
-    ├── atomic.py
-    ├── ids.py
-    └── logging.py
+├── __init__.py / __main__.py
+├── cli.py                    # 参数、渲染与命令分发
+├── assets.py                 # Bundled Skill/Plugin 安装
+├── bootstrap.py / config.py  # Init/Start 与 Team Schema
+├── state.py / ownership.py   # State Root、固定账号状态与 Owner
+├── journal.py / turns.py     # Event 转换、Turn、Outbox、Prompt
+├── origin.py / worker.py     # 两类 Executor
+├── management.py             # Cancel、Recover、Unlock
+├── supervisor.py / runner.py # Harness 进程边界与 Raw Capture
+├── processes.py              # PID/PGID/Start ID
+├── gitfacts.py               # Git-visible Workspace Facts
+├── observation.py            # Status/Diagnose/Watch 派生
+├── trace.py                  # Normalize、Manifest、Transcript/Tail
+├── runtime_log.py            # 关联 Worker 日志
+├── tmux_runtime.py           # tmux Worker 传输
+├── util.py / errors.py       # 原子 I/O、路径、Hash 与错误合同
+└── adapters/
+    ├── base.py
+    ├── claude_code.py
+    └── codex.py
 ```
 
-布局按职责分组，不要求每个 CLI 子命令各占一个文件：`environment.py` 承载 Install / Doctor，`inspect.py` 只编排 Status / Watch / Attach / Diagnose 的调用、轮询与渲染，`observation.py` 提供它们共用的只读派生与固定诊断码，`origin_actions.py` 承载 `wait-origin`、`origin-context` 和所有 `origin-*` 动作；高风险的 Unlock 与 Start 保持独立用例。
+关键职责边界：
 
-模块依赖保持单向：
-
-- `commands/` 只做参数解析后的用例编排，不直接实现锁、状态转换或进程控制；External 的 Context / Handoff / Complete / Block 共用 `turn_actions.py`，避免三份 Outbox 事务漂移；
-- `bootstrap/` 只生成并校验不可变 Request / Protocol / Team 配置；
-- `runtime/` 是 Event、Turn、Ownership、Workspace Facts、观测派生、进程与恢复规则的唯一实现层；PID / PGID / Start ID 的读取、匹配和安全信号只在 `process_identity.py` 实现，Supervisor、Observation、Recovery 和 Unlock 不各写一套；
-- `adapters/` 只定义可序列化合同，并做 LaunchSpec 与结构化 Evidence 的纯转换，不写 Journal、Runtime 或 Ownership；`runtime/` 把 Supervisor 快照投影成 `ProcessResult` 后单向调用它；
-- `prompts/role_turn.py` 同时处理 Kickoff、Handoff 和 Resume Input，不为 Recovery 建第二套业务 Turn；
-- `security/` 只放路径和完整性校验；自然语言职责不在这里伪装成权限系统；
-- `util/` 是无业务状态的叶子依赖。
-
-跨模块共享的数据类型放在拥有该概念的模块中；若出现循环依赖，优先移动类型或合并小模块，不增加通用 Service Locator、Repository 层或事件总线。
+- `cli.py` 只编排公开命令；状态转换仍由 Journal、Turn、Origin 和 Management 模块
+  在锁内实现；
+- `adapters/` 只生成可序列化 LaunchSpec、解析结构化 Harness 输出并分类结果，不写
+  Journal、Runtime 或 Ownership；
+- `supervisor.py` 是 Raw Stream 单一写者，`worker.py` 负责静止边界的 Trace Finalize
+  与 Runtime Anchor；
+- `observation.py` 只读投影权威状态；`trace.py` 的 Finalize 路径生成审计派生物，
+  Transcript/Tail 路径只读校验并重建内容；二者都不产生业务 Event；
+- 路径、原子文件、进程身份和 Workspace Facts 的核心校验集中复用，不在每个命令中
+  各写一套。
 
 ## 28.3 关键实现约束
 
@@ -3306,7 +3358,7 @@ sequenceDiagram
 
 ---
 
-## 30. MVP 验收标准
+## 30. v0.1 验收标准
 
 ### 30.1 功能验收
 
@@ -3322,7 +3374,7 @@ sequenceDiagram
 10. 支持外部角色 Handoff 给 Origin 绑定角色；
 11. 支持任意角色调用 Complete 并返回 Origin；
 12. Origin 向用户输出最终结果；
-13. 全流程无需用户手动切换 Agent 窗口或复制上下文；`embedded_poll` 的 Origin Turn 中断后只需在原 Session 继续；
+13. 全流程无需用户手动切换 Agent 窗口或复制上下文；Embedded Origin Turn 中断后只需在原 Session 继续；
 14. 每轮都有可追溯的 Input Event 与日志；External Turn 记录 Session Ref；
 15. tmux 重建后，确定状态的 Turn 可以继续，结果不确定的 Turn 明确 Block；
 16. 持久化 Workspace Ownership 阻止同一规范化 Workspace 同时启动两个 Team Run；
@@ -3330,6 +3382,16 @@ sequenceDiagram
 18. 同一个 Origin Turn 同时只有一个有效 Claim，第二个 Session 不能静默共同执行或替换 Claim；Claim 丢失时只能取消旧 Run 并安全创建新 Run。
 19. Skill 可以通过 `status --json` 和 `diagnose --json` 取得稳定的 Run Health、活跃 Turn Phase、进程状态、Block Resume Policy、证据路径和唯一技术建议，不解析文本界面；
 20. `watch --jsonl` 首行提供完整当前 Snapshot，断线重启仍能重新取得当前事实，不依赖丢失期间的 Watch 输出。
+21. 每个完成收口的 External Turn 都生成由 Runtime Hash 锚定的 `trace-manifest.json` 和
+    `trace.jsonl`；
+22. `transcript` / `tail` 支持 Run、Role、Turn 过滤及 JSON/JSONL 输出；
+23. Transcript 汇总 Event、Tool 和 Harness 提供的 Token、Cost、Duration；
+24. Full Audit 拒绝 Origin Business Role 和 Raw Delete，并在 Raw 或 Normalized
+    Capture 截断时 Block；
+25. Audited Handoff、Completion、Agent Block 都校验非空 Decision Rationale 与
+    Evidence；
+26. Trace Policy 支持 Standard/None Redaction、每 Turn Byte Limit 及
+    Redacted/Keep/Delete Raw Retention，并明确隐私边界。
 
 ### 30.2 可靠性验收
 
@@ -3386,6 +3448,19 @@ sequenceDiagram
 51. Watch 每轮都输出完整 Snapshot；重启不要求 Cursor 或补写历史，Watch 输出丢失不影响 Journal 与 Runtime。
 52. Worker 日志记录具有稳定关联字段；stdout / stderr 的有效 UTF-8 和任意非 UTF-8 字节都能从 `stream.jsonl` 无损恢复，并保持各来源内部字节顺序与 Supervisor 记录的观察顺序。
 53. 结构化观察模式的 stdout 只含一个 JSON 或逐行 JSONL；可确定的 Blocked / Cancelled / Corrupted 报告使用成功信封，接口失败才使用固定错误码和非零退出码。
+54. Trace Manifest Hash 在 Runtime 中只允许从 `null` 设置一次；Manifest 或任一
+    Retained Artifact 后续被改写时，Status、Diagnose、Transcript 和 Recovery 都
+    检出完整性故障；
+55. 每个 Normalized Event 都有有效 Raw Ref；未知结构化记录和非 JSON 输出通过
+    Fallback Event 保留，不因缺少专用映射静默消失；
+56. 只有 Harness 明确标记的 Reasoning Summary 可以进入 Normalized Trace，私有
+    `thinking` 与通用 `reasoning` 正文不进入；
+57. Full Audit 的每个业务 Turn 都有完整 External Trace，任一 Source/Normalized
+    Truncation 产生唯一技术 Block；
+58. Standard Redaction 对 Normalized 与 Redacted Raw 生效，但不被描述为完整秘密
+    删除或隐私边界；
+59. Transcript/Tail 对已锚定 Turn 先完成 Manifest、Artifact、Sequence、Raw Ref 与
+    Summary 校验，且只读调用不修改任何 Run 状态。
 
 ### 30.3 产品假设验收
 
@@ -3407,6 +3482,8 @@ sequenceDiagram
 
 - Run ID 和 Role ID；
 - `team.json` 的 Run 目录、State Root Workspace、非空 Roles、Initial Role 和固定 Origin Mode 交叉校验；
+- Schema 1 兼容语义，以及 Schema 2 Audit Mode、Redaction、Byte Limit、Raw Retention、
+  Required Payload Sections 和 Full Audit External-only 约束；
 - Protocol 模板区分宿主/Agent-Team 指令层级与事实证据层级；
 - 不可变 Event 原子提交；
 - Event 序号、Tail 链接和 Payload Hash；
@@ -3459,6 +3536,11 @@ sequenceDiagram
 - 合法 Handoff 不依赖目标 Worker、Window 或 Origin Turn 在线；
 - Adapter 通过同一确定性 Framer 把任意拆分或合并的 Raw Stream Chunk 还原为完整 `StreamRecord`，再由 `parse_stream_record()` 归一化固定技术证据，并通过 `classify_result()` 对持久化 Supervisor Result 分类；
 - Worker 日志关联字段与 `producer_seq` 重启语义；Raw Stream 外层对 UTF-8 / 非 UTF-8 字节的可逆编码、来源、Supervisor 观察顺序和观测时间，以及 Evidence Snapshot 前的持久化顺序；
+- Trace Event Sequence/Raw Ref、未知记录 Fallback、独立 Normalized Byte Limit、Redaction
+  与三种 Raw Retention；
+- Trace Manifest Artifact Hash/Size、Capture/Summary 一致性、Runtime Set-once Anchor、
+  改写检测，以及 Transcript/Tail 的过滤和聚合；
+- Audited Formal Payload 的 UTF-8 Markdown、必填标题、非空内容和拒绝路径；
 - Adapter 正常启动 / 完成证据、未知记录忽略与 `termination_kind` 分类；
 - 启动期和执行期的结构化 `permission_required` 都映射为唯一 Permission Block；已有 Cancel / Limit 时不追加；
 - Session Ref、Generation、`effective_launch_profile` 及其 SHA-256 持久化；
@@ -3467,7 +3549,7 @@ sequenceDiagram
 - Supervisor 位于 Runner 进程组之外；主 Harness 退出后普通后台子进程的宽限、`killpg` 终止与 `group_quiescent` 判定，Probe 拒绝自身立即脱离的 CLI 启动器，并验证 `group_quiescent` 只表示已记录 PGID 清空；
 - 已知异常退出直接 Finalize，只有活进程、未知身份或未清空进程组进入 `recovery_required`；
 - Kickoff 后 Request / Protocol / Team 配置不可变，任一 Hash 不匹配在有无活跃 Turn 时都直接 `CORRUPTED`；
-- 第 `max_turns` 个 Turn 的 Complete / Block 与 Handoff 边界、Wall Time Claim 竞态和 Limit Block 禁止 Resume。
+- 第 `max_turns` 个 Turn 的 Complete / Block 与 Handoff 边界、Wall Time Claim 竞态和 Limit Block 禁止 Resume；
 - `origin-complete` / `origin-block` 后 Runtime 的 `exited → finalized` 跨用户 Agent Turn 收口，以及收口前 Ownership 保留；
 - External Wall Time 的异步终止与 Origin Wall Time 的下一 CLI 边界生效语义。
 
@@ -3478,6 +3560,8 @@ sequenceDiagram
 - 首次指定 Session ID；
 - Resume 同一 Session；
 - Stream JSON；
+- Agent Message、Tool Call/Result、Usage、Fallback 和 Explicit Reasoning Summary 的
+  Normalization；私有 `thinking` 与通用 `reasoning` 只生成无正文 Diagnostic；
 - 进程取消；
 - Start / Resume Launch Profile 参数映射及有效权限等价；
 - 改变用户默认权限配置后，显式 Launch Profile 的有效权限不漂移；
@@ -3496,6 +3580,8 @@ sequenceDiagram
 - 权限选择不依赖动态 Role 名称；
 - `PROTOCOL.md` 的 `read-only` 不自动映射为 Harness 沙箱；
 - JSONL；
+- Agent Message、Reasoning Summary、Tool Call/Result、File Change、Usage、Error 和
+  未知 Item Fallback 的 Normalization；
 - Turn failure；
 - Git Worktree 根目录限制，且不传 `--skip-git-repo-check`。
 
@@ -3516,7 +3602,7 @@ sequenceDiagram
 13. 两个 Run 争用同一 Workspace；
 14. `unlock` 与同 Run `recover`、其他 Run `start` 并发；
 15. tmux 丢失后 Ownership 仍阻止其他 Run、同 Run 可恢复，并可在确认无活进程后显式 Unlock；
-16. `embedded_poll` Origin Turn 中断后用原 Claim 恢复；
+16. Embedded Origin Turn 中断后用原 Claim 恢复；
 17. 两个 Origin Session 竞争同一 Turn 时第二个被拒绝；Claim 丢失后没有 Takeover 路径，只能 Cancel、确认旧 Turn 停止并创建新 Run；
 18. Running、Blocked 和 Origin Turn 分别执行 Cancel；
 19. Deadline 直接提交唯一 Limit Block，不生成额外持久化请求或待补交状态；
@@ -3558,6 +3644,19 @@ sequenceDiagram
 55. 在 Running、Blocked 和 Completed 状态启动、断开并重启 `watch --jsonl`：每轮都是完整当前 Snapshot，Sequence 仅在当前 Watch 进程内递增；Completed 的正常清理阶段保持 `WAIT`，安全收口后的最后一行再正常退出。
 56. Harness 以任意 Pipe Read 边界交错写入 stdout / stderr、多条或拆分的 JSONL、合法 UTF-8 和任意二进制字节后，`stream.jsonl` 每行仍是合法 JSON，可无损恢复各来源字节并按 Sequence 重放 Supervisor 的观察顺序；Framer 只把完整 Harness 行交给 Adapter，测试不声称恢复两个 Pipe 在 Harness 内的绝对发出顺序。运行中把 Stream 路径替换为符号链接不能重定向持有 FD 的写入，inode 复核失败时不交付 Outbox。
 57. 在 Handoff、Cancel、Deadline 和终态 Owner 释放并发窗口持续执行观察命令：每份报告都对应一个锁内 Snapshot，观察不产生 Event、Claim、Runtime 更新、锁文件或第二份状态；删除既有 Workspace / Run 锁时不由观察命令补建，显式 Run 查询返回最小 Corrupted 报告，省略 Run ID 且无法安全解析 Owner 时返回 `OBSERVATION_IO_ERROR` / Exit `4`。
+58. Standard 与 Full Audit 分别执行 Origin/External 混合和全 External Run；Full Audit
+    拒绝 Origin Business Role、Raw Delete，并在 Source 或 Normalized Trace 截断时
+    提交唯一技术 Block。
+59. 对每个静止 External Turn 校验 Runtime Anchor、Manifest、所有 Retained Artifact、
+    Trace Sequence/Raw Ref/Summary；改写任一字节后 Status、Diagnose、Transcript 和
+    Recover 都拒绝。
+60. 使用 Role/Turn 过滤运行 `transcript --json` 与 `tail --jsonl`，确认 Frozen Input、
+    Prompt、Events、Formal Output、Event/Tool/Usage 汇总和 Follow 去重均来自同一已
+    校验 Trace。
+61. 分别提交缺少或留空 Decision Rationale/Evidence 的 Handoff、Completion、Agent
+    Block，确认在 Outbox/Event 提交前拒绝；合法 Payload 正常完成循环。
+62. Claude Code Developer 与独立 Codex Reviewer 在 Full Audit 下完成 Finding→修复→
+    同 Session Re-review→Completion，所有 Turn 无截断、Owner 释放且 Diagnose 无失败项。
 
 ## 31.4 Handoff 质量评测
 
@@ -3614,9 +3713,10 @@ sequenceDiagram
 
 ---
 
-## 32. Stage 2 升级设计
+## 32. 非规范性 Stage 2 设计草案
 
-Stage 1 的真实失败会驱动 Stage 2，而不是提前一次性构建所有机制。
+本节只记录候选方向，不属于 v0.1 产品或实现合同。后续版本应由真实失败案例驱动，
+不能因为本节存在就假定能力已经可用。
 
 ## 32.1 自然语言编译为 Workflow IR
 
@@ -3706,7 +3806,7 @@ transitions:
 - 明确的 Turn Start / Complete / Failed 事件；
 - 宿主审批、Steer 和 Queue；
 - 已结束 Origin Turn 的宿主唤醒能力；
-- Capability Probe 和降级到 Stage 1 `embedded_poll` 的规则。
+- Capability Probe 和降级到 Stage 1 `wait-origin` 协作式轮询的规则。
 
 该能力不得通过 tmux `send-keys` 或 Pane 文本解析模拟。
 
@@ -3755,13 +3855,13 @@ Stage 1 不做语义 Transition Guard。
 - Team Run Event 持久化；
 - `origin-handoff` 将提交与等待合并，避免 Token 已转移后 Origin 继续工作；
 - Origin Turn 使用无自动过期的显式 Claim，第二个 Session 默认拒绝；Claim 丢失时取消旧 Run 并安全新建 Run，不在 Stage 1 提供接管；
-- 明确声明 Stage 1 只有 `embedded_poll`，不承诺跨 Turn 自动唤醒；
+- 明确声明 Stage 1 只有 Embedded Origin 协作式轮询，不承诺跨 Turn 自动唤醒；
 - 用户可中断并在原会话继续，所有待处理 Event 仍保存在 Journal；
 - Stage 2 再通过结构化宿主 API 增加自动唤醒。
 
 ## 33.5 tmux 不是跨平台运行时
 
-Stage 1 明确支持 macOS 和 Linux。Windows 可通过 WSL，原生 Windows 不在首版范围。
+Stage 1 明确支持 macOS 和 Linux。Windows 可通过 WSL，原生 Windows 不在 v0.1 范围。
 
 ## 33.6 进程组不是容器
 
@@ -3815,89 +3915,24 @@ Stage 1 无法强制停止当前宿主模型采样，也无法从 CLI 返回推�
 
 ---
 
-## 34. 推荐实施顺序
+## 34. 完整示例：Developer / Reviewer 闭环
 
-### Milestone A：最小运行时
-
-- Run Store；
-- 不可变 Event Journal；
-- Event 技术转换表；
-- Workspace Ownership 与短期操作锁；
-- External Binding 的 tmux Session；
-- External Binding 的异步 Worker；
-- 组外 Turn Supervisor、独立进程组 Runner 与单次启动许可；
-- `handoff` / `complete` / `wait-origin`；
-- 手工编写 `PROTOCOL.md`；
-- Fake Harness Adapter。
-
-### Milestone B：Claude Code + Codex Adapter
-
-- Session start/resume；
-- JSONL 日志；
-- Start / Resume Launch Profile 等价映射与 Fingerprint；
-- 取消与异常退出；
-- Before / After System Facts。
-
-### Milestone C：Bootstrap Skill
-
-- Codex Skill 安装；
-- 自然语言团队提取；
-- 动态协议生成；
-- Origin Kickoff 分流；
-- Origin Claim；
-- `origin-handoff` / `origin-resume` 提交并等待；
-- Origin Event Loop；
-- 最终交付。
-
-### Milestone D：稳定性
-
-- tmux 重建；
-- Session 恢复；
-- Journal 完整性扫描；
-- 可变 JSON 快照原子替换；
-- Before / After Facts 冻结与恢复；
-- Outbox Payload 冻结与 Hash；
-- Kickoff 前后崩溃恢复；
-- Workspace Ownership 恢复与安全 Unlock；
-- PID / PGID / Start ID 验证；
-- Turn Runtime 恢复判定；
-- Cancel / Deadline 直接 Event 与 Runner 进程组清理；
-- Max-Turn 创建守卫；
-- tmux 通知丢失降级与 `capture-pane` 诊断；
-- 共享 Observation 派生、结构化 Status / Diagnose / Watch 与关联日志；
-- 崩溃点故障注入；
-- 限额；
-- Doctor；
-- E2E 测试。
-
-### Milestone E：实验和评测
-
-- Handoff 时机；
-- Handoff 内容；
-- 偏见；
-- 单 Agent 对照；
-- 真实项目任务。
-
----
-
-## 35. 完整示例：用户给出的 Stage 2 场景
-
-## 35.1 用户输入
+## 34.1 用户输入
 
 ```text
-落地 Stage 2。你作为 Reviewer，一个 Claude Code 作为 Developer。
+实现当前仓库中的目标功能。你作为 Reviewer，一个 Claude Code 作为 Developer。
 Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改。
 审查意见给回 Developer 判断是否合理；合理就接受并进行下一轮修改，
 不合理要提供理由。循环直到 Reviewer 没有 P3 以上问题。
 最后仍然由当前 Codex 交付结果。
 ```
 
-## 35.2 Bootstrap 生成的 `team.json`
+## 34.2 Bootstrap 生成的 `team.json`
 
 ```json
 {
-  "schema_version": 1,
-  "run_id": "at-stage2-7f3a",
+  "schema_version": 2,
+  "run_id": "at-feature-7f3a",
   "workspace": "/repo/project",
   "origin": {
     "harness": "codex",
@@ -3919,22 +3954,34 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
   "limits": {
     "max_turns": 20,
     "max_wall_time_seconds": 7200
+  },
+  "observability": {
+    "audit_mode": "standard",
+    "redaction": "standard",
+    "max_trace_bytes": 67108864,
+    "raw_retention": "redacted",
+    "required_payload_sections": [
+      "Decision rationale",
+      "Evidence"
+    ]
   }
 }
 ```
 
-## 35.3 Bootstrap 生成的 `PROTOCOL.md`
+其中 `launch_profile_sha256` 同 13.1，必须替换为本机 Probe 返回的真实摘要。
+
+## 34.3 Bootstrap 生成的 `PROTOCOL.md`
 
 ```markdown
 # Agent Team Protocol
 
 ## Original objective
 
-落地仓库现有规划中的 Stage 2。
+实现用户要求的目标功能。
 
 ## Source of truth
 
-用户原始请求、仓库中的 Stage 2 规划、当前工作区、实际 Diff 与测试结果。
+用户原始请求、仓库内验收来源、当前工作区、实际 Diff 与测试结果。
 
 ## Team roles
 
@@ -3991,6 +4038,13 @@ Reviewer 即 Origin Codex，在完成后向用户交付实现结果、Review 轮
 
 两个角色都读取原始请求、协议、当前工作区和当前 Input Event。该输入可能是 Handoff，也可能是用户解除 Block 的 Resume 指令。Developer 的自述与 Reviewer 的 Finding 都只是待独立核验的判断，不传递私有推理。
 
+## Observability policy
+
+使用 Standard Audit、Standard Redaction、64 MiB 每 Turn 上限和 Redacted Raw
+Retention。External Developer 生成完整 Harness Trace；Origin Reviewer 只覆盖冻结输入、
+正式输出和 Workspace 边界。每个正式 Payload 都必须包含非空
+`## Decision rationale` 与 `## Evidence`；这些内容是显式审计说明，不是隐藏推理。
+
 ## Block and resume policy
 
 任何 Block 都先展示给用户。Origin 可以运行只读诊断或 `recover`，但只有可 Resume Block 在收到新的明确用户指令后才能 Resume；Limit / Profile Changed Block 必须新建 Run。Resume Payload 记录 Block Event、用户指令、目标角色和 `continue_same_run` Scope，并成为下一 Turn 的直接输入。改变目标、协议、角色/Binding、Workspace、Profile 或上限时取消旧 Run 并新建 Run。
@@ -4005,7 +4059,7 @@ Reviewer 即 Origin Codex，在完成后向用户交付实现结果、Review 轮
 最多 20 个业务 Turn，Wall Time 为 7200 秒；External Runner 异步强制，Origin 在下一 CLI 边界生效。Workspace 必须是同一个 Git Worktree 根目录，运行期间不手工并发编辑。达到 Limit 后取消旧 Run，并以新配置创建 Run。
 ```
 
-## 35.4 第一轮 Handoff
+## 34.4 第一轮 Handoff
 
 ```markdown
 # Handoff
@@ -4020,7 +4074,7 @@ reviewer
 
 ## My responsibility in this turn
 
-落地 Stage 2 的首轮实现。
+完成目标功能的首轮实现。
 
 ## Work completed
 
@@ -4035,7 +4089,7 @@ reviewer
 
 ## My judgment and claims
 
-我认为 Stage 2 的主要验收路径已经覆盖。
+我认为目标功能的主要验收路径已经覆盖。
 
 ## Uncertainties and disagreements
 
@@ -4048,13 +4102,24 @@ reviewer
 ## Protocol basis
 
 根据协议，Developer 每轮修改完成后必须交给 Reviewer。
+
+## Decision rationale
+
+首轮实现已达到协议规定的 Reviewer 检查点；是否满足最终完成条件仍需 Reviewer 根据
+当前完整工作区独立判断。
+
+## Evidence
+
+- 当前 Diff：`...`；
+- `...` 测试通过；
+- 相关产物路径：`...`。
 ```
 
-## 35.5 最终交付
+## 34.5 最终交付
 
 Origin Codex 不只转发 Completion 文件，而应输出：
 
-- Stage 2 已落地的功能；
+- 已落地的目标功能；
 - 修改的关键模块；
 - Developer / Reviewer 循环轮数；
 - 各轮主要 Finding；
@@ -4064,41 +4129,27 @@ Origin Codex 不只转发 Completion 文件，而应输出：
 
 ---
 
-## 36. 技术可行性依据
+## 35. 实现与验证依据
 
-本设计依赖的现有 Harness 能力包括：
+运行时只依赖 Adapter Probe 与 `doctor` 在当前机器实际确认的能力，不把设计阶段记录的
+CLI 版本或参数当作永久事实：
 
-### Codex
+- Codex Adapter 使用非交互 JSONL 和显式 Start/Resume Profile；
+- Claude Code Adapter 使用非交互 Stream JSON、显式 Session Start/Resume、Plugin 与
+  Sandbox/Permission Profile；
+- tmux 只承载可 Detach Worker、Best-effort `wait-for` 通知和只读 `capture-pane`；
+- `send-keys`、Pane 文本和 tmux 锁均不参与状态转换。
 
-- Skill 可由 `SKILL.md`、脚本和参考资料组成，并可显式或隐式触发；
-- `codex exec` 支持非交互运行；
-- `--json` 可输出包含 `thread.started`、`turn.started`、`turn.completed` 等事件的 JSONL；
-- 非交互 Session 可通过 `codex exec resume <SESSION_ID>` 恢复；
-- 交互 Session 可 Resume；
-- App Server 提供 `thread/resume`，可作为后续更深集成路径。
+Start/Resume 参数、可执行路径、版本、权限等价性和进程组行为由每台机器的 Probe 重新
+计算并冻结 Hash；发生漂移时拒绝旧 Profile，而不是继续相信本文示例。
 
-### Claude Code
-
-- 支持 `-p` 非交互运行；
-- 支持 `--session-id` 指定 Session；
-- 支持 `--resume` / `--continue`；
-- 支持 `text`、`json`、`stream-json` 输出；
-- 支持 Plugin、Skill、Hook 和权限模式；
-- 可在后续阶段使用 Agent SDK 替代 CLI Wrapper。
-
-### tmux
-
-- Session 可 Detach 后继续运行；
-- 可程序化创建 Session、Window 和 Pane；
-- `wait-for` 可提供不带载荷的 Best-effort 变更提示；
-- `capture-pane` 可用于人工诊断；
-- Stage 1 不依赖 `send-keys`、Pane 文本解析或 tmux 锁完成工作流协调。
-
-上述能力应由 `agent-team doctor` 在用户本地运行时再次探测；文档中的命令示例不是不可变协议。
+实现证据位于 `src/agent_team/` 和 `tests/`。真实 Codex/Codex、Claude Code/Codex
+闭环、Session Resume、Finding 循环、进程收口与 Full Audit Trace 证据见
+[`docs/validation`](docs/validation)。
 
 ---
 
-## 37. 最终架构结论
+## 36. 最终架构结论
 
 Agent-Team Stage 1 的最小闭环是：
 
@@ -4123,6 +4174,8 @@ Agent 主动自然语言 Handoff
         ↓
 显式 CLI 路由 + 原子 Event 提交
         ↓
+Raw Capture + Normalized Trace + Manifest Anchor
+        ↓
 按用户本次协议循环
         ↓
 Completion 返回 Origin Session
@@ -4132,4 +4185,4 @@ Completion 返回 Origin Session
 
 关键产品原则可以浓缩为：
 
-> **用户用自然语言定义团队；Skill 规定协作行为；协议承载本次语义；单文件 Workspace Ownership 防止同一工作区出现多个 Team Run；不可变 Event Journal 定义执行权；tmux 只承载外部角色 Worker 并提供可丢失的提示；组外 Turn Supervisor 监控先自持久化、再获许可、最后原地 `exec` Harness 的独立 Runner 进程组；Harness Session 保持角色上下文；当前 Input Event 明确承载 Kickoff、Handoff 或 Resume；最终结果进入用户最初 Agent 会话的 Durable Event 视图，并在 Origin Turn 持续存活时自动交付。**
+> **用户用自然语言定义团队；Skill 规定协作行为；协议承载本次语义；单文件 Workspace Ownership 防止同一工作区出现多个 Team Run；不可变 Event Journal 定义执行权；tmux 只承载外部角色 Worker 并提供可丢失的提示；组外 Turn Supervisor 监控先自持久化、再获许可、最后原地 `exec` Harness 的独立 Runner 进程组；Harness Session 保持角色上下文；当前 Input Event 明确承载 Kickoff、Handoff 或 Resume；External Turn 以可校验 Manifest 锚定 Normalized Trace 和保留 Artifact；最终结果进入用户最初 Agent 会话的 Durable Event 视图，并在 Origin Turn 持续存活时自动交付。**

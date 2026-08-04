@@ -1,4 +1,10 @@
-# Agent-Team v0.1 Validation Report
+# Agent-Team v0.1 Runtime Lifecycle Validation Report
+
+> Historical baseline report for the lifecycle/runtime implementation validated
+> on 2026-07-29. It intentionally preserves the commands and counts observed at
+> that time. Current observability acceptance and the later 176-test suite are
+> documented in
+> [`observability-claude-codex-report.md`](observability-claude-codex-report.md).
 
 ## Candidate
 
@@ -6,7 +12,7 @@
 - Version: `0.1.0`
 - Normative design: `agent-team_technical_design_v0.1.md`
 - Validation date: 2026-07-29 (Asia/Shanghai)
-- Implementation suite: 156 tests passed
+- Baseline implementation suite at validation time: 156 tests passed
 - Static correctness gate: `ruff --select F` passed
 - Python compilation: `python -m compileall -q src tests` passed
 - Build artifacts:

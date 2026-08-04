@@ -285,7 +285,10 @@ def require_keys(
 
 
 def random_token(bytes_count: int = 24) -> str:
-    return secrets.token_urlsafe(bytes_count)
+    # ``token_urlsafe`` may begin with ``-``. These tokens are also returned as
+    # Origin claims and used as internal CLI option values, so give every new
+    # token a stable non-option prefix while preserving all random entropy.
+    return f"t_{secrets.token_urlsafe(bytes_count)}"
 
 
 def write_all(fd: int, data: bytes) -> None:

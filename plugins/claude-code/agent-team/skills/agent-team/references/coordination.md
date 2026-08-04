@@ -41,6 +41,11 @@ Resume submit and wait in the same command.
 - Let a business Role call Cancel without an explicit user instruction.
 - Auto-Resume any Block. Every Block returns to the user first.
 
+An elevated Launch Profile changes only the Harness's technical sandbox and
+approval boundary. It never expands the user's objective, the dynamic Role,
+the allowed workspace, or the formal action set; `full-access` is not authority
+to perform unrelated, destructive, or external actions.
+
 ## Handoff content
 
 Use these sections: From, To, My responsibility in this turn, Work completed,

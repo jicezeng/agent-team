@@ -34,7 +34,7 @@ class CodexAdapter(HarnessAdapter):
         return result.returncode == 0
 
     @staticmethod
-    def _permission_mapping() -> list[str]:
+    def _workspace_permission_mapping(*, network_access: bool) -> list[str]:
         state_dir = fixed_state_dir()
         writable_roots = [
             str(state_dir / "workspace-locks"),
@@ -53,7 +53,11 @@ class CodexAdapter(HarnessAdapter):
             "-c",
             f"sandbox_workspace_write.writable_roots={roots_value}",
             "-c",
-            "sandbox_workspace_write.network_access=false",
+            (
+                "sandbox_workspace_write.network_access=true"
+                if network_access
+                else "sandbox_workspace_write.network_access=false"
+            ),
             "-c",
             "sandbox_workspace_write.exclude_tmpdir_env_var=false",
             "-c",
@@ -61,16 +65,30 @@ class CodexAdapter(HarnessAdapter):
         ]
 
     def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
-        permission_mapping = [
+        common = [
             "--ignore-user-config",
             "--ignore-rules",
-            *self._permission_mapping(),
         ]
+        profiles = {
+            "default": [
+                *common,
+                *self._workspace_permission_mapping(network_access=False),
+            ],
+            "trusted-workspace": [
+                *common,
+                *self._workspace_permission_mapping(network_access=True),
+            ],
+            "full-access": [
+                *common,
+                "-c",
+                'sandbox_mode="danger-full-access"',
+                "-c",
+                'approval_policy="never"',
+            ],
+        }
         return {
-            "default": {
-                "start": list(permission_mapping),
-                "resume": list(permission_mapping),
-            }
+            profile: {"start": mapping.copy(), "resume": mapping.copy()}
+            for profile, mapping in profiles.items()
         }
 
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:

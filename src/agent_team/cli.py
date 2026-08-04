@@ -298,19 +298,21 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
             )
             adapter = get_adapter(adapter_id)
             mappings = adapter.profile_mappings()
-            default = mappings.get("default", {})
-            profile_ok = bool(default.get("start")) and bool(default.get("resume"))
-            if profile_ok:
-                profile_ok = default["start"] == default["resume"]
-            add(
-                f"launch_profile:{adapter_id}:default",
-                profile_ok,
-                {
-                    "start": default.get("start"),
-                    "resume": default.get("resume"),
-                    "equivalent_permissions": profile_ok,
-                },
-            )
+            for profile, mapping in sorted(mappings.items()):
+                profile_ok = bool(mapping.get("start")) and bool(
+                    mapping.get("resume")
+                )
+                if profile_ok:
+                    profile_ok = mapping["start"] == mapping["resume"]
+                add(
+                    f"launch_profile:{adapter_id}:{profile}",
+                    profile_ok,
+                    {
+                        "start": mapping.get("start"),
+                        "resume": mapping.get("resume"),
+                        "equivalent_permissions": profile_ok,
+                    },
+                )
             try:
                 command = (
                     [report.executable, "exec", "resume", "--help"]

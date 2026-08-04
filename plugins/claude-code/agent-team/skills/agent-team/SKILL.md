@@ -46,8 +46,14 @@ existing Run:
    business conditions in natural-language `PROTOCOL.md`; do not invent a
    workflow DSL or machine-parse reviewer verdicts.
 5. Choose each External Launch Profile explicitly from `agent-team doctor`
-   output. Never infer it from a role name or a natural-language `read-only`
-   restriction.
+   output. Use `default` unless the user explicitly selects
+   `trusted-workspace` or `full-access`. `trusted-workspace` may expand only
+   capabilities its Adapter can expose without losing the Workspace boundary;
+   Claude Code keeps `acceptEdits` and the same OS sandbox for this Profile.
+   `full-access` removes the host sandbox and is appropriate only on a
+   controlled machine or VM. Never infer elevated access from a role name, a
+   request to run tests, or a natural-language `read-only` restriction, and
+   never treat mutable local Harness settings as the selected Profile.
 6. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
@@ -80,6 +86,9 @@ agent-team start <run-id>
   `RESUME_TO_ORIGIN_ROLE`, read the returned immutable input and facts, execute
   exactly the dynamic role, then use the matching `origin-*` command with its
   Turn and Claim.
+- Treat every Claim as opaque and pass it only as `--claim=<exact-value>` on
+  `wait-origin` and every `origin-*` command. Never split the option and value;
+  an older Claim may start with `-`.
 - Use `origin-handoff` for routing. It submits and waits in one call. If it
   times out after submission, do not continue business work; call
   `wait-origin` without the old Claim.
@@ -98,7 +107,7 @@ agent-team start <run-id>
 
 ```bash
 agent-team origin-resume \
-  --run <run-id> --claim <management-claim> \
+  --run <run-id> --claim=<management-claim> \
   --to <role-id> --file <exact-user-instruction.md> \
   --wait-timeout 90
 ```

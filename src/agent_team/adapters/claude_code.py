@@ -69,26 +69,38 @@ class ClaudeCodeAdapter(HarnessAdapter):
         return (result.stdout or result.stderr).strip()
 
     @staticmethod
-    def _permission_mapping() -> list[str]:
+    def _permission_mapping(profile: str) -> list[str]:
         cli = str(effective_agent_team_cli())
         formal_commands = [
             f"{cli} handoff *",
             f"{cli} complete *",
             f"{cli} block *",
         ]
-        sandbox_settings = json.dumps(
-            {
-                "sandbox": {
-                    "enabled": True,
-                    "failIfUnavailable": True,
-                    "autoAllowBashIfSandboxed": True,
-                    "allowUnsandboxedCommands": False,
-                    "excludedCommands": formal_commands,
-                    "filesystem": {
-                        "allowWrite": [str(claude_internal_tmpdir())],
-                    },
-                }
-            },
+        if profile in {"default", "trusted-workspace"}:
+            sandbox = {
+                "enabled": True,
+                "failIfUnavailable": True,
+                "autoAllowBashIfSandboxed": True,
+                "allowUnsandboxedCommands": False,
+                "excludedCommands": formal_commands,
+                "filesystem": {
+                    "allowWrite": [str(claude_internal_tmpdir())],
+                },
+            }
+            # Claude's OS sandbox applies only to Bash and its child processes.
+            # Keep built-in Edit/Write tools inside the working-directory scope
+            # enforced by acceptEdits for every workspace-contained profile.
+            permission_mode = "acceptEdits"
+        elif profile == "full-access":
+            sandbox = {"enabled": False}
+            permission_mode = "bypassPermissions"
+        else:
+            raise AgentTeamError(
+                "UNKNOWN_LAUNCH_PROFILE",
+                f"claude-code profile {profile!r} is not supported",
+            )
+        settings = json.dumps(
+            {"sandbox": sandbox},
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -104,9 +116,9 @@ class ClaudeCodeAdapter(HarnessAdapter):
         ]
         return [
             "--permission-mode",
-            "acceptEdits",
+            permission_mode,
             "--settings",
-            sandbox_settings,
+            settings,
             "--allowedTools",
             *(f"Bash({command})" for command in formal_commands),
             "--disallowedTools",
@@ -114,22 +126,23 @@ class ClaudeCodeAdapter(HarnessAdapter):
         ]
 
     def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
-        fixed = [
-            *self._permission_mapping(),
-            "--setting-sources",
-            "",
-            "--strict-mcp-config",
-            "--tools",
-            "default",
-            "--plugin-dir",
-            str(effective_claude_plugin()),
-        ]
-        return {
-            "default": {
+        profiles: dict[str, dict[str, list[str]]] = {}
+        for profile in ("default", "trusted-workspace", "full-access"):
+            fixed = [
+                *self._permission_mapping(profile),
+                "--setting-sources",
+                "",
+                "--strict-mcp-config",
+                "--tools",
+                "default",
+                "--plugin-dir",
+                str(effective_claude_plugin()),
+            ]
+            profiles[profile] = {
                 "start": fixed.copy(),
                 "resume": fixed.copy(),
             }
-        }
+        return profiles
 
     def authentication_status(self) -> bool | None:
         try:

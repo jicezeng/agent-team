@@ -72,7 +72,10 @@ agent-team doctor --workspace /path/to/worktree --json
 
 Use `--force` to make upgrades and reinstalls deterministic. After upgrading
 the Python package, run `agent-team install` again so the copied integrations
-match the installed package.
+match the installed package. Do not upgrade the package or replace the
+integrations while a Run is active: a later Turn could otherwise load a
+different runtime or Skill than the earlier Turns. Complete or cancel and
+safely recover the active Run first.
 
 ### Development install
 
@@ -185,17 +188,50 @@ A role specification is one of:
 
 ```text
 ROLE=origin
-ROLE=codex:resume:default
-ROLE=codex:fresh:default
-ROLE=claude-code:resume:default
-ROLE=claude-code:fresh:default
+ROLE=codex:<resume|fresh>:<profile>
+ROLE=claude-code:<resume|fresh>:<profile>
 ```
 
 Role IDs match `[a-z][a-z0-9_-]{0,31}`. `resume` preserves a validated harness
 session across that role's Turns; `fresh` creates a new session every Turn.
-The `default` Launch Profile is a technical permission mapping, not a business
-role. A protocol restriction such as “review only” remains a natural-language
-role responsibility and is never inferred from the role name.
+Each adapter exposes the same explicit Profile names:
+
+| Profile | Codex mapping | Claude Code mapping |
+| --- | --- | --- |
+| `default` | Workspace write, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, no unsandboxed fallback |
+| `trusted-workspace` | Workspace write, command network enabled, no approval prompts | `acceptEdits`, the same OS workspace sandbox and no unsandboxed fallback |
+| `full-access` | `danger-full-access` with no approval prompts | `bypassPermissions` with the Claude sandbox disabled |
+
+`default` remains the normal choice. `trusted-workspace` and `full-access` are
+never inferred from a role name or task text such as “run all tests”; the user
+must explicitly select the exact Profile. `full-access` removes the Harness's
+host filesystem and command-network boundary and should run only on a machine
+or VM whose contents and credentials may be exposed to the Agent.
+
+Claude Code deliberately maps both workspace-contained Profiles to
+`acceptEdits`: its OS sandbox constrains Bash and child processes, not the
+built-in Edit/Write tools. Using `bypassPermissions` for `trusted-workspace`
+would therefore allow host-file writes outside the Workspace. Choose
+`full-access` explicitly when that wider host boundary is intended.
+
+All three Profiles ignore mutable local Codex/Claude permission settings and
+freeze an explicit Start/Resume mapping and hash in `team.json`. They do not
+mean “reuse my current interactive session settings.” A protocol restriction
+such as “review only” remains a natural-language role responsibility and is
+never inferred from the role name. Agent-Team's formal-action rules continue
+to apply, but they are not a containment boundary in `full-access` mode.
+
+Examples:
+
+```text
+--role developer=claude-code:resume:trusted-workspace
+--role reviewer=codex:resume:full-access
+```
+
+Run `agent-team doctor --workspace <root> --json` to inspect every mapping
+accepted by the installed Harness versions. Managed Harness policy may still
+disable a bypass mode. A Profile is immutable after Kickoff; changing it
+requires cancelling the old Run and creating a new one.
 
 `init` atomically commits an UNSTARTED audit directory but acquires no
 Workspace ownership and starts no process. `start` performs final capability
@@ -270,25 +306,28 @@ normally driven by the integration skill rather than typed manually:
 
 ```bash
 agent-team origin-context \
-  --run <run-id> --event <event-id> --claim <claim>
+  --run <run-id> --event <event-id> --claim=<claim>
 
 agent-team origin-handoff \
-  --run <run-id> --turn <turn-id> --claim <claim> \
+  --run <run-id> --turn <turn-id> --claim=<claim> \
   --from-role <role-id> --to <role-id> --file <payload.md>
 
 agent-team origin-complete \
-  --run <run-id> --turn <turn-id> --claim <claim> \
+  --run <run-id> --turn <turn-id> --claim=<claim> \
   --from-role <role-id> --file <payload.md>
 
 agent-team origin-block \
-  --run <run-id> --turn <turn-id> --claim <claim> \
+  --run <run-id> --turn <turn-id> --claim=<claim> \
   --from-role <role-id> --file <payload.md>
 ```
 
 `origin-handoff` submits and waits in the same call. `origin-complete` and
 `origin-block` leave the host Turn in an auditable `exited` phase; the next
 user Agent turn calls `wait-origin` with the same Claim to confirm that the old
-host Turn stopped and safely finalize it. v0.1 has no Claim takeover.
+host Turn stopped and safely finalize it. New opaque tokens have a `t_` prefix
+so they cannot be parsed as command-line options. Always pass every Claim as
+`--claim=<value>`; that form also remains safe for a Claim created by an older
+version that starts with `-`. v0.1 has no Claim takeover.
 
 ## Observe a Run
 
@@ -331,7 +370,7 @@ a later, explicit user instruction is recorded:
 ```bash
 agent-team origin-resume \
   --run <run-id> \
-  --claim <management-claim> \
+  --claim=<management-claim> \
   --to <role-id> \
   --file <exact-user-instruction.md> \
   --wait-timeout 90

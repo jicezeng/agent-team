@@ -82,4 +82,7 @@ List every inference explicitly.
 
 Record positive max-turn and wall-time bounds, the single Git worktree, chosen
 explicit Launch Profiles, no-concurrent-manual-edit premise, External hard
-versus Origin cooperative deadline behavior, and manual cancellation.
+versus Origin cooperative deadline behavior, and manual cancellation. For
+`trusted-workspace` or `full-access`, record the user's explicit selection and
+the Adapter-specific trust boundary. `trusted-workspace` must retain the
+Workspace write boundary; `full-access` has no Harness host sandbox.

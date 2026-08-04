@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from agent_team.errors import IntegrityError
-from agent_team.util import ensure_dir, parse_rfc3339, read_json, set_private_umask
+from agent_team.util import (
+    ensure_dir,
+    parse_rfc3339,
+    random_token,
+    read_json,
+    set_private_umask,
+)
 
 
 def permission_bits(path: Path) -> int:
@@ -40,6 +46,20 @@ def test_managed_process_umask_is_private(
     set_private_umask()
 
     assert observed == [0o077]
+
+
+def test_random_token_never_looks_like_a_command_line_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent_team.util.secrets.token_urlsafe",
+        lambda _bytes_count: "-option-like-random-value",
+    )
+
+    token = random_token()
+
+    assert token == "t_-option-like-random-value"
+    assert not token.startswith("-")
 
 
 @pytest.mark.parametrize("value", [None, 1, True, [], {}])

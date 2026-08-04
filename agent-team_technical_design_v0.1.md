@@ -2,7 +2,7 @@
 
 > **版本**：v0.1<br>
 > **日期**：2026-07-25<br>
-> **最近修订**：2026-08-03<br>
+> **最近修订**：2026-08-04<br>
 > **状态**：Stage 1 v0.1 已实现规范<br>
 > **目标读者**：产品负责人、架构师、Codex/Claude Code 开发者、开源贡献者
 
@@ -869,7 +869,15 @@ Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_s
 `Decision rationale` 与 `Evidence`。Schema 1 的历史 Run 继续按
 `redaction=none, raw_retention=keep` 读取，不就地改写 `team.json`。
 
-外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。每个 Profile 必须显式设置所有权限相关参数，不能把可变的用户默认配置当作 Profile 的一部分；Bootstrap 显式选择并记录该值，不得根据 Role ID 或 `PROTOCOL.md` 中的 `read-only` 自动映射。
+外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex 与 Claude Code 当前都提供 `default | trusted-workspace | full-access`：
+
+- `default` 保持工作区沙箱；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止 Unsandboxed Fallback；
+- `trusted-workspace` 保留工作区边界；Codex 跳过 Harness 交互审批并开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱；
+- `full-access` 跳过审批并关闭 Harness 宿主沙箱；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions` 与 `sandbox.enabled=false`。
+
+Claude 的 OS 沙箱只约束 Bash 及其子进程，内置 Edit/Write 仍由 Permission Mode 控制。因此任何声称保留工作区边界的 Claude Profile 都不得使用裸 `bypassPermissions`；当前 `default` 与 `trusted-workspace` 都使用 `acceptEdits`，只有明确的 `full-access` 可以绕过内置文件工具的路径审批。
+
+每个 Profile 必须显式设置所有权限相关参数，不能把可变的用户默认配置当作 Profile 的一部分；三个 Profile 都忽略本机 User/Project Permission Settings。Skill 或其他 Bootstrap 调用方在用户未明确选择提升权限时必须提交 `default`，只有用户明确指定准确名称时才可提交后两者，并必须把 Adapter 实际采用的信任边界写入协议。不得根据 Role ID、测试命令、`PROTOCOL.md` 中的 `read-only` 或本机交互 Session 状态自动映射。`full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
 `launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
@@ -1023,7 +1031,7 @@ SHA-256 一次性写入该字段；非空后不可替换。Schema 2 Run 中已�
 
 领取 Kickoff、Handoff 或 Resume Event 时，Runtime 先校验 Event Payload Hash，再把其当前字节原子复制为不可变的 `turns/<turn-id>/input.md`；`input_payload_sha256` 必须等于 Event 中的 `payload_sha256`。因此每个业务 Turn 都有统一的当前输入，不把 Resume 指令降级成仅存在于 Journal 中的附注。
 
-Stage 1 中一个 External 业务 Turn 只允许一次 Harness 启动，不引入自动启动重试。Worker 先调用无副作用的 `prepare_launch()`；失败就直接提交 Start Failure Block。准备成功后，Worker 生成不可猜测的 `launch_nonce`，再启动短生命周期的 `agent-team _turn-supervisor`。
+Stage 1 中一个 External 业务 Turn 只允许一次 Harness 启动，不引入自动启动重试。Worker 先调用无副作用的 `prepare_launch()`；失败就直接提交 Start Failure Block。准备成功后，Worker 生成不可猜测的 `launch_nonce`，再启动短生命周期的 `agent-team _turn-supervisor`。所有新随机 Token 固定带 `t_` 非选项前缀；Supervisor 与 Runner 的内部 argv 仍使用 `--nonce=<value>`，使升级前已经生成、可能以 `-` 开头的值也不会被 `argparse` 误判为新选项并在首份身份快照前以 Exit 2 退出。
 
 Supervisor 不加入受管 Harness 进程组。它必须先原子创建一份 `state=starting` 的自身快照：
 
@@ -1154,7 +1162,7 @@ success | failed | cancelled | stalled
 
 `termination_kind` 固定为 `normal | cancelled | deadline | signal | crash | unknown`。只有 Adapter 明确观察到正常 Turn 完成、退出码符合该 Adapter 的成功约定且 `termination_kind=normal` 时，`adapter_completed` 才能为 `true`。
 
-Origin 领取业务 Turn 时同样先冻结 `workspace-facts-before.json` 并创建 `runtime.json`，但使用 `executor=origin`，不创建 Supervisor，也不填写 Session Generation、Launch Profile、Launch Nonce 或进程身份，并保存不可猜测的 `origin_claim_id`。该 Claim 没有自动超时，只在 Turn 终止或 Run 被取消时失效；Stage 1 不允许另一个 Session 替换活跃 Claim。Run 被其他命令终止时，Claim 立即失去业务和管理写权限，但原 Session 仍可用它调用 `wait-origin` 确认终态并把 Origin Runtime 收口为 `finalized`。
+Origin 领取业务 Turn 时同样先冻结 `workspace-facts-before.json` 并创建 `runtime.json`，但使用 `executor=origin`，不创建 Supervisor，也不填写 Session Generation、Launch Profile、Launch Nonce 或进程身份，并保存不可猜测且带 `t_` 前缀的 `origin_claim_id`。该 Claim 没有自动超时，只在 Turn 终止或 Run 被取消时失效；Stage 1 不允许另一个 Session 替换活跃 Claim。Run 被其他命令终止时，Claim 立即失去业务和管理写权限，但原 Session 仍可用它调用 `wait-origin` 确认终态并把 Origin Runtime 收口为 `finalized`。Skill 传递 Claim 时使用 `--claim=<value>`，兼容升级前可能以 `-` 开头的既有 Claim。
 
 宿主没有“当前模型采样已经结束”的结构化信号，因此 Origin 的终止动作分两类处理：
 
@@ -1699,7 +1707,7 @@ Origin 嵌入角色没有外部 Worker，使用一个单调用的“提交并等
 agent-team origin-handoff \
   --run <run-id> \
   --turn <turn-id> \
-  --claim <origin-claim-id> \
+  --claim=<origin-claim-id> \
   --from-role <role-id> \
   --to <role-id> \
   --file <handoff.md> \
@@ -1785,6 +1793,9 @@ v0.1 实现：
 - `--output-format stream-json` 获取事件流；
 - 不使用 `--no-session-persistence`；
 - Start 与 Resume 都使用 `team.json` 中已经过 Probe 校验的同一 `launch_profile` 语义；
+- `default` 使用 `acceptEdits` 和强制可用的 Workspace Sandbox；
+- `trusted-workspace` 同样使用 `acceptEdits`，保留相同 Sandbox 并禁止 Unsandboxed Fallback，不允许内置 Edit/Write 绕过 Workspace 边界；
+- `full-access` 使用 `bypassPermissions` 并显式关闭 Claude Sandbox；三种模式都继续加载 Agent-Team Plugin、忽略本机 Setting Sources，并直接 Deny Agent-Team 管理命令 Pattern；
 - Prompt 以 argv 或 stdin 传入，不通过 Shell 字符串拼接。
 
 概念命令：
@@ -1821,7 +1832,10 @@ claude -p \
 - `PROTOCOL.md` 中的 `read-only` 表示“不得修改业务文件”的自然语言职责约束，不等同于 Codex `--sandbox read-only`；
 - Bootstrap 从 Adapter Probe 返回的闭集里显式选择 `launch_profile`，Adapter 负责分别把该 Profile 确定性映射到 Start 与 Resume；
 - Stage 1 已要求 Git Worktree 根目录，因此 Adapter 不传 `--skip-git-repo-check`；
-- 不默认使用 danger-full-access；
+- `default` 使用 `workspace-write`、`approval_policy=never` 且关闭命令网络；
+- `trusted-workspace` 保持 `workspace-write` 和 `approval_policy=never`，但开放命令网络；
+- `full-access` 使用 `danger-full-access` 与 `approval_policy=never`，只有用户明确选择时启用；
+- 三种 Profile 都使用 `--ignore-user-config` 和 `--ignore-rules`，不继承本机可变权限；
 - 可通过 `-o` 保存最终消息到本 Turn 的 `output.md`，但它只用于诊断，不产生 Handoff、Completion 或正常完成证据。
 
 概念命令：
@@ -1889,7 +1903,7 @@ Stage 1 只实现固定的 `session_mode=embedded` 与 `wait-origin` 协作式�
 Origin Agent 在 Bootstrap 后调用：
 
 ```bash
-agent-team wait-origin --run <run-id> --timeout 90 [--claim <origin-claim-id>]
+agent-team wait-origin --run <run-id> --timeout 90 [--claim=<origin-claim-id>]
 ```
 
 该命令返回以下之一：
@@ -2189,7 +2203,7 @@ Completion 文件建议包括：
 Origin 绑定 Role 使用：
 
 ```bash
-agent-team origin-complete --run <run-id> --turn <turn-id> --claim <origin-claim-id> --from-role <role-id> --file completion.md
+agent-team origin-complete --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file completion.md
 ```
 
 该命令返回后只能完成本次用户交付，不得再调用工具或修改业务文件；旧 Origin Runtime 在后续用户 Agent Turn 的 `wait-origin` 中才最终收口。
@@ -2215,7 +2229,7 @@ Agent 主动调用的 Block 固定使用 `block_reason=agent`；其他 `block_re
 
 Block 将业务 Token 置空，并把管理控制返回 Origin。`wait-origin` 为该 Block 创建独占的管理 Turn / Claim。所有 Block 都必须先展示给用户；Origin 可以自动执行只读诊断和确定性 `recover` 收口，但后者可能追加固定技术 Event，不能被描述成严格只读，也不能自行选择 Resume 目标。只有 `block_reason` 不属于 `limit | profile_changed`，安全守卫允许、Recovery Gate 已解除且用户给出新的明确指令时才能 Resume；不可 Resume 的 Block 只能取消旧 Run 并创建新 Run。
 
-Origin 绑定 Role 使用 `agent-team origin-block --run <run-id> --turn <turn-id> --claim <origin-claim-id> --from-role <role-id> --file blocker.md`。
+Origin 绑定 Role 使用 `agent-team origin-block --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file blocker.md`。
 
 该命令同样是当前 Agent Turn 的最后一个工具调用。它不在返回前创建管理 Claim；后续用户 Agent Turn 调用 `wait-origin` 时，Runtime 先收口旧业务 Turn，再为当前 Block 创建管理 Turn。
 
@@ -2228,7 +2242,7 @@ Run 只有在 Journal Tail 为可 Resume Block（`block_reason` 不属于 `limit
 ```bash
 agent-team origin-resume \
   --run <run-id> \
-  --claim <origin-claim-id> \
+  --claim=<origin-claim-id> \
   --to <role-id> \
   --file <resume.md> \
   --wait-timeout 90
@@ -2560,21 +2574,21 @@ AGENT_TEAM_RUN_DIR
 ## 23.4 Origin 命令
 
 ```bash
-agent-team wait-origin --run <run-id> --timeout 90 [--claim <origin-claim-id>]
-agent-team origin-context --run <run-id> --event <event-id> [--claim <origin-claim-id>]
+agent-team wait-origin --run <run-id> --timeout 90 [--claim=<origin-claim-id>]
+agent-team origin-context --run <run-id> --event <event-id> [--claim=<origin-claim-id>]
 agent-team origin-handoff \
   --run <run-id> \
   --turn <turn-id> \
-  --claim <origin-claim-id> \
+  --claim=<origin-claim-id> \
   --from-role <role-id> \
   --to <role-id> \
   --file <path> \
   --wait-timeout 90
-agent-team origin-complete --run <run-id> --turn <turn-id> --claim <origin-claim-id> --from-role <role-id> --file <path>
-agent-team origin-block --run <run-id> --turn <turn-id> --claim <origin-claim-id> --from-role <role-id> --file <path>
+agent-team origin-complete --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
+agent-team origin-block --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
 agent-team origin-resume \
   --run <run-id> \
-  --claim <origin-claim-id> \
+  --claim=<origin-claim-id> \
   --to <role-id> \
   --file <path> \
   --wait-timeout 90
@@ -2644,6 +2658,7 @@ Stage 1 区分两类边界：
 
 - `PROTOCOL.md` 中的角色限制，例如“只审查不修改”，属于自然语言职责约束，由 Skill 指导 Agent 遵守；工作区 Snapshot 只提供可选事后核验所需的事实，不构成写入拦截；
 - External Binding 的 `launch_profile` 是独立的 Harness 技术权限配置，由 Bootstrap 在 Kickoff 前从 Adapter Probe 闭集中显式选择，并由 Adapter 在该 Role 的 Session Policy 实际需要的 Start / Resume 路径上确定性执行；
+- `default` 是默认 Profile；`trusted-workspace` 和 `full-access` 必须来自用户明确选择，后者没有 Harness Host Sandbox，不能仅依靠协议限制防御恶意或被注入的 Agent；
 - Origin Binding 继承当前宿主会话已经拥有的技术权限，Agent-Team 不重新启动或改写其沙箱配置；
 - 不因为自然语言中出现 `read-only` 就自动启用 Codex `--sandbox read-only` 或 Claude `plan`；
 - 默认不启用全权限绕过。
@@ -3297,7 +3312,7 @@ sequenceDiagram
         S->>S: 提交 Event
         S-->>O: 保持等待，不返回业务执行窗口
     else Complete / Block
-        O->>S: origin-complete 或 origin-block --claim
+        O->>S: origin-complete 或 origin-block --claim=<id>
     end
 ```
 
@@ -3349,7 +3364,7 @@ sequenceDiagram
     S-->>O: TEAM_BLOCKED + Management Turn + Claim
     O->>U: 展示 Block 与诊断结果
     U-->>O: 明确恢复指令 + 目标角色
-    O->>S: origin-resume --claim --to target（提交并等待）
+    O->>S: origin-resume --claim=<id> --to target（提交并等待）
     S->>S: 提交 Resume Event，Token = target
     S-->>W: Best-effort 变更提示
     W->>S: Claim Turn + 冻结 Resume Payload 为 input.md
@@ -3392,6 +3407,10 @@ sequenceDiagram
     Evidence；
 26. Trace Policy 支持 Standard/None Redaction、每 Turn Byte Limit 及
     Redacted/Keep/Delete Raw Retention，并明确隐私边界。
+27. Codex 与 Claude Code 都提供 `default`、`trusted-workspace`、`full-access`，每个
+    Profile 的 Start/Resume 权限等价且拥有不同 Hash；
+28. Bootstrap 调用方在用户未明确选择提升权限时使用 `default`；只有用户明确选择
+    时才能冻结提升权限的 Profile，Kickoff 后改变 Profile 必须新建 Run。
 
 ### 30.2 可靠性验收
 
@@ -3402,7 +3421,7 @@ sequenceDiagram
 5. 不存在目标 Role 时明确失败；
 6. Harness 退出但无正式动作时返回 Origin；
 7. Kickoff 后 `REQUEST.md`、`PROTOCOL.md` 或 `team.json` 被修改时直接推导为 `CORRUPTED`，即使当前 Token 尚未被目标 Claim 也不伪造 Recovery Block；
-8. 默认不启用危险全权限模式；
+8. 默认不启用危险全权限模式，且不能从角色名、任务命令或本机配置隐式升级；
 9. Run 取消后保留审计目录；
 10. 不创建额外语义状态缓存；Run Status、Token Owner 和 Inbox 只由 Journal 与 Turn Runtime 推导，Ownership 只约束执行；
 11. 在 Payload、Event 和 tmux 提示之间的任一崩溃点都不会产生两个 Token Owner；
@@ -3564,6 +3583,7 @@ sequenceDiagram
   Normalization；私有 `thinking` 与通用 `reasoning` 只生成无正文 Diagnostic；
 - 进程取消；
 - Start / Resume Launch Profile 参数映射及有效权限等价；
+- 三个内置 Profile 的 Sandbox/Permission 组合、用户显式选择和 Full Access 风险边界；
 - 改变用户默认权限配置后，显式 Launch Profile 的有效权限不漂移；
 - 改变 Adapter / CLI 版本或规范化映射后，旧 `launch_profile_sha256` 被拒绝；
 - 权限不足；
@@ -3574,6 +3594,7 @@ sequenceDiagram
 - `thread.started` 解析；
 - `codex exec resume`；
 - Start / Resume 分离的 Launch Profile 参数映射、有效权限等价与 Probe 拒绝未知 Profile；
+- 三个内置 Profile 的 Workspace/Network/Full Access 组合，以及默认不启用提升权限；
 - 改变用户默认权限配置后，显式 Launch Profile 的有效权限不漂移；
 - 改变 Adapter / CLI 版本或规范化映射后，旧 `launch_profile_sha256` 被拒绝；
 - Resume 路径不假定接受 Start 形式的 `--sandbox` 参数；
@@ -3657,6 +3678,9 @@ sequenceDiagram
     Block，确认在 Outbox/Event 提交前拒绝；合法 Payload 正常完成循环。
 62. Claude Code Developer 与独立 Codex Reviewer 在 Full Audit 下完成 Finding→修复→
     同 Session Re-review→Completion，所有 Turn 无截断、Owner 释放且 Diagnose 无失败项。
+63. 强制随机源返回以 `-` 开头的 Launch Nonce 与 Origin Claim：新 Token 仍获得非选项
+    前缀，Worker→Supervisor→Runner 的真实管线使用 `--nonce=<value>` 正常到达身份快照
+    和启动许可，不再以 argparse Exit 2 误报 Start Failure。
 
 ## 31.4 Handoff 质量评测
 

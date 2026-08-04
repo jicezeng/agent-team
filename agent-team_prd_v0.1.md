@@ -1,7 +1,7 @@
 # Agent-Team 产品需求文档
 
 > **版本**：v0.1<br>
-> **最近修订**：2026-08-03<br>
+> **最近修订**：2026-08-04<br>
 > **状态**：已实现并完成本地真实场景验证<br>
 > **目标读者**：产品负责人、使用者、维护者和集成开发者
 
@@ -94,6 +94,10 @@ v0.1 不承诺：
 - Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex` 和
   `claude-code`；
 - External Role 支持 `resume` 与 `fresh`；
+- Codex 与 Claude Code 都提供 `default`、`trusted-workspace` 和 `full-access`
+  三个显式 Launch Profile；后两者只能由用户主动选择；
+- Launch Profile 不继承本机可变权限配置；Start/Resume 参数及 Hash 在 Kickoff 前
+  冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -113,6 +117,8 @@ v0.1 不承诺：
 - 不支持非 Git 根目录、Sparse Checkout、Gitlink 或被跟踪的 `.agent-team/`；
 - Turn 前后保存 Git 可见 Workspace Facts；
 - Supervisor 与 Runner 使用可验证的 PID、PGID、Start ID 和单次启动许可；
+- Launch Nonce、Origin Claim 等不透明随机值必须带非选项前缀，内部 CLI 传递不得让
+  以 `-` 开头的历史值被参数解析器误判为选项；
 - Cancel、Deadline 和异常退出必须清理可验证的受管进程组；
 - `recover` 只执行由持久化证据唯一推出的技术收口，不创建 Resume 或选择业务路线；
 - `unlock` 只在精确 Owner 匹配且所有已知执行身份安全结束时解除 Ownership。

@@ -1591,17 +1591,27 @@ def test_supervisor_exit_before_identity_snapshot_is_start_failure(
         def wait(self, **_kwargs: Any) -> int:
             return 72
 
+    supervisor_argv: list[str] = []
+
+    def exited_supervisor(argv: list[str], **_kwargs: Any) -> _ExitedSupervisor:
+        supervisor_argv.extend(argv)
+        return _ExitedSupervisor()
+
     monkeypatch.setattr(
         "agent_team.worker.get_adapter",
         lambda _adapter: _LaunchingAdapter(),
     )
     monkeypatch.setattr("agent_team.worker._cli_path", lambda: "/bin/true")
     monkeypatch.setattr(
+        "agent_team.worker.random_token",
+        lambda: "-option-like-launch-nonce",
+    )
+    monkeypatch.setattr(
         "agent_team.worker.subprocess",
         SimpleNamespace(
             DEVNULL=subprocess.DEVNULL,
             TimeoutExpired=subprocess.TimeoutExpired,
-            Popen=lambda *_args, **_kwargs: _ExitedSupervisor(),
+            Popen=exited_supervisor,
         ),
     )
 
@@ -1616,6 +1626,8 @@ def test_supervisor_exit_before_identity_snapshot_is_start_failure(
     assert persisted["phase"] == "finalized"
     assert persisted["outcome"] == "failed"
     assert persisted["group_quiescent"] is True
+    assert "--nonce=-option-like-launch-nonce" in supervisor_argv
+    assert "--nonce" not in supervisor_argv
 
 
 def test_recover_does_not_finalize_turn_claimed_by_live_worker(
@@ -1814,8 +1826,9 @@ def test_supervisor_runner_pipeline_reaches_verified_normal_completion(
         launch_profile_sha256=PROFILE_HASH,
         starts_new_session=True,
     )
+    option_like_nonce = "-option-like-launch-nonce"
     with locked_run(run_dir, exclusive=True):
-        runtime["launch_nonce"] = NONCE
+        runtime["launch_nonce"] = option_like_nonce
         save_runtime(
             turn_dir,
             runtime,
@@ -1841,7 +1854,7 @@ def test_supervisor_runner_pipeline_reaches_verified_normal_completion(
             supervise_turn(
                 run_dir,
                 runtime["turn_id"],
-                NONCE,
+                option_like_nonce,
                 launch.content_sha256(),
             )
         )

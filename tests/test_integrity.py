@@ -133,6 +133,100 @@ def test_team_rejects_unhashable_external_discriminators(
         parse_team(team)
 
 
+def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
+    team = make_team(
+        run_id="at-test-harness-options",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+                "gpt-5.6-sol",
+                "max",
+                True,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    assert team.config_schema_version == 4
+    assert team.to_json()["roles"]["developer"]["harness_options"] == {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "max",
+        "fast_mode": True,
+    }
+    assert team.roles["developer"].model == "gpt-5.6-sol"
+    assert team.roles["developer"].reasoning_effort == "max"
+    assert team.roles["developer"].fast_mode is True
+    assert team.roles["developer"].launch_mode == "interactive"
+
+
+def test_legacy_team_schema_has_no_frozen_harness_options(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-legacy-harness-options",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["schema_version"] = 2
+    value["roles"]["developer"].pop("harness_options")
+    value["roles"]["developer"].pop("launch_mode")
+
+    parsed = parse_team(value)
+
+    assert parsed.config_schema_version == 2
+    assert parsed.roles["developer"].model is None
+    assert parsed.roles["developer"].reasoning_effort is None
+    assert parsed.roles["developer"].fast_mode is None
+    assert parsed.roles["developer"].launch_mode == "headless"
+
+
+def test_team_rejects_fast_mode_for_claude_code(workspace: Path) -> None:
+    value = make_team(
+        run_id="at-test-claude-fast",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "claude-code",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["roles"]["developer"]["harness_options"]["fast_mode"] = True
+
+    with pytest.raises(IntegrityError, match="fast mode is not supported"):
+        parse_team(value)
+
+
 @pytest.mark.parametrize(
     ("max_turns", "max_wall_time_seconds"),
     [

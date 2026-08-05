@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_team.bootstrap import start_run
-from agent_team.cli import main
+from agent_team.cli import _role_flags, _role_value_options, build_parser, main
 from agent_team.management import cancel_run
 from agent_team.observation import diagnose
 from agent_team.origin import origin_context, wait_origin
@@ -24,6 +24,45 @@ def _tree_mtimes(root: Path) -> dict[str, int]:
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def test_init_parser_accepts_role_scoped_harness_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "init",
+            "--request",
+            "REQUEST.md",
+            "--protocol",
+            "PROTOCOL.md",
+            "--role",
+            "developer=claude-code:resume:default",
+            "--role",
+            "reviewer=codex:resume:default",
+            "--role-model",
+            "developer=opus",
+            "--role-reasoning-effort",
+            "reviewer=max",
+            "--role-fast",
+            "reviewer",
+            "--role-launch-mode",
+            "developer=headless",
+            "--initial-role",
+            "developer",
+        ]
+    )
+
+    assert _role_value_options(args.role_model, option="--role-model") == {
+        "developer": "opus"
+    }
+    assert _role_value_options(
+        args.role_reasoning_effort,
+        option="--role-reasoning-effort",
+    ) == {"reviewer": "max"}
+    assert _role_flags(args.role_fast, option="--role-fast") == {"reviewer"}
+    assert _role_value_options(
+        args.role_launch_mode,
+        option="--role-launch-mode",
+    ) == {"developer": "headless"}
 
 
 def test_status_resolves_active_owner_without_run_id_and_is_read_only(
@@ -49,6 +88,44 @@ def test_status_resolves_active_owner_without_run_id_and_is_read_only(
     assert result["result"] == "ok"
     assert result["data"]["run_id"] == run_dir.name
     assert _tree_mtimes(run_dir) == before
+
+
+def test_status_exposes_frozen_external_role_launch_configuration(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, _runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-test-status-role-config",
+        launch_mode="headless",
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        main(
+            [
+                "status",
+                run_dir.name,
+                "--workspace",
+                str(workspace),
+                "--json",
+            ]
+        )
+
+    assert stopped.value.code == 0
+    role = json.loads(capsys.readouterr().out)["data"]["roles"][0]
+    assert role["role_id"] == "developer"
+    assert role["adapter"] == "codex"
+    assert role["session_policy"] == "fresh"
+    assert role["launch_mode"] == "headless"
+    assert role["launch_profile"] == "test-noninteractive"
+    assert role["launch_profile_sha256"] == "0" * 64
+    assert role["model"] is None
+    assert role["reasoning_effort"] is None
+    assert role["fast_mode"] is None
 
 
 def test_watch_jsonl_emits_complete_monotonic_snapshots_until_terminal(

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
+import termios
 import time
 from pathlib import Path
 
@@ -16,10 +18,25 @@ from .util import (
     atomic_json,
     path_entry_exists,
     read_json,
+    read_regular,
     rfc3339,
     set_private_umask,
     write_all,
 )
+
+
+def _interactive_prompt_argument(launch: LaunchSpec) -> str:
+    if launch.prompt_file is None:
+        raise IntegrityError("interactive launch has no prompt file")
+    prompt_path = Path(launch.prompt_file)
+    if read_regular(prompt_path) != launch.stdin.encode("utf-8"):
+        raise IntegrityError("interactive prompt does not match LaunchSpec")
+    return (
+        "# Agent-Team role turn\n\n"
+        "Before doing anything else, read and follow the complete immutable "
+        f"turn instructions at `{prompt_path}`. That file is the authoritative "
+        "prompt for this turn."
+    )
 
 
 def _status(fd: int, code: str, message: str) -> None:
@@ -115,9 +132,20 @@ def _run_harness_runner(
     env = os.environ.copy()
     env.update(launch.env)
     try:
+        argv = list(launch.argv)
+        if launch.launch_mode == "interactive":
+            if not all(os.isatty(fd) for fd in (0, 1, 2)):
+                raise OSError("interactive Runner does not have a terminal")
+            controlling_tty = getattr(termios, "TIOCSCTTY", None)
+            if controlling_tty is None:
+                raise OSError("platform does not expose TIOCSCTTY")
+            fcntl.ioctl(0, controlling_tty, 0)
+            if env.get("TERM") in {None, "", "dumb"}:
+                env["TERM"] = "xterm-256color"
+            argv.append(_interactive_prompt_argument(launch))
         os.chdir(launch.cwd)
         os.set_inheritable(status_fd, False)
-        os.execvpe(launch.argv[0], list(launch.argv), env)
+        os.execvpe(launch.argv[0], argv, env)
     except OSError as exc:
         _status(status_fd, "EXEC_FAILED", f"{type(exc).__name__}: {exc}")
         return 71

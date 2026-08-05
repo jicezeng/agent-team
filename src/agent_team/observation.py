@@ -687,6 +687,12 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                         "binding": "origin",
                         "adapter": None,
                         "session_policy": None,
+                        "launch_mode": None,
+                        "launch_profile": None,
+                        "launch_profile_sha256": None,
+                        "model": None,
+                        "reasoning_effort": None,
+                        "fast_mode": None,
                         "state": origin_role_state,
                         "worker_pid": None,
                         "worker_start_id": None,
@@ -766,6 +772,12 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                     "binding": "external",
                     "adapter": role.adapter,
                     "session_policy": role.session_policy,
+                    "launch_mode": role.launch_mode,
+                    "launch_profile": role.launch_profile,
+                    "launch_profile_sha256": role.launch_profile_sha256,
+                    "model": role.model,
+                    "reasoning_effort": role.reasoning_effort,
+                    "fast_mode": role.fast_mode,
                     "state": role_state,
                     "worker_pid": worker["worker_pid"] if worker else None,
                     "worker_start_id": worker["worker_start_id"] if worker else None,
@@ -991,9 +1003,12 @@ def status_text(data: dict[str, Any]) -> str:
     lines.append("")
     lines.append("Roles:")
     for role in data["roles"]:
+        harness = role["adapter"] or ""
+        if role.get("launch_mode"):
+            harness = f"{harness}/{role['launch_mode']}"
         lines.append(
             f"  {role['role_id']:<16} {role['binding']:<8} "
-            f"{(role['adapter'] or ''):<12} {role['state']}"
+            f"{harness:<24} {role['state']}"
         )
     return "\n".join(lines)
 

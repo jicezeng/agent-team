@@ -52,10 +52,12 @@ from .turns import (
 )
 from .util import (
     atomic_json,
+    atomic_write,
     committed_directory_entries,
     path_entry_exists,
     random_token,
     read_json,
+    read_regular,
     rfc3339,
     set_private_umask,
 )
@@ -262,6 +264,7 @@ def _load_launch_spec_for_runtime(
     if (
         launch.adapter_id != role.adapter
         or launch.cwd != str(team.workspace)
+        or launch.launch_mode != (role.launch_mode or "headless")
         or launch.launch_profile != runtime["launch_profile"]
         or launch.launch_profile_sha256 != runtime["launch_profile_sha256"]
         or any(launch.env.get(key) != item for key, item in expected_env.items())
@@ -273,6 +276,22 @@ def _load_launch_spec_for_runtime(
             "LaunchSpec does not match the immutable Runtime context",
             f"turns/{turn_id}/process/launch.json",
         )
+    if launch.launch_mode == "interactive":
+        expected_prompt = (
+            run_dir
+            / "turns"
+            / turn_id
+            / "process"
+            / "prompt.md"
+        )
+        if (
+            launch.prompt_file != str(expected_prompt)
+            or read_regular(expected_prompt) != launch.stdin.encode("utf-8")
+        ):
+            raise IntegrityError(
+                "interactive prompt does not match the immutable LaunchSpec",
+                f"turns/{turn_id}/process/prompt.md",
+            )
     return launch
 
 
@@ -683,6 +702,7 @@ def finalize_external_turn_locked(
         process_exit_code=runtime["process_exit_code"],
         termination_kind=runtime["termination_kind"] or "unknown",
         group_quiescent=bool(runtime["group_quiescent"]),
+        launch_mode=role.launch_mode or "headless",
     )
     from .adapters.base import AdapterEvidenceSnapshot
 
@@ -803,6 +823,7 @@ def _authorize_launch_locked(
             role.launch_profile or "",
             role.session_policy or "",
             role.launch_profile_sha256 or "",
+            role.launch_mode or "headless",
         )
     except AgentTeamError as exc:
         commit_technical_block_locked(
@@ -949,6 +970,10 @@ def _launch_turn(
         launch_profile=role.launch_profile or "",
         launch_profile_sha256=role.launch_profile_sha256 or "",
         agent_team_cli=cli_path,
+        model=role.model,
+        reasoning_effort=role.reasoning_effort,
+        fast_mode=role.fast_mode,
+        launch_mode=role.launch_mode or "headless",
     )
     try:
         launch = adapter.prepare_launch(context)
@@ -1012,6 +1037,14 @@ def _launch_turn(
             team=team,
         )
         process_dir.mkdir(mode=0o700)
+        if launch.launch_mode == "interactive":
+            if launch.prompt_file != str(process_dir / "prompt.md"):
+                raise IntegrityError("interactive LaunchSpec prompt path is invalid")
+            atomic_write(
+                process_dir / "prompt.md",
+                launch.stdin.encode("utf-8"),
+                immutable=True,
+            )
         atomic_json(process_dir / "launch.json", launch.to_json(), immutable=True)
     logger.write(
         "info",
@@ -1035,7 +1068,11 @@ def _launch_turn(
                 "--launch-sha256",
                 launch.content_sha256(),
             ],
-            stdin=subprocess.DEVNULL,
+            stdin=(
+                None
+                if (role.launch_mode or "headless") == "interactive"
+                else subprocess.DEVNULL
+            ),
             close_fds=True,
         )
     except OSError as exc:

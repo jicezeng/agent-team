@@ -8,10 +8,12 @@ import uuid
 from pathlib import Path
 
 from agent_team.assets import effective_agent_team_cli, effective_claude_plugin
-from agent_team.errors import AgentTeamError
+from agent_team.config import CLAUDE_REASONING_EFFORTS, valid_model_id
+from agent_team.errors import AgentTeamError, InvalidArgument
 
 from .base import (
     AdapterEvidence,
+    HarnessLaunchOptions,
     HarnessAdapter,
     LaunchSpec,
     NormalizedTraceEvent,
@@ -125,7 +127,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
             *forbidden_commands,
         ]
 
-    def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
+    def profile_mappings(
+        self,
+        launch_mode: str = "headless",
+    ) -> dict[str, dict[str, list[str]]]:
+        self.assert_launch_mode(launch_mode)
         profiles: dict[str, dict[str, list[str]]] = {}
         for profile in ("default", "trusted-workspace", "full-access"):
             fixed = [
@@ -157,47 +163,230 @@ class ClaudeCodeAdapter(HarnessAdapter):
             return None
         return result.returncode == 0
 
+    def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
+        if options.model is not None and not valid_model_id(options.model):
+            raise InvalidArgument("claude-code model must be a non-empty model id")
+        if (
+            options.reasoning_effort is not None
+            and options.reasoning_effort not in CLAUDE_REASONING_EFFORTS
+        ):
+            supported = ", ".join(sorted(CLAUDE_REASONING_EFFORTS))
+            raise InvalidArgument(
+                f"claude-code reasoning effort must be one of: {supported}"
+            )
+        if options.fast_mode is not None:
+            raise InvalidArgument("fast mode is only supported by the codex adapter")
+
+    @staticmethod
+    def _user_settings_path() -> Path:
+        configured_home = os.environ.get("CLAUDE_CONFIG_DIR")
+        base = (
+            Path(configured_home).expanduser()
+            if configured_home
+            else Path.home() / ".claude"
+        )
+        return base / "settings.json"
+
+    def _user_launch_options(
+        self,
+        *,
+        include_model: bool,
+        include_reasoning_effort: bool,
+    ) -> HarnessLaunchOptions:
+        env_model = os.environ.get("ANTHROPIC_MODEL") if include_model else None
+        env_effort = (
+            os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+            if include_reasoning_effort
+            else None
+        )
+        need_settings = (
+            (include_model and env_model is None)
+            or (include_reasoning_effort and env_effort is None)
+        )
+        path = self._user_settings_path()
+        if not need_settings:
+            value: dict[str, object] = {}
+        else:
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                value = {}
+            except OSError as exc:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_UNREADABLE",
+                    f"cannot read Claude Code user settings {path}: {exc}",
+                ) from exc
+            else:
+                try:
+                    parsed = json.loads(raw)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise AgentTeamError(
+                        "HARNESS_USER_CONFIG_INVALID",
+                        f"Claude Code user settings are invalid: {path}",
+                    ) from exc
+                if not isinstance(parsed, dict):
+                    raise AgentTeamError(
+                        "HARNESS_USER_CONFIG_INVALID",
+                        "Claude Code user settings must be an object",
+                    )
+                value = parsed
+        settings_env = value.get("env", {})
+        if not isinstance(settings_env, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user settings env must be an object",
+            )
+        settings_model = value.get("model") if include_model else None
+        settings_effort = (
+            value.get("effortLevel") if include_reasoning_effort else None
+        )
+        model = None
+        if include_model:
+            model = (
+                env_model
+                if env_model is not None
+                else settings_env.get("ANTHROPIC_MODEL", settings_model)
+            )
+        effort = None
+        if include_reasoning_effort:
+            effort = (
+                env_effort
+                if env_effort is not None
+                else settings_env.get(
+                    "CLAUDE_CODE_EFFORT_LEVEL",
+                    settings_effort,
+                )
+            )
+        if model is not None and not isinstance(model, str):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user model default must be a string",
+            )
+        if effort is not None and not isinstance(effort, str):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user effort default must be a string",
+            )
+        options = HarnessLaunchOptions(
+            model=model,
+            reasoning_effort=effort,
+        )
+        try:
+            self.assert_launch_options(options)
+        except InvalidArgument as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"Claude Code user settings are invalid: {exc.message}",
+            ) from exc
+        return options
+
+    def resolve_launch_options(
+        self,
+        *,
+        model: str | None,
+        reasoning_effort: str | None,
+        fast_mode: bool | None,
+    ) -> HarnessLaunchOptions:
+        explicit = HarnessLaunchOptions(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            fast_mode=fast_mode,
+        )
+        self.assert_launch_options(explicit)
+        defaults = (
+            self._user_launch_options(
+                include_model=model is None,
+                include_reasoning_effort=reasoning_effort is None,
+            )
+            if model is None or reasoning_effort is None
+            else HarnessLaunchOptions()
+        )
+        options = HarnessLaunchOptions(
+            model=model if model is not None else defaults.model,
+            reasoning_effort=(
+                reasoning_effort
+                if reasoning_effort is not None
+                else defaults.reasoning_effort
+            ),
+        )
+        self.assert_launch_options(options)
+        return options
+
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
+        self.assert_launch_mode(context.launch_mode)
         self.assert_profile(
             context.launch_profile,
             context.session_policy,
             context.launch_profile_sha256,
+            context.launch_mode,
         )
+        options = HarnessLaunchOptions(
+            model=context.model,
+            reasoning_effort=context.reasoning_effort,
+            fast_mode=context.fast_mode,
+        )
+        self.assert_launch_options(options)
         executable = str(self.executable())
-        mapping = self.profile_mappings()[context.launch_profile]
-        base = (
-            executable,
-            "-p",
-            "--input-format",
-            "text",
-            "--output-format",
-            "stream-json",
-            "--verbose",
+        mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
+        selection: tuple[str, ...] = (
+            ("--model", options.model) if options.model is not None else ()
         )
-        if context.session_ref and context.session_policy == "resume":
-            argv = (*base, *mapping["resume"], "--resume", context.session_ref)
-            starts_new = False
+        prompt_file: str | None = None
+        if context.launch_mode == "interactive":
+            base = (executable, *selection)
+            prompt_file = str(Path(context.turn_dir) / "process" / "prompt.md")
+            if context.session_ref and context.session_policy == "resume":
+                session_ref = context.session_ref
+                argv = (*base, *mapping["resume"], "--resume", session_ref)
+                starts_new = False
+            else:
+                session_ref = str(uuid.uuid4())
+                argv = (*base, *mapping["start"], "--session-id", session_ref)
+                starts_new = True
         else:
-            session_id = str(uuid.uuid4())
-            argv = (*base, *mapping["start"], "--session-id", session_id)
-            starts_new = True
+            base = (
+                executable,
+                "-p",
+                "--input-format",
+                "text",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                *selection,
+            )
+            if context.session_ref and context.session_policy == "resume":
+                session_ref = context.session_ref
+                argv = (*base, *mapping["resume"], "--resume", session_ref)
+                starts_new = False
+            else:
+                session_ref = str(uuid.uuid4())
+                argv = (*base, *mapping["start"], "--session-id", session_ref)
+                starts_new = True
+        env = {
+            "AGENT_TEAM_RUN_ID": context.run_id,
+            "AGENT_TEAM_ROLE_ID": context.role_id,
+            "AGENT_TEAM_TURN_ID": context.turn_id,
+            "AGENT_TEAM_RUN_DIR": str(Path(context.turn_dir).parent.parent),
+            "AGENT_TEAM_TURN_DIR": context.turn_dir,
+            "AGENT_TEAM_CLI": context.agent_team_cli,
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        }
+        if options.reasoning_effort is not None:
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = options.reasoning_effort
         return LaunchSpec(
             adapter_id=self.adapter_id,
             argv=argv,
             cwd=context.workspace,
-            env={
-                "AGENT_TEAM_RUN_ID": context.run_id,
-                "AGENT_TEAM_ROLE_ID": context.role_id,
-                "AGENT_TEAM_TURN_ID": context.turn_id,
-                "AGENT_TEAM_RUN_DIR": str(Path(context.turn_dir).parent.parent),
-                "AGENT_TEAM_TURN_DIR": context.turn_dir,
-                "AGENT_TEAM_CLI": context.agent_team_cli,
-                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-            },
+            env=env,
             stdin=context.prompt,
             launch_profile=context.launch_profile,
             launch_profile_sha256=context.launch_profile_sha256,
             starts_new_session=starts_new,
+            launch_mode=context.launch_mode,
+            prompt_file=prompt_file,
+            expected_session_ref=(
+                session_ref if context.launch_mode == "interactive" else None
+            ),
         )
 
     def parse_stream_record(
@@ -250,6 +439,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
         self,
         record: StreamRecord,
     ) -> list[NormalizedTraceEvent]:
+        if record.source == "terminal":
+            return super().normalize_stream_record(record)
         value = self.parse_json_record(record)
         if value is None:
             return super().normalize_stream_record(record)

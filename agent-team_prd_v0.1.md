@@ -82,8 +82,9 @@ v0.1 不承诺：
 - 保存用户原始请求为 `REQUEST.md`；
 - 生成可读的自然语言 `PROTOCOL.md`，明确角色、路由、循环、Completion Authority、
   Block/Resume 规则、假设和安全上限；
-- 生成 Schema 2 `team.json`，冻结 Role Binding、Session Policy、Launch Profile、
-  Wall Time、最大 Turn 数和 Observability Policy；
+- 生成 Schema 4 `team.json`，冻结 Role Binding、Session Policy、Launch Mode、
+  Launch Profile、role-scoped Model / Reasoning Effort / Codex Fast Mode、Wall
+  Time、最大 Turn 数和 Observability Policy；
 - `init` 必须原子创建完整 UNSTARTED Run，`start` 才获取 Workspace Ownership 并
   提交唯一 Kickoff；
 - Kickoff 后不得在线修改 Request、Protocol、Team、Profile 或安全上限。
@@ -94,10 +95,17 @@ v0.1 不承诺：
 - Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex` 和
   `claude-code`；
 - External Role 支持 `resume` 与 `fresh`；
+- External Role 支持 `interactive|headless` Launch Mode；新 Run 默认
+  `interactive`，通过受管 PTY 在角色 tmux Pane 中显示原生 Codex / Claude Code
+  TUI，只有用户明确要求时才选择 `headless`；旧 Schema 1–3 Run 固定按
+  `headless` 读取；
 - Codex 与 Claude Code 都提供 `default`、`trusted-workspace` 和 `full-access`
   三个显式 Launch Profile；后两者只能由用户主动选择；
 - Launch Profile 不继承本机可变权限配置；Start/Resume 参数及 Hash 在 Kickoff 前
   冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
+- Codex 与 Claude Code External Role 都可显式选择 Model 和 Reasoning Effort，
+  Codex 还可显式启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
+  默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -130,7 +138,8 @@ v0.1 不承诺：
   Turn Runtime 设置一次 Hash 锚点；
 - Normalized Trace 支持 Agent Message、Tool Call/Result、File Change、Usage、
   Error、Session、Turn、Fallback，以及 Harness 明确暴露的 Reasoning Summary；
-- 每个事件保留 stdout/stderr 原始 Sequence 范围；未知结构化记录不得静默丢失；
+- 每个事件保留 stdout/stderr/terminal 原始 Sequence 范围；交互式 TUI 字节作为
+  Diagnostic Event 保留，未知结构化记录不得静默丢失；
 - `status`、`diagnose`、`watch` 提供稳定运行状态；`transcript`、`tail` 提供 Role/
   Turn Filter 和机器可读审计输出；
 - Full Audit 要求所有业务 Role 为 External，Origin 只做控制面，Raw 或 Normalized
@@ -152,7 +161,8 @@ v0.1 不承诺：
 1. 用户在目标 Git Worktree 打开 Origin Agent，并描述团队和任务；
 2. Bootstrap Skill 保存 Request、生成 Protocol、选择 Binding/Profile/Policy；
 3. `init` 与 `start` 建立 Run、Ownership、Kickoff 和所需 External Worker；
-4. 当前 Token Role 领取冻结 Input，执行任务并提交唯一正式动作；
+4. 当前 Token Role 领取冻结 Input；默认在可只读 Attach 的原生 TUI 中执行任务，
+   并提交唯一正式动作；
 5. Handoff 目标领取下一 Turn；同一 Role 按 Session Policy Resume 或 Fresh；
 6. 若发生 Block，Origin 展示证据并等待下一条明确用户指令；
 7. Completion Authority 确认条件满足后提交 Completion；
@@ -170,6 +180,9 @@ v0.1 的发布验收必须同时满足：
 - Transcript 汇总可报告事件、工具和 Harness 提供的 Token/Cost/Duration；
 - 安装后的 Skill/Plugin 与包内副本一致，wheel/sdist 可构建；
 - Run 终态健康、Owner 释放、受管进程与 tmux Runtime 清空；
+- Interactive External Turn 的三路 stdio 均连接受管 PTY，Pane 可实时观察；正式
+  Outbox 与 Session 验证后，Supervisor 以独立 `action` 终止类型清空进程组，Pane
+  文本不参与状态转换；
 - 没有开放 P0-P3 缺陷；任何剩余限制以 P4 或产品边界明确披露。
 
 现有证据见：

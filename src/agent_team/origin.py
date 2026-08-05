@@ -618,6 +618,7 @@ def origin_action(
                             target.launch_profile or "",
                             target.session_policy or "",
                             target.launch_profile_sha256 or "",
+                            target.launch_mode or "headless",
                         )
                     except AgentTeamError as exc:
                         after_probe = dt.datetime.now(dt.timezone.utc)
@@ -837,6 +838,7 @@ def origin_resume(
                 target.launch_profile or "",
                 target.session_policy or "",
                 target.launch_profile_sha256 or "",
+                target.launch_mode or "headless",
             )
         allowed, reason = can_create_business_turn(run_dir, projection)
         if not allowed:

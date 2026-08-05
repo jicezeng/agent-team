@@ -38,7 +38,8 @@ existing Run:
 1. Preserve the user's exact request in a local `REQUEST.md`.
 2. Extract dynamic roles, Origin/External bindings, external adapters, session
    policies, initial role, handoff/loop rules, completion authority, final
-   delivery, and safety limits.
+   delivery, safety limits, and any model, reasoning-effort, or Codex fast-mode
+   choices the user explicitly made.
 3. Reject true parallel fan-out/join, multiple workspaces, non-Git roots,
    missing completion conditions, unavailable Harnesses, or dangerous
    ambiguity. Do not silently serialize a requested parallel topology.
@@ -54,12 +55,22 @@ existing Run:
    controlled machine or VM. Never infer elevated access from a role name, a
    request to run tests, or a natural-language `read-only` restriction, and
    never treat mutable local Harness settings as the selected Profile.
-6. Choose and record the observability policy. Use `full` only when every
+6. Add `--role-model <role>=<model>`,
+   `--role-reasoning-effort <role>=<effort>`, or `--role-fast <role>` only for
+   choices the user explicitly made. Do not infer these choices from role names
+   or task complexity. Omit each unspecified option so `init` snapshots that
+   Harness user's default for the field. `--role-fast` is Codex-only.
+   Launch mode is separate: new External roles default to native
+   `interactive` PTY execution in their tmux Pane. Add
+   `--role-launch-mode <role>=headless` only when the user explicitly requests
+   headless/structured-stream execution; an explicit `interactive` value may
+   be recorded but is normally redundant.
+7. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
    Keep standard redaction and redacted raw retention unless the user
    explicitly requests another privacy tradeoff.
-7. Write Request and Protocol outside `.agent-team`, then run:
+8. Write Request and Protocol outside `.agent-team`, then run:
 
 ```bash
 agent-team init \
@@ -77,7 +88,7 @@ agent-team init \
 agent-team start <run-id>
 ```
 
-8. Save the returned Run ID and immediately call
+9. Save the returned Run ID and immediately call
    `agent-team wait-origin --run <run-id> --timeout 90`.
 
 ## Origin loop
@@ -113,7 +124,8 @@ agent-team origin-resume \
 ```
 
 Limit/Profile Changed Blocks and changes to the Request, Protocol, roles,
-bindings, workspace, profile, or limits require Cancel plus a new Run.
+bindings, workspace, launch mode, profile, model, reasoning effort, fast mode,
+or limits require Cancel plus a new Run.
 
 ## Structured control
 
@@ -122,6 +134,11 @@ Use `status --json` and `diagnose --json`; act on the structured envelope,
 and `tail --jsonl --role <role>` only for audit and observation. Never parse
 Pane text, human-readable Status, Harness prose, or logs to decide routing,
 completion, Resume, Unlock, or recovery.
+
+`agent-team attach <run-id> --role <role>` is a read-only live view. An
+interactive role shows its native Harness TUI, but neither the Pane nor tmux
+input is an action channel; formal CLI Outbox actions and the Journal remain
+authoritative.
 
 Never share, guess, or replace another Origin session's Claim. Claim loss has
 no takeover path in v0.1: diagnose read-only, cancel the old Run, confirm the

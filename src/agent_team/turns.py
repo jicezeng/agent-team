@@ -121,6 +121,7 @@ TERMINATION_KINDS = {
     "deadline",
     "signal",
     "crash",
+    "action",
     "unknown",
 }
 TURN_ID_RE = re.compile(r"^turn-\d{4,}$")
@@ -1407,6 +1408,7 @@ def stage_external_action_locked(
                     target.launch_profile or "",
                     target.session_policy or "",
                     target.launch_profile_sha256 or "",
+                    target.launch_mode or "headless",
                 )
             except AgentTeamError as exc:
                 after_probe = dt.datetime.now(dt.timezone.utc)
@@ -1578,6 +1580,7 @@ def deliver_outbox_locked(
                         target.launch_profile or "",
                         target.session_policy or "",
                         target.launch_profile_sha256 or "",
+                        target.launch_mode or "headless",
                     )
                 except AgentTeamError as exc:
                     after_probe = dt.datetime.now(dt.timezone.utc)

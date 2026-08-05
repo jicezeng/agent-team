@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters import get_adapter
+from .adapters.base import HarnessLaunchOptions
 from .config import Role, Team, load_team
 from .errors import AgentTeamError, IntegrityError, InvalidArgument
 from .gitfacts import capture_workspace_facts
@@ -56,10 +57,25 @@ def _assert_external_capability(role: Role) -> None:
         role.launch_profile or "",
         role.session_policy or "",
         role.launch_profile_sha256 or "",
+        role.launch_mode or "headless",
+    )
+    adapter.assert_launch_options(
+        HarnessLaunchOptions(
+            model=role.model,
+            reasoning_effort=role.reasoning_effort,
+            fast_mode=role.fast_mode,
+        )
     )
 
 
-def parse_role_spec(spec: str) -> tuple[str, Role]:
+def parse_role_spec(
+    spec: str,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    fast_mode: bool | None = None,
+    launch_mode: str | None = None,
+) -> tuple[str, Role]:
     if "=" not in spec:
         raise InvalidArgument(
             f"role must be ROLE=origin or ROLE=ADAPTER:POLICY:PROFILE: {spec!r}"
@@ -69,6 +85,15 @@ def parse_role_spec(spec: str) -> tuple[str, Role]:
 
     validate_role_id(role_id)
     if binding == "origin":
+        if (
+            model is not None
+            or reasoning_effort is not None
+            or fast_mode is not None
+            or launch_mode is not None
+        ):
+            raise InvalidArgument(
+                f"Harness launch options require an External role: {role_id}"
+            )
         return role_id, Role(role_id, "origin")
     parts = binding.split(":")
     if len(parts) != 3:
@@ -81,7 +106,18 @@ def parse_role_spec(spec: str) -> tuple[str, Role]:
     if session_policy not in {"resume", "fresh"}:
         raise InvalidArgument(f"invalid session policy: {session_policy}")
     adapter = get_adapter(adapter_id)
-    fingerprint = adapter.profile_fingerprint(profile, session_policy)
+    effective_launch_mode = launch_mode or "interactive"
+    adapter.assert_launch_mode(effective_launch_mode)
+    options = adapter.resolve_launch_options(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
+    )
+    fingerprint = adapter.profile_fingerprint(
+        profile,
+        session_policy,
+        effective_launch_mode,
+    )
     return role_id, Role(
         role_id,
         "external",
@@ -89,6 +125,10 @@ def parse_role_spec(spec: str) -> tuple[str, Role]:
         session_policy,
         profile,
         fingerprint,
+        options.model,
+        options.reasoning_effort,
+        options.fast_mode,
+        effective_launch_mode,
     )
 
 
@@ -204,6 +244,19 @@ def _preflight_start(run_dir: Path) -> Team:
                 role.launch_profile or "",
                 role.session_policy or "",
                 role.launch_profile_sha256 or "",
+                role.launch_mode or "headless",
+            )
+            adapter.assert_launch_options(
+                HarnessLaunchOptions(
+                    model=role.model,
+                    reasoning_effort=role.reasoning_effort,
+                    fast_mode=role.fast_mode,
+                )
+            )
+            adapter.prepare_run_state(
+                run_dir=run_dir,
+                role_id=role.role_id,
+                launch_mode=role.launch_mode or "headless",
             )
     return team
 

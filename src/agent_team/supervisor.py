@@ -4,16 +4,22 @@ import asyncio
 import base64
 import contextlib
 import datetime as dt
+import errno
+import fcntl
 import json
 import os
+import pty
 import signal
 import stat
+import struct
 import sys
+import termios
 from pathlib import Path
 from typing import Any
 
 from .adapters import get_adapter
 from .adapters.base import (
+    AdapterEvidence,
     AdapterEvidenceSnapshot,
     LaunchSpec,
     StreamRecord,
@@ -29,6 +35,7 @@ from .processes import (
 from .state import locked_run, read_owner
 from .turns import (
     commit_technical_block_locked,
+    load_outbox,
     load_runtime,
     mark_session_unavailable,
 )
@@ -258,6 +265,7 @@ def validate_supervisor(value: dict[str, Any]) -> dict[str, Any]:
             "deadline",
             "signal",
             "crash",
+            "action",
             "unknown",
         }
     ):
@@ -366,8 +374,16 @@ class StreamRecorder:
         self.stderr_fd = create_empty_regular(self.process_dir / "stderr.log")
         self.seq = 0
         self.lock = asyncio.Lock()
-        self.buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        self.first_seq: dict[str, int | None] = {"stdout": None, "stderr": None}
+        self.buffers = {
+            "stdout": bytearray(),
+            "stderr": bytearray(),
+            "terminal": bytearray(),
+        }
+        self.first_seq: dict[str, int | None] = {
+            "stdout": None,
+            "stderr": None,
+            "terminal": None,
+        }
         self.adapter = get_adapter(adapter_id)
         self.evidence = AdapterEvidenceSnapshot()
         self.snapshot = snapshot
@@ -415,6 +431,8 @@ class StreamRecorder:
         )
 
     async def record(self, source: str, data: bytes) -> None:
+        if source not in self.buffers:
+            raise IntegrityError(f"unsupported Harness stream source: {source}")
         async with self.lock:
             self.chunks_observed += 1
             self.source_bytes += len(data)
@@ -453,6 +471,11 @@ class StreamRecorder:
                 write_all(self.stream_fd, line)
                 if source == "stderr":
                     write_all(self.stderr_fd, stored_data)
+            # Native TUI bytes are a terminal recording, not a line-oriented
+            # structured protocol. Interactive execution evidence is merged
+            # explicitly by the PTY relay and Pane text never controls state.
+            if source == "terminal":
+                return
             if self.first_seq[source] is None:
                 self.first_seq[source] = seq
             self.buffers[source].extend(data)
@@ -510,6 +533,20 @@ class StreamRecorder:
                                 self.snapshot,
                             )
 
+    async def merge_evidence(self, evidence: AdapterEvidence) -> None:
+        async with self.lock:
+            changed = self.evidence.merge(evidence)
+            if not changed:
+                return
+            self.snapshot.update(self.evidence.to_json())
+            if (
+                self.snapshot["agent_execution_started"]
+                and self.snapshot["state"] == "waiting_authorization"
+            ):
+                self.snapshot["state"] = "running"
+            with locked_run(self.run_dir, exclusive=True):
+                _save_snapshot(self.run_dir, self.turn_id, self.snapshot)
+
 
 async def _read_pipe(
     stream: asyncio.StreamReader,
@@ -521,6 +558,106 @@ async def _read_pipe(
         if not chunk:
             return
         await recorder.record(source, chunk)
+
+
+def _terminal_size(fd: int) -> tuple[int, int]:
+    try:
+        size = os.get_terminal_size(fd)
+    except OSError:
+        return 40, 120
+    return max(1, size.lines), max(1, size.columns)
+
+
+def _set_pty_size(fd: int, size: tuple[int, int]) -> None:
+    rows, columns = size
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+
+
+def _fresh_interactive_session_candidate(
+    adapter: Any,
+    launch: LaunchSpec,
+    *,
+    baseline: set[str],
+    observed: str | None,
+) -> str | None:
+    current_refs = adapter.interactive_session_refs(launch)
+    candidates = current_refs - baseline
+    if len(candidates) > 1:
+        raise IntegrityError(
+            "interactive Harness created multiple candidate Sessions"
+        )
+    if not candidates:
+        if observed is not None:
+            raise IntegrityError(
+                "interactive Harness Session candidate disappeared"
+            )
+        return None
+    candidate = next(iter(candidates))
+    if observed not in {None, candidate}:
+        raise IntegrityError("interactive Harness Session candidate changed")
+    return candidate
+
+
+async def _read_pty(
+    master_fd: int,
+    recorder: StreamRecorder,
+    *,
+    expected_session_ref: str | None,
+) -> None:
+    os.set_blocking(master_fd, False)
+    execution_observed = False
+    try:
+        while True:
+            try:
+                chunk = os.read(master_fd, 65536)
+            except BlockingIOError:
+                await asyncio.sleep(0.02)
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.EIO, errno.EBADF}:
+                    return
+                raise
+            if not chunk:
+                return
+            with contextlib.suppress(OSError):
+                write_all(sys.stdout.fileno(), chunk)
+            await recorder.record("terminal", chunk)
+            if not execution_observed:
+                await recorder.merge_evidence(
+                    AdapterEvidence(
+                        agent_execution_started=True,
+                        observed_session_ref=expected_session_ref,
+                    )
+                )
+                execution_observed = True
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(master_fd)
+
+
+async def _relay_terminal_input(master_fd: int) -> None:
+    source_fd = sys.stdin.fileno()
+    if not os.isatty(source_fd):
+        return
+    original_flags = fcntl.fcntl(source_fd, fcntl.F_GETFL)
+    fcntl.fcntl(source_fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+    try:
+        while True:
+            try:
+                data = os.read(source_fd, 4096)
+            except BlockingIOError:
+                await asyncio.sleep(0.02)
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.EIO, errno.EBADF}:
+                    return
+                raise
+            if not data:
+                return
+            write_all(master_fd, data)
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.fcntl(source_fd, fcntl.F_SETFL, original_flags)
 
 
 async def _read_status_fd(fd: int) -> bytes:
@@ -600,6 +737,15 @@ async def supervise_turn(
     launch = LaunchSpec.from_json(read_json(process_dir / "launch.json"))
     if launch.content_sha256() != launch_sha256:
         raise IntegrityError("LaunchSpec does not match the authorized launch digest")
+    adapter = get_adapter(launch.adapter_id)
+    interactive_session_baseline = (
+        adapter.interactive_session_refs(launch)
+        if (
+            launch.launch_mode == "interactive"
+            and launch.expected_session_ref is None
+        )
+        else set()
+    )
     snapshot = _base_snapshot(turn_id, nonce)
     with locked_run(run_dir, exclusive=True):
         projection = scan_journal(run_dir)
@@ -639,14 +785,40 @@ async def supervise_turn(
         "--status-fd",
         str(status_w),
     ]
-    process = await asyncio.create_subprocess_exec(
-        *runner_argv,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-        pass_fds=(status_w,),
-    )
+    terminal_task: asyncio.Task[None] | None = None
+    terminal_input_task: asyncio.Task[None] | None = None
+    master_fd: int | None = None
+    if launch.launch_mode == "interactive":
+        master_fd, slave_fd = pty.openpty()
+        _set_pty_size(slave_fd, _terminal_size(sys.stdout.fileno()))
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *runner_argv,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                start_new_session=True,
+                pass_fds=(status_w,),
+            )
+        finally:
+            os.close(slave_fd)
+        terminal_task = asyncio.create_task(
+            _read_pty(
+                master_fd,
+                recorder,
+                expected_session_ref=launch.expected_session_ref,
+            )
+        )
+        terminal_input_task = asyncio.create_task(_relay_terminal_input(master_fd))
+    else:
+        process = await asyncio.create_subprocess_exec(
+            *runner_argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+            pass_fds=(status_w,),
+        )
     os.close(status_w)
     status_task = asyncio.create_task(_read_status_fd(status_r))
     runner_path = process_dir / "runner.json"
@@ -660,11 +832,21 @@ async def supervise_turn(
     except BaseException as exc:
         with contextlib.suppress(ProcessLookupError):
             process.terminate()
-        stdout_bytes, stderr_bytes = await process.communicate()
-        if stdout_bytes:
-            await recorder.record("stdout", stdout_bytes)
-        if stderr_bytes:
-            await recorder.record("stderr", stderr_bytes)
+        if launch.launch_mode == "interactive":
+            await process.wait()
+            if terminal_task is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(terminal_task, timeout=2.0)
+            if terminal_input_task is not None:
+                terminal_input_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await terminal_input_task
+        else:
+            stdout_bytes, stderr_bytes = await process.communicate()
+            if stdout_bytes:
+                await recorder.record("stdout", stdout_bytes)
+            if stderr_bytes:
+                await recorder.record("stderr", stderr_bytes)
         status_bytes = await status_task
         if status_bytes:
             atomic_write(
@@ -700,10 +882,22 @@ async def supervise_turn(
     )
     with locked_run(run_dir, exclusive=True):
         _save_snapshot(run_dir, turn_id, snapshot)
-    assert process.stdout is not None and process.stderr is not None
-    stdout_task = asyncio.create_task(_read_pipe(process.stdout, "stdout", recorder))
-    stderr_task = asyncio.create_task(_read_pipe(process.stderr, "stderr", recorder))
-    prompt_sent = False
+    if launch.launch_mode == "interactive":
+        assert terminal_task is not None and master_fd is not None
+        reader_tasks = (terminal_task,)
+        last_terminal_size = _terminal_size(sys.stdout.fileno())
+    else:
+        assert process.stdout is not None and process.stderr is not None
+        stdout_task = asyncio.create_task(
+            _read_pipe(process.stdout, "stdout", recorder)
+        )
+        stderr_task = asyncio.create_task(
+            _read_pipe(process.stderr, "stderr", recorder)
+        )
+        reader_tasks = (stdout_task, stderr_task)
+        last_terminal_size = None
+    launch_activated = False
+    interactive_action_staged = False
     termination_reason: str | None = None
     auth_path = process_dir / "launch-authorized.json"
     while process.returncode is None:
@@ -714,15 +908,32 @@ async def supervise_turn(
         reader_failure = next(
             (
                 task.exception()
-                for task in (stdout_task, stderr_task)
+                for task in reader_tasks
                 if task.done() and not task.cancelled() and task.exception() is not None
             ),
             None,
         )
         if reader_failure is not None:
             termination_reason = "corrupted"
-        if process.returncode is not None:
-            break
+        if launch.launch_mode == "interactive":
+            try:
+                current_size = _terminal_size(sys.stdout.fileno())
+                if current_size != last_terminal_size and master_fd is not None:
+                    _set_pty_size(master_fd, current_size)
+                    last_terminal_size = current_size
+                if launch.expected_session_ref is None:
+                    candidate = _fresh_interactive_session_candidate(
+                        adapter,
+                        launch,
+                        baseline=interactive_session_baseline,
+                        observed=recorder.evidence.observed_session_ref,
+                    )
+                    if candidate is not None:
+                        await recorder.merge_evidence(
+                            AdapterEvidence(observed_session_ref=candidate)
+                        )
+            except (IntegrityError, OSError):
+                termination_reason = "corrupted"
         authorization: dict[str, Any] | None = None
         try:
             with locked_run(run_dir, exclusive=True):
@@ -742,6 +953,12 @@ async def supervise_turn(
                 )
                 if persisted_launch != launch:
                     raise IntegrityError("LaunchSpec changed during execution")
+                if launch.launch_mode == "interactive" and (
+                    launch.prompt_file is None
+                    or read_regular(Path(launch.prompt_file))
+                    != launch.stdin.encode("utf-8")
+                ):
+                    raise IntegrityError("interactive prompt changed during execution")
                 persisted_runner = validate_runner(
                     read_json(runner_path),
                     turn_id=turn_id,
@@ -769,7 +986,7 @@ async def supervise_turn(
                         raise IntegrityError(
                             "launch authorization does not match identities/spec"
                         )
-                elif prompt_sent:
+                elif launch_activated:
                     raise IntegrityError("consumed launch authorization disappeared")
                 deadline = parse_rfc3339(
                     projection.kickoff["created_at"]
@@ -797,14 +1014,40 @@ async def supervise_turn(
                     termination_reason = "permission"
                 elif recorder.evidence.session_unavailable_reason is not None:
                     termination_reason = "session_unavailable"
+                if launch.launch_mode == "interactive":
+                    outbox = load_outbox(turn_dir)
+                    if outbox is not None:
+                        if not launch_activated and authorization is None:
+                            raise IntegrityError(
+                                "interactive Outbox appeared before launch authorization"
+                            )
+                        interactive_action_staged = True
         except (IntegrityError, OSError):
             termination_reason = "corrupted"
-        if termination_reason is None and authorization is not None and not prompt_sent:
-            if process.stdin is not None:
+        if (
+            termination_reason is None
+            and authorization is not None
+            and not launch_activated
+        ):
+            if launch.launch_mode == "headless" and process.stdin is not None:
                 process.stdin.write(launch.stdin.encode("utf-8"))
                 await process.stdin.drain()
                 process.stdin.close()
-            prompt_sent = True
+            launch_activated = True
+        if (
+            termination_reason is None
+            and interactive_action_staged
+            and recorder.evidence.agent_execution_started
+            and recorder.evidence.observed_session_ref is not None
+        ):
+            await recorder.merge_evidence(
+                AdapterEvidence(adapter_completed=True)
+            )
+            # A native TUI normally remains open after completing one model
+            # turn. The durable, validated Outbox is the completion boundary;
+            # stop the verified Runner group without pretending its real
+            # signal-derived process exit code was zero.
+            termination_reason = "action_staged"
         if termination_reason is not None:
             if snapshot["state"] != "stopping":
                 snapshot["state"] = "stopping"
@@ -823,7 +1066,7 @@ async def supervise_turn(
         runner=runner,
         allow_reaped_leader=True,
     )
-    for task in (stdout_task, stderr_task):
+    for task in reader_tasks:
         try:
             await asyncio.wait_for(task, timeout=2.0)
         except asyncio.TimeoutError:
@@ -832,6 +1075,10 @@ async def supervise_turn(
                 await task
         except Exception:
             termination_reason = termination_reason or "corrupted"
+    if terminal_input_task is not None:
+        terminal_input_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, OSError):
+            await terminal_input_task
     status_bytes = await status_task
     if status_bytes:
         atomic_write(process_dir / "exec-error.json", status_bytes, immutable=True)
@@ -841,6 +1088,8 @@ async def supervise_turn(
         termination_kind = "deadline"
     elif termination_reason in {"cancel", "cancelled"}:
         termination_kind = "cancelled"
+    elif termination_reason == "action_staged":
+        termination_kind = "action"
     elif termination_reason is not None:
         termination_kind = "signal"
     elif return_code == 0:

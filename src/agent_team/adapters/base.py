@@ -13,6 +13,9 @@ from agent_team.errors import AgentTeamError, IntegrityError
 from agent_team.util import canonical_json_bytes, sha256_bytes
 
 
+LAUNCH_MODES = frozenset({"headless", "interactive"})
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityReport:
     adapter_id: str
@@ -31,6 +34,13 @@ class CapabilityReport:
 
 
 @dataclass(frozen=True, slots=True)
+class HarnessLaunchOptions:
+    model: str | None = None
+    reasoning_effort: str | None = None
+    fast_mode: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TurnLaunchContext:
     run_id: str
     role_id: str
@@ -44,6 +54,10 @@ class TurnLaunchContext:
     launch_profile: str
     launch_profile_sha256: str
     agent_team_cli: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+    fast_mode: bool | None = None
+    launch_mode: str = "headless"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +70,23 @@ class LaunchSpec:
     launch_profile: str
     launch_profile_sha256: str
     starts_new_session: bool
+    launch_mode: str = "headless"
+    prompt_file: str | None = None
+    expected_session_ref: str | None = None
+    schema_version: int = 2
 
     def to_json(self) -> dict[str, Any]:
+        if self.schema_version == 1:
+            return {
+                "adapter_id": self.adapter_id,
+                "argv": list(self.argv),
+                "cwd": self.cwd,
+                "env": self.env,
+                "stdin": self.stdin,
+                "launch_profile": self.launch_profile,
+                "launch_profile_sha256": self.launch_profile_sha256,
+                "starts_new_session": self.starts_new_session,
+            }
         value = asdict(self)
         value["argv"] = list(self.argv)
         return value
@@ -67,7 +96,7 @@ class LaunchSpec:
 
     @classmethod
     def from_json(cls, value: dict[str, Any]) -> "LaunchSpec":
-        required = {
+        legacy_required = {
             "adapter_id",
             "argv",
             "cwd",
@@ -77,7 +106,29 @@ class LaunchSpec:
             "launch_profile_sha256",
             "starts_new_session",
         }
-        if set(value) != required:
+        current_required = legacy_required | {
+            "schema_version",
+            "launch_mode",
+            "prompt_file",
+            "expected_session_ref",
+        }
+        fields = set(value)
+        if fields == legacy_required:
+            schema_version = 1
+            launch_mode = "headless"
+            prompt_file = None
+            expected_session_ref = None
+        elif (
+            fields == current_required
+            and isinstance(value.get("schema_version"), int)
+            and not isinstance(value.get("schema_version"), bool)
+            and value.get("schema_version") == 2
+        ):
+            schema_version = 2
+            launch_mode = value["launch_mode"]
+            prompt_file = value["prompt_file"]
+            expected_session_ref = value["expected_session_ref"]
+        else:
             raise IntegrityError("launch spec has invalid fields")
         if (
             not isinstance(value["adapter_id"], str)
@@ -106,6 +157,28 @@ class LaunchSpec:
             for key, item in value["env"].items()
         ):
             raise IntegrityError("launch spec environment is invalid")
+        if launch_mode not in LAUNCH_MODES:
+            raise IntegrityError("launch spec mode is invalid")
+        if expected_session_ref is not None and (
+            not isinstance(expected_session_ref, str) or not expected_session_ref
+        ):
+            raise IntegrityError("launch spec expected session ref is invalid")
+        if launch_mode == "interactive":
+            if (
+                not isinstance(prompt_file, str)
+                or not prompt_file
+                or not Path(prompt_file).is_absolute()
+                or not value["stdin"]
+                or (
+                    not value["starts_new_session"]
+                    and expected_session_ref is None
+                )
+            ):
+                raise IntegrityError("interactive launch prompt is invalid")
+        elif prompt_file is not None or expected_session_ref is not None:
+            raise IntegrityError(
+                "headless launch cannot contain interactive session fields"
+            )
         return cls(
             adapter_id=value["adapter_id"],
             argv=tuple(value["argv"]),
@@ -115,6 +188,10 @@ class LaunchSpec:
             launch_profile=value["launch_profile"],
             launch_profile_sha256=value["launch_profile_sha256"],
             starts_new_session=value["starts_new_session"],
+            launch_mode=launch_mode,
+            prompt_file=prompt_file,
+            expected_session_ref=expected_session_ref,
+            schema_version=schema_version,
         )
 
 
@@ -247,6 +324,7 @@ class ProcessResult:
     process_exit_code: int | None
     termination_kind: str
     group_quiescent: bool
+    launch_mode: str = "headless"
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,11 +339,30 @@ class HarnessAdapter(abc.ABC):
     adapter_version: str = __version__
 
     @abc.abstractmethod
-    def profile_mappings(self) -> dict[str, dict[str, list[str]]]:
+    def profile_mappings(
+        self,
+        launch_mode: str = "headless",
+    ) -> dict[str, dict[str, list[str]]]:
         raise NotImplementedError
 
     @abc.abstractmethod
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def resolve_launch_options(
+        self,
+        *,
+        model: str | None,
+        reasoning_effort: str | None,
+        fast_mode: bool | None,
+    ) -> HarnessLaunchOptions:
+        """Resolve explicit values over isolated user defaults for a new Run."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
+        """Validate immutable launch options without reading mutable defaults."""
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -276,6 +373,20 @@ class HarnessAdapter(abc.ABC):
         self,
         record: StreamRecord,
     ) -> list[NormalizedTraceEvent]:
+        # A native TUI is not a structured Harness protocol. Even when one PTY
+        # chunk happens to contain valid JSON, retain it only as diagnostic
+        # terminal output so it can never be confused with headless evidence.
+        if record.source == "terminal":
+            return [
+                NormalizedTraceEvent(
+                    "diagnostic",
+                    {
+                        "source": record.source,
+                        "encoding": record.encoding,
+                        "text": record.data,
+                    },
+                )
+            ]
         value = self.parse_json_record(record)
         if value is not None:
             return [
@@ -298,15 +409,44 @@ class HarnessAdapter(abc.ABC):
             )
         ]
 
+    def prepare_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        """Prepare private, adapter-owned state before a Run starts."""
+
+        self.assert_launch_mode(launch_mode)
+
+    def interactive_session_refs(self, launch: LaunchSpec) -> set[str]:
+        """Return session refs durably visible for an interactive launch."""
+
+        return set()
+
     def classify_result(
         self,
         result: ProcessResult,
         evidence: AdapterEvidenceSnapshot,
     ) -> ExitInfo:
+        self.assert_launch_mode(result.launch_mode)
+        if result.launch_mode == "interactive":
+            expected_termination = (
+                result.termination_kind == "action"
+                or (
+                    result.termination_kind == "normal"
+                    and result.process_exit_code == 0
+                )
+            )
+        else:
+            expected_termination = (
+                result.termination_kind == "normal"
+                and result.process_exit_code == 0
+            )
         normal = (
             result.group_quiescent
-            and result.termination_kind == "normal"
-            and result.process_exit_code == 0
+            and expected_termination
             and evidence.agent_execution_started
             and evidence.adapter_completed
             and not evidence.permission_required
@@ -343,7 +483,8 @@ class HarnessAdapter(abc.ABC):
         return None
 
     def probe(self) -> CapabilityReport:
-        mappings = self.profile_mappings()
+        mappings = self.profile_mappings("headless")
+        interactive_mappings = self.profile_mappings("interactive")
         return CapabilityReport(
             adapter_id=self.adapter_id,
             adapter_version=self.adapter_version,
@@ -352,16 +493,41 @@ class HarnessAdapter(abc.ABC):
             authenticated=self.authentication_status(),
             profiles=tuple(sorted(mappings)),
             launcher_stays_in_process_group=True,
-            details={"profile_mappings": mappings},
+            details={
+                "profile_mappings": mappings,
+                "launch_modes": {
+                    "headless": mappings,
+                    "interactive": interactive_mappings,
+                },
+            },
         )
 
-    def profile_fingerprint(self, profile: str, session_policy: str) -> str:
+    @staticmethod
+    def assert_launch_mode(launch_mode: str) -> None:
+        if launch_mode not in LAUNCH_MODES:
+            raise AgentTeamError(
+                "UNKNOWN_LAUNCH_MODE",
+                f"launch mode {launch_mode!r} is not supported",
+            )
+
+    def profile_fingerprint(
+        self,
+        profile: str,
+        session_policy: str,
+        launch_mode: str = "headless",
+    ) -> str:
+        self.assert_launch_mode(launch_mode)
         report = self.probe()
-        mappings = report.details.get("profile_mappings")
+        launch_modes = report.details.get("launch_modes")
+        mappings = (
+            launch_modes.get(launch_mode)
+            if isinstance(launch_modes, dict)
+            else None
+        )
         if not isinstance(mappings, dict):
             raise AgentTeamError(
                 "INVALID_CAPABILITY_REPORT",
-                f"{self.adapter_id} probe did not return profile mappings",
+                f"{self.adapter_id} probe did not return {launch_mode} mappings",
             )
         if profile not in mappings:
             raise AgentTeamError(
@@ -416,6 +582,11 @@ class HarnessAdapter(abc.ABC):
             session_policy.encode("utf-8"),
             canonical_json_bytes(selected),
         ]
+        # Preserve existing headless fingerprints so completed or blocked
+        # schema-1..3 Runs remain observable after upgrading. Interactive mode
+        # is a new execution contract and therefore receives an explicit frame.
+        if launch_mode == "interactive":
+            components.append(launch_mode.encode("utf-8"))
         framed = b"".join(
             len(component).to_bytes(8, "big") + component
             for component in components
@@ -427,8 +598,9 @@ class HarnessAdapter(abc.ABC):
         profile: str,
         session_policy: str,
         expected_sha256: str,
+        launch_mode: str = "headless",
     ) -> None:
-        current = self.profile_fingerprint(profile, session_policy)
+        current = self.profile_fingerprint(profile, session_policy, launch_mode)
         if current != expected_sha256:
             raise AgentTeamError(
                 "PROFILE_CHANGED_NEW_RUN_REQUIRED",

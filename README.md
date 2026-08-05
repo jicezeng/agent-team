@@ -4,7 +4,9 @@ Agent-Team v0.1 is a local runtime for temporary coding-agent teams described
 in natural language. It gives one dynamic role at a time the execution token,
 persists every formal handoff in an immutable journal, keeps external Codex or
 Claude Code sessions resumable, and returns completion or a user-visible Block
-to the current Origin session.
+to the current Origin session. New External roles run the Harness's native TUI
+through a supervised PTY by default, so live progress is visible in the role's
+tmux window without making Pane text part of the control protocol.
 
 Documentation is split by purpose:
 
@@ -45,11 +47,11 @@ cd /path/to/agent-team
 uv build --wheel
 ```
 
-Copy `dist/agent_team-0.1.0-py3-none-any.whl` to the target macOS or Linux
+Copy `dist/agent_team-0.1.1-py3-none-any.whl` to the target macOS or Linux
 machine, then run:
 
 ```bash
-uv tool install --force /path/to/agent_team-0.1.0-py3-none-any.whl
+uv tool install --force /path/to/agent_team-0.1.1-py3-none-any.whl
 agent-team install
 agent-team doctor --workspace /path/to/worktree --json
 ```
@@ -194,6 +196,37 @@ ROLE=claude-code:<resume|fresh>:<profile>
 
 Role IDs match `[a-z][a-z0-9_-]{0,31}`. `resume` preserves a validated harness
 session across that role's Turns; `fresh` creates a new session every Turn.
+Model and speed choices are role-scoped, optional `init` arguments:
+
+```text
+--role-model ROLE=MODEL
+--role-reasoning-effort ROLE=EFFORT
+--role-fast ROLE
+--role-launch-mode ROLE=<interactive|headless>
+```
+
+`--role-model` and `--role-reasoning-effort` work with both Codex and Claude
+Code. `--role-fast` is Codex-only and enables both the `fast_mode` feature and
+the `fast` service tier. Codex accepts `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, or `ultra` effort; Claude Code accepts `auto`, `low`, `medium`,
+`high`, `xhigh`, or `max`.
+
+Each omitted field inherits the user's Harness default at `init`. Agent-Team
+reads only the relevant user-level values and freezes the effective result in
+`team.json`: Codex `model`, `model_reasoning_effort`, and fast service-tier
+settings; Claude Code `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` (when
+set), then user `model` / `effortLevel` settings. If the user has not configured
+a value, the Harness retains its own account/model default. This selective
+inheritance does not load user permissions, MCP servers, hooks, or other
+mutable Harness settings.
+
+`interactive` is the default launch mode for every new External role. It runs
+native Codex or Claude Code with a real PTY and mirrors the terminal stream to
+the role's tmux Pane. Use `--role-launch-mode ROLE=headless` when that role
+specifically needs the non-interactive JSON/stream protocol. Launch mode is
+frozen in `team.json`; schema 1–3 Runs continue to load as `headless` rather
+than silently changing behavior after an upgrade.
+
 Each adapter exposes the same explicit Profile names:
 
 | Profile | Codex mapping | Claude Code mapping |
@@ -215,37 +248,51 @@ would therefore allow host-file writes outside the Workspace. Choose
 `full-access` explicitly when that wider host boundary is intended.
 
 All three Profiles ignore mutable local Codex/Claude permission settings and
-freeze an explicit Start/Resume mapping and hash in `team.json`. They do not
-mean “reuse my current interactive session settings.” A protocol restriction
-such as “review only” remains a natural-language role responsibility and is
-never inferred from the role name. Agent-Team's formal-action rules continue
-to apply, but they are not a containment boundary in `full-access` mode.
+freeze an explicit Start/Resume mapping and hash in `team.json`. Selective
+model, effort, and Codex fast defaults are snapshotted separately as described
+above; Profiles do not otherwise mean “reuse my current interactive session
+settings.” A protocol restriction such as “review only” remains a
+natural-language role responsibility and is never inferred from the role name.
+Agent-Team's formal-action rules continue to apply, but they are not a
+containment boundary in `full-access` mode.
 
 Examples:
 
 ```text
 --role developer=claude-code:resume:trusted-workspace
 --role reviewer=codex:resume:full-access
+--role-model developer=opus
+--role-reasoning-effort developer=high
+--role-model reviewer=gpt-5.6-sol
+--role-reasoning-effort reviewer=max
+--role-fast reviewer
+--role-launch-mode developer=interactive
+--role-launch-mode reviewer=headless
 ```
 
 Run `agent-team doctor --workspace <root> --json` to inspect every mapping
 accepted by the installed Harness versions. Managed Harness policy may still
-disable a bypass mode. A Profile is immutable after Kickoff; changing it
-requires cancelling the old Run and creating a new one.
+disable a bypass mode or model. A Profile and its frozen Harness options are
+immutable after Kickoff; changing them requires cancelling the old Run and
+creating a new one.
 
 `init` atomically commits an UNSTARTED audit directory but acquires no
 Workspace ownership and starts no process. `start` performs final capability
 and Git-visible snapshot checks, acquires the durable Workspace owner, commits
 the one Kickoff Event, and creates one tmux Worker window for every External
-role. Repeating `start` converges through the same deterministic recovery path;
-it does not create a second Kickoff.
+role. During an interactive Turn, that window displays the native Harness TUI
+while the Worker → Supervisor → Runner identity and authorization chain remains
+in force. Repeating `start` converges through the same deterministic recovery
+path; it does not create a second Kickoff.
 
 ### Observability modes
 
 Every new Run has an immutable observability policy:
 
 - `--audit-mode standard` allows Origin-bound business roles. External Turns
-  receive structured Harness tracing under the configured limits; Origin
+  receive normalized Harness tracing under the configured limits. Interactive
+  terminal chunks become diagnostic events; headless structured output also
+  exposes supported tool/session/usage events. Origin
   Turns expose only their formal input/output and workspace boundaries because
   the host does not export its internal tool stream.
 - `--audit-mode full` requires every business role to be External. The Origin
@@ -255,15 +302,15 @@ Every new Run has an immutable observability policy:
 - `--trace-redaction standard` heuristically redacts common bearer tokens,
   API keys, passwords, private keys, and secret-bearing structured fields in
   normalized and retained raw Harness output. `none` is an explicit opt-out.
-- `--max-trace-bytes` caps source bytes retained across stdout and stderr and
-  separately caps normalized `trace.jsonl` bytes for each Turn. The minimum is
-  1024 bytes; the default is 64 MiB.
+- `--max-trace-bytes` caps source bytes retained across stdout, stderr, and the
+  interactive terminal stream, and separately caps normalized `trace.jsonl`
+  bytes for each Turn. The minimum is 1024 bytes; the default is 64 MiB.
 - `--raw-retention redacted` rewrites the raw archive with heuristic secret
   substitutions; it does not remove every kind of private content. Tool
   arguments/results, prompts, code, and even provider-emitted
   thinking/reasoning may remain. `keep` retains the original raw stream;
-  `delete` removes raw stdout/stderr after normalized trace creation. Full
-  audit mode does not allow `delete`.
+  `delete` removes raw stdout/stderr/terminal data after normalized trace
+  creation. Full audit mode does not allow `delete`.
 - `--require-rationale-evidence` makes the formal payload contract mandatory
   in standard mode. Full audit mode enables it automatically.
 
@@ -299,7 +346,10 @@ The Worker injects `AGENT_TEAM_RUN_ID`, `AGENT_TEAM_ROLE_ID`,
 `AGENT_TEAM_TURN_ID`, and `AGENT_TEAM_RUN_DIR`, so these commands do not accept
 Run or Role arguments. The action copies and hashes its payload before
 acceptance. Ordinary final text, tmux pane content, and log prose never move
-the execution token.
+the execution token. A native TUI normally remains open after one response;
+once the Supervisor validates the current Turn's durable Outbox and Session,
+it stops the verified Runner process group and records an `action` termination
+without rewriting the real process exit code.
 
 An Origin-bound role uses the Claim-bearing `origin-*` commands. These are
 normally driven by the integration skill rather than typed manually:
@@ -346,8 +396,10 @@ When Run ID is omitted, observation resolves only the current Workspace owner;
 it never guesses the newest audit directory. Structured output is the stable
 control surface. `status`, `diagnose`, and each `watch --jsonl` line share the
 same derived snapshot, including `run_status`, `health`, active Turn, process
-identity, session state, Block policy, evidence paths, and one technical
-`recommended_action`.
+identity, session state, each role's frozen launch mode/profile/model/effort/
+fast configuration, Block policy, evidence paths, and one technical
+`recommended_action`. Use `status --json` to inspect a Run's effective team
+configuration.
 
 `transcript` reconstructs every selected Turn's policy-filtered frozen input,
 Harness prompt, normalized event stream, formal output, and per-Turn/run aggregate
@@ -356,10 +408,12 @@ normalized events and can follow a live Run; `--role` and `--turn` provide
 stable filters, while `--json`/`--jsonl` are the machine-readable interfaces.
 Normalized event kinds include agent messages, tool calls/results, file
 changes, usage, errors, and exposed reasoning summaries. Each event links back
-to the source stdout/stderr sequence range.
+to the source stdout/stderr/terminal sequence range.
 
-`attach` is read-only and pane output is diagnostic only. Neither pane text nor
-raw logs participate in routing, completion, Resume, or recovery decisions.
+`attach` is read-only. For an active `interactive` role it shows the native
+Harness TUI; for a `headless` role it shows only Worker-level diagnostics.
+Neither Pane text nor raw logs participate in routing, completion, Resume, or
+recovery decisions, and Agent-Team never uses `tmux send-keys` as automation.
 
 ## Blocks, Resume, and cancellation
 
@@ -379,7 +433,8 @@ agent-team origin-resume \
 The generated Resume Event becomes the next Turn's direct `input.md`.
 Limit/Profile Changed Blocks cannot Resume. A change to the original request,
 protocol, roles, bindings, Workspace, Launch Profile, or safety limits also
-requires cancelling the old Run and bootstrapping a new one.
+requires cancelling the old Run and bootstrapping a new one. Launch mode,
+model, reasoning effort, and fast mode are equally immutable.
 
 Cancellation is an explicit management action and preserves the audit store:
 
@@ -416,6 +471,11 @@ Each worktree contains a private `.agent-team/` State Root with immutable Run
 inputs, Event payloads, Runtime snapshots, facts, normalized traces, retained
 raw streams, and completion artifacts. A separate per-account fixed state
 directory contains the durable Workspace owner and operation lock.
+Interactive Codex roles also receive a private per-Run/per-Role `CODEX_HOME`
+under that fixed state directory. Agent-Team copies only private authentication
+state, creates an empty isolated config, and passes the frozen role model,
+effort, fast, and permission choices explicitly; mutable user MCP, Hook,
+Plugin, and permission settings are not imported.
 
 After an External Turn becomes quiescent, Agent-Team writes
 `turns/<turn-id>/trace.jsonl` and `trace-manifest.json`. The manifest records
@@ -437,7 +497,7 @@ contents, but retained raw output is a different privacy boundary:
 still contain provider-emitted private text, while `keep` preserves the
 original stream. There is no automatic TTL or purge command: retained data
 lasts with the Run Store until the user removes that Run directory; `delete`
-applies only to raw stdout/stderr after normalization.
+applies only to raw stdout/stderr/terminal data after normalization.
 
 The Runner process group provides bounded local process cleanup, not container
 isolation. The protocol forbids roles from launching daemons that escape it.

@@ -51,6 +51,7 @@ TRACE_EVENT_TYPES = {
     "turn",
     "usage",
 }
+STREAM_SOURCES = ("stdout", "stderr", "terminal")
 COMMON_SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"),
     re.compile(r"\bsk-ant-[A-Za-z0-9_-]{12,}\b"),
@@ -151,9 +152,13 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
     if not path_entry_exists(stream_path):
         return []
     raw = read_regular(stream_path)
-    buffers = {"stdout": bytearray(), "stderr": bytearray()}
-    first_seq: dict[str, int | None] = {"stdout": None, "stderr": None}
-    observed_at: dict[str, str | None] = {"stdout": None, "stderr": None}
+    buffers = {source: bytearray() for source in STREAM_SOURCES}
+    first_seq: dict[str, int | None] = {
+        source: None for source in STREAM_SOURCES
+    }
+    observed_at: dict[str, str | None] = {
+        source: None for source in STREAM_SOURCES
+    }
     records: list[StreamRecord] = []
     last_seq = 0
     for raw_line in raw.splitlines():
@@ -167,7 +172,7 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
         source = outer.get("source")
         seq = outer.get("seq")
         if (
-            source not in {"stdout", "stderr"}
+            source not in STREAM_SOURCES
             or isinstance(seq, bool)
             or not isinstance(seq, int)
             or seq <= last_seq
@@ -208,6 +213,24 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
         if schema_version != 1:
             raise IntegrityError("unsupported stream JSONL schema")
         data = _decode_outer_data(outer)
+        if source == "terminal":
+            try:
+                decoded = data.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                decoded = base64.b64encode(data).decode("ascii")
+                encoding = "base64"
+            records.append(
+                StreamRecord(
+                    source=source,
+                    first_seq=seq,
+                    last_seq=seq,
+                    observed_at=outer["observed_at"],
+                    encoding=encoding,
+                    data=decoded,
+                )
+            )
+            continue
         if first_seq[source] is None:
             first_seq[source] = seq
         observed_at[source] = outer["observed_at"]
@@ -235,7 +258,7 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
                 )
             )
             first_seq[source] = seq if buffers[source] else None
-    for source in ("stdout", "stderr"):
+    for source in STREAM_SOURCES:
         if not buffers[source]:
             continue
         data = bytes(buffers[source])
@@ -685,7 +708,7 @@ def read_trace_events(turn_dir: Path) -> list[dict[str, Any]]:
             or not event["observed_at"]
             or not isinstance(raw_ref, dict)
             or set(raw_ref) != {"source", "first_seq", "last_seq"}
-            or raw_ref["source"] not in {"stdout", "stderr"}
+            or raw_ref["source"] not in STREAM_SOURCES
             or isinstance(raw_ref["first_seq"], bool)
             or not isinstance(raw_ref["first_seq"], int)
             or isinstance(raw_ref["last_seq"], bool)

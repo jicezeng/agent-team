@@ -8,6 +8,8 @@ import pytest
 from agent_team.adapters.base import (
     AdapterEvidence,
     AdapterEvidenceSnapshot,
+    HarnessLaunchOptions,
+    HarnessAdapter,
     LaunchSpec,
     ProcessResult,
     StreamRecord,
@@ -16,7 +18,7 @@ from agent_team.adapters.base import (
 from agent_team.adapters.claude_code import ClaudeCodeAdapter
 from agent_team.adapters.codex import CodexAdapter
 from agent_team.bootstrap import parse_role_spec
-from agent_team.errors import AgentTeamError, IntegrityError
+from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 
 
 def record(value: dict) -> StreamRecord:
@@ -364,6 +366,31 @@ def test_normal_completion_requires_observed_session_ref() -> None:
     assert adapter.classify_result(result, evidence).is_normal_completion
 
 
+def test_interactive_completion_preserves_signal_exit_as_action() -> None:
+    adapter = CodexAdapter()
+    result = ProcessResult(
+        process_exit_code=-15,
+        termination_kind="action",
+        group_quiescent=True,
+        launch_mode="interactive",
+    )
+    evidence = AdapterEvidenceSnapshot(
+        agent_execution_started=True,
+        adapter_completed=True,
+        observed_session_ref="thread-1",
+    )
+
+    assert adapter.classify_result(result, evidence).is_normal_completion
+
+    result = ProcessResult(
+        process_exit_code=-15,
+        termination_kind="signal",
+        group_quiescent=True,
+        launch_mode="interactive",
+    )
+    assert not adapter.classify_result(result, evidence).is_normal_completion
+
+
 def test_codex_start_and_resume_freeze_equivalent_permissions(
     monkeypatch,
     tmp_path: Path,
@@ -440,7 +467,7 @@ def test_resume_profile_rejects_non_equivalent_permissions(
     monkeypatch.setattr(
         adapter,
         "profile_mappings",
-        lambda: {
+        lambda _launch_mode="headless": {
             "default": {
                 "start": ["--permission", "write"],
                 "resume": ["--permission", "read"],
@@ -464,7 +491,9 @@ def test_fresh_profile_rejects_missing_start_mapping(
     monkeypatch.setattr(
         adapter,
         "profile_mappings",
-        lambda: {"default": {"resume": ["--permission", "write"]}},
+        lambda _launch_mode="headless": {
+            "default": {"resume": ["--permission", "write"]}
+        },
     )
 
     with pytest.raises(AgentTeamError) as rejected:
@@ -479,14 +508,26 @@ def launch_context(
     session_policy: str,
     session_ref: str | None,
     profile: str = "default",
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    fast_mode: bool | None = None,
+    launch_mode: str = "headless",
+    workspace: str = "/tmp/workspace",
+    turn_dir: str = (
+        "/tmp/workspace/.agent-team/runs/at-adapter-test/turns/turn-0001"
+    ),
 ) -> TurnLaunchContext:
-    profile_hash = adapter.profile_fingerprint(profile, session_policy)
+    profile_hash = adapter.profile_fingerprint(
+        profile,
+        session_policy,
+        launch_mode,
+    )
     return TurnLaunchContext(
         run_id="at-adapter-test",
         role_id="developer",
         turn_id="turn-0001",
-        workspace="/tmp/workspace",
-        turn_dir="/tmp/workspace/.agent-team/runs/at-adapter-test/turns/turn-0001",
+        workspace=workspace,
+        turn_dir=turn_dir,
         prompt="perform the turn",
         session_policy=session_policy,
         session_ref=session_ref,
@@ -494,6 +535,10 @@ def launch_context(
         launch_profile=profile,
         launch_profile_sha256=profile_hash,
         agent_team_cli="/usr/local/bin/agent-team",
+        model=model,
+        reasoning_effort=reasoning_effort,
+        fast_mode=fast_mode,
+        launch_mode=launch_mode,
     )
 
 
@@ -568,6 +613,385 @@ def test_claude_launch_reads_text_prompt_from_stdin(monkeypatch) -> None:
     assert LaunchSpec.from_json(resumed.to_json()) == resumed
 
 
+def test_codex_launch_applies_model_effort_and_fast_to_start_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    contexts = [
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=session_ref,
+            model="gpt-5.6-sol",
+            reasoning_effort="max",
+            fast_mode=True,
+        )
+        for session_ref in (None, "019fa804-8bc9-7bc3-a8e9-baf8cee27430")
+    ]
+
+    for launch in (adapter.prepare_launch(context) for context in contexts):
+        assert launch.argv[launch.argv.index("--model") + 1] == "gpt-5.6-sol"
+        assert 'model_reasoning_effort="max"' in launch.argv
+        assert 'service_tier="fast"' in launch.argv
+        fast_index = launch.argv.index("--enable")
+        assert launch.argv[fast_index + 1] == "fast_mode"
+
+
+def test_claude_launch_applies_model_and_effort_to_start_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = ClaudeCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/claude"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "2.1.111")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.claude_internal_tmpdir",
+        lambda: Path("/tmp/claude-501"),
+    )
+    contexts = [
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=session_ref,
+            model="opus",
+            reasoning_effort="xhigh",
+        )
+        for session_ref in (None, "550e8400-e29b-41d4-a716-446655440000")
+    ]
+
+    for launch in (adapter.prepare_launch(context) for context in contexts):
+        assert launch.argv[launch.argv.index("--model") + 1] == "opus"
+        assert launch.env["CLAUDE_CODE_EFFORT_LEVEL"] == "xhigh"
+
+
+def test_codex_interactive_launch_uses_isolated_native_tui_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-adapter-test"
+    turn_dir = run_dir / "turns" / "turn-0001"
+    turn_dir.mkdir(parents=True)
+    source_home = tmp_path / "user-codex-home"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text(
+        "[mcp_servers.must_not_load]\ncommand = 'unsafe'\n",
+        encoding="utf-8",
+    )
+    source_auth = source_home / "auth.json"
+    source_auth.write_text('{"token":"test-only"}\n', encoding="utf-8")
+    source_auth.chmod(0o600)
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: state_dir,
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        adapter,
+        "_assert_interactive_authentication",
+        lambda _home: None,
+    )
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    context = launch_context(
+        adapter=adapter,
+        session_policy="resume",
+        session_ref=None,
+        model="gpt-5.6-sol",
+        reasoning_effort="max",
+        fast_mode=True,
+        launch_mode="interactive",
+        workspace=str(workspace),
+        turn_dir=str(turn_dir),
+    )
+    launch = adapter.prepare_launch(context)
+    isolated_home = Path(launch.env["CODEX_HOME"])
+
+    assert isolated_home != source_home
+    assert (isolated_home / "config.toml").read_bytes() == b""
+    assert (isolated_home / "auth.json").read_bytes() == source_auth.read_bytes()
+    assert (isolated_home / "auth.json").stat().st_ino != source_auth.stat().st_ino
+    assert launch.launch_mode == "interactive"
+    assert launch.argv[0] == "/bin/codex"
+    assert "exec" not in launch.argv
+    assert "--ignore-user-config" not in launch.argv
+    assert "--ignore-rules" not in launch.argv
+    assert "--no-alt-screen" in launch.argv
+    assert launch.prompt_file == str(turn_dir / "process" / "prompt.md")
+    assert launch.expected_session_ref is None
+
+    resumed = adapter.prepare_launch(
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref="019fa804-8bc9-7bc3-a8e9-baf8cee27430",
+            launch_mode="interactive",
+            workspace=str(workspace),
+            turn_dir=str(turn_dir),
+        )
+    )
+    assert resumed.argv[1] == "resume"
+    assert resumed.expected_session_ref == "019fa804-8bc9-7bc3-a8e9-baf8cee27430"
+
+
+def test_codex_interactive_session_refs_are_scoped_to_home_and_workspace(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "isolated-home"
+    session_dir = home / "sessions" / "2026" / "08" / "05"
+    session_dir.mkdir(parents=True)
+    matching = {
+        "type": "session_meta",
+        "payload": {"id": "matching-session", "cwd": "/worktree"},
+    }
+    other = {
+        "type": "session_meta",
+        "payload": {"id": "other-session", "cwd": "/other"},
+    }
+    (session_dir / "matching.jsonl").write_text(
+        json.dumps(matching) + "\n{}\n",
+        encoding="utf-8",
+    )
+    (session_dir / "other.jsonl").write_text(
+        json.dumps(other) + "\n{}\n",
+        encoding="utf-8",
+    )
+    launch = LaunchSpec(
+        adapter_id="codex",
+        argv=("/bin/codex",),
+        cwd="/worktree",
+        env={"CODEX_HOME": str(home)},
+        stdin="prompt",
+        launch_profile="default",
+        launch_profile_sha256="0" * 64,
+        starts_new_session=True,
+        launch_mode="interactive",
+        prompt_file="/run/turn/process/prompt.md",
+    )
+
+    assert CodexAdapter().interactive_session_refs(launch) == {
+        "matching-session"
+    }
+
+
+def test_claude_interactive_launch_uses_native_tui_and_known_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = ClaudeCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/claude"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "2.1.111")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.claude_internal_tmpdir",
+        lambda: Path("/tmp/claude-501"),
+    )
+
+    launch = adapter.prepare_launch(
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=None,
+            model="opus",
+            reasoning_effort="high",
+            launch_mode="interactive",
+        )
+    )
+
+    assert launch.argv[0] == "/bin/claude"
+    assert "-p" not in launch.argv
+    assert "--output-format" not in launch.argv
+    assert "--session-id" in launch.argv
+    assert launch.expected_session_ref == launch.argv[
+        launch.argv.index("--session-id") + 1
+    ]
+    assert launch.prompt_file is not None
+    assert launch.env["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
+    assert "--setting-sources" in launch.argv
+    assert launch.argv[launch.argv.index("--setting-sources") + 1] == ""
+
+
+def test_launch_spec_reads_legacy_headless_schema() -> None:
+    legacy = {
+        "adapter_id": "codex",
+        "argv": ["/bin/codex", "exec", "-"],
+        "cwd": "/worktree",
+        "env": {},
+        "stdin": "prompt",
+        "launch_profile": "default",
+        "launch_profile_sha256": "0" * 64,
+        "starts_new_session": True,
+    }
+
+    parsed = LaunchSpec.from_json(legacy)
+
+    assert parsed.schema_version == 1
+    assert parsed.launch_mode == "headless"
+    assert parsed.to_json() == legacy
+
+
+@pytest.mark.parametrize("adapter", [CodexAdapter(), ClaudeCodeAdapter()])
+def test_interactive_terminal_json_is_only_diagnostic(
+    adapter: HarnessAdapter,
+) -> None:
+    record = StreamRecord(
+        source="terminal",
+        first_seq=1,
+        last_seq=1,
+        observed_at="2026-08-05T00:00:00Z",
+        encoding="utf-8",
+        data='{"type":"turn.completed","session_id":"must-not-count"}',
+    )
+
+    normalized = adapter.normalize_stream_record(record)
+
+    assert len(normalized) == 1
+    assert normalized[0].event_type == "diagnostic"
+    assert normalized[0].data["source"] == "terminal"
+
+
+def test_codex_resolves_isolated_user_model_effort_and_fast_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text(
+        (
+            'model = "gpt-user-default"\n'
+            'model_reasoning_effort = "high"\n'
+            'service_tier = "fast"\n'
+            "[features]\n"
+            "fast_mode = true\n"
+            "[mcp_servers.ignored]\n"
+            'command = "must-not-be-loaded"\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+
+    options = CodexAdapter().resolve_launch_options(
+        model=None,
+        reasoning_effort=None,
+        fast_mode=None,
+    )
+    overridden = CodexAdapter().resolve_launch_options(
+        model="gpt-explicit",
+        reasoning_effort=None,
+        fast_mode=None,
+    )
+
+    assert options == HarnessLaunchOptions(
+        model="gpt-user-default",
+        reasoning_effort="high",
+        fast_mode=True,
+    )
+    assert overridden == HarnessLaunchOptions(
+        model="gpt-explicit",
+        reasoning_effort="high",
+        fast_mode=True,
+    )
+
+
+def test_explicit_codex_field_does_not_load_that_user_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text(
+        'model = 42\nmodel_reasoning_effort = "medium"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+
+    options = CodexAdapter().resolve_launch_options(
+        model="gpt-explicit",
+        reasoning_effort=None,
+        fast_mode=False,
+    )
+
+    assert options == HarnessLaunchOptions(
+        model="gpt-explicit",
+        reasoning_effort="medium",
+        fast_mode=False,
+    )
+
+
+def test_claude_resolves_environment_over_user_model_and_effort_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "claude-home"
+    config_home.mkdir()
+    (config_home / "settings.json").write_text(
+        json.dumps(
+            {
+                "model": "sonnet",
+                "effortLevel": "medium",
+                "permissions": {"allow": ["Bash(*)"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
+    monkeypatch.setenv("ANTHROPIC_MODEL", "opus")
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
+
+    options = ClaudeCodeAdapter().resolve_launch_options(
+        model=None,
+        reasoning_effort=None,
+        fast_mode=None,
+    )
+    overridden = ClaudeCodeAdapter().resolve_launch_options(
+        model="haiku",
+        reasoning_effort="low",
+        fast_mode=None,
+    )
+
+    assert options == HarnessLaunchOptions(
+        model="opus",
+        reasoning_effort="max",
+    )
+    assert overridden == HarnessLaunchOptions(
+        model="haiku",
+        reasoning_effort="low",
+    )
+
+
+def test_claude_rejects_codex_fast_mode() -> None:
+    with pytest.raises(InvalidArgument, match="only supported by the codex"):
+        ClaudeCodeAdapter().resolve_launch_options(
+            model="opus",
+            reasoning_effort="high",
+            fast_mode=True,
+        )
+
+
 def test_claude_exposes_explicit_elevated_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -631,13 +1055,24 @@ def test_role_spec_accepts_explicit_elevated_profiles(
     expected_hash = "a" * 64
 
     class StubAdapter:
+        @staticmethod
+        def assert_launch_mode(selected_mode: str) -> None:
+            assert selected_mode == "interactive"
+
+        def resolve_launch_options(self, **_kwargs) -> HarnessLaunchOptions:
+            return HarnessLaunchOptions(
+                fast_mode=False if adapter_id == "codex" else None
+            )
+
         def profile_fingerprint(
             self,
             selected_profile: str,
             session_policy: str,
+            launch_mode: str,
         ) -> str:
             assert selected_profile == profile
             assert session_policy == "resume"
+            assert launch_mode == "interactive"
             return expected_hash
 
     monkeypatch.setattr(
@@ -652,6 +1087,54 @@ def test_role_spec_accepts_explicit_elevated_profiles(
     assert role.session_policy == "resume"
     assert role.launch_profile == profile
     assert role.launch_profile_sha256 == expected_hash
+    assert role.launch_mode == "interactive"
+
+
+def test_role_spec_freezes_explicit_harness_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StubAdapter:
+        @staticmethod
+        def assert_launch_mode(selected_mode: str) -> None:
+            assert selected_mode == "interactive"
+
+        def resolve_launch_options(self, **values) -> HarnessLaunchOptions:
+            assert values == {
+                "model": "gpt-explicit",
+                "reasoning_effort": "high",
+                "fast_mode": True,
+            }
+            return HarnessLaunchOptions(
+                model=values["model"],
+                reasoning_effort=values["reasoning_effort"],
+                fast_mode=values["fast_mode"],
+            )
+
+        def profile_fingerprint(
+            self,
+            _profile: str,
+            _policy: str,
+            launch_mode: str,
+        ) -> str:
+            assert launch_mode == "interactive"
+            return "a" * 64
+
+    monkeypatch.setattr(
+        "agent_team.bootstrap.get_adapter",
+        lambda _adapter_id: StubAdapter(),
+    )
+
+    role_id, role = parse_role_spec(
+        "reviewer=codex:resume:default",
+        model="gpt-explicit",
+        reasoning_effort="high",
+        fast_mode=True,
+    )
+
+    assert role_id == "reviewer"
+    assert role.model == "gpt-explicit"
+    assert role.reasoning_effort == "high"
+    assert role.fast_mode is True
 
 
 @pytest.mark.parametrize("profile", ["trusted-workspace", "full-access"])

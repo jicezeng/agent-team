@@ -27,6 +27,7 @@ from .config import (
     generate_run_id,
     load_team,
     make_team,
+    validate_role_id,
 )
 from .errors import (
     AgentTeamError,
@@ -88,6 +89,35 @@ def _workspace(value: str | None = None) -> Path:
 
 def _run_dir(run_id: str, workspace: str | None = None) -> Path:
     return get_run_dir(_workspace(workspace), run_id)
+
+
+def _role_value_options(
+    values: Sequence[str] | None,
+    *,
+    option: str,
+) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for spec in values or ():
+        if "=" not in spec:
+            raise InvalidArgument(f"{option} must be ROLE=VALUE: {spec!r}")
+        role_id, value = spec.split("=", 1)
+        validate_role_id(role_id)
+        if not value:
+            raise InvalidArgument(f"{option} value must not be empty for {role_id}")
+        if role_id in parsed:
+            raise InvalidArgument(f"duplicate {option} for role: {role_id}")
+        parsed[role_id] = value
+    return parsed
+
+
+def _role_flags(values: Sequence[str] | None, *, option: str) -> set[str]:
+    parsed: set[str] = set()
+    for role_id in values or ():
+        validate_role_id(role_id)
+        if role_id in parsed:
+            raise InvalidArgument(f"duplicate {option} for role: {role_id}")
+        parsed.add(role_id)
+    return parsed
 
 
 def _observation_run_dir(
@@ -297,22 +327,27 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                 {"authenticated": report.authenticated},
             )
             adapter = get_adapter(adapter_id)
-            mappings = adapter.profile_mappings()
-            for profile, mapping in sorted(mappings.items()):
-                profile_ok = bool(mapping.get("start")) and bool(
-                    mapping.get("resume")
-                )
-                if profile_ok:
-                    profile_ok = mapping["start"] == mapping["resume"]
-                add(
-                    f"launch_profile:{adapter_id}:{profile}",
-                    profile_ok,
-                    {
-                        "start": mapping.get("start"),
-                        "resume": mapping.get("resume"),
-                        "equivalent_permissions": profile_ok,
-                    },
-                )
+            for launch_mode in ("headless", "interactive"):
+                mappings = adapter.profile_mappings(launch_mode)
+                for profile, mapping in sorted(mappings.items()):
+                    profile_ok = bool(mapping.get("start")) and bool(
+                        mapping.get("resume")
+                    )
+                    if profile_ok:
+                        profile_ok = mapping["start"] == mapping["resume"]
+                    check_name = f"launch_profile:{adapter_id}:{profile}"
+                    if launch_mode == "interactive":
+                        check_name += ":interactive"
+                    add(
+                        check_name,
+                        profile_ok,
+                        {
+                            "launch_mode": launch_mode,
+                            "start": mapping.get("start"),
+                            "resume": mapping.get("resume"),
+                            "equivalent_permissions": profile_ok,
+                        },
+                    )
             try:
                 command = (
                     [report.executable, "exec", "resume", "--help"]
@@ -539,6 +574,7 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                             role.launch_profile or "",
                             role.session_policy or "",
                             role.launch_profile_sha256 or "",
+                            role.launch_mode or "headless",
                         )
                         profile_details["roles"].append(
                             {
@@ -547,6 +583,10 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                                 "session_policy": role.session_policy,
                                 "launch_profile": role.launch_profile,
                                 "launch_profile_sha256": (role.launch_profile_sha256),
+                                "launch_mode": role.launch_mode,
+                                "model": role.model,
+                                "reasoning_effort": role.reasoning_effort,
+                                "fast_mode": role.fast_mode,
                                 "valid": True,
                             }
                         )
@@ -634,6 +674,36 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--request", type=Path, required=True)
     init.add_argument("--protocol", type=Path, required=True)
     init.add_argument("--role", action="append", required=True)
+    init.add_argument(
+        "--role-model",
+        action="append",
+        metavar="ROLE=MODEL",
+        help="override one External role's model; otherwise inherit its user default",
+    )
+    init.add_argument(
+        "--role-reasoning-effort",
+        action="append",
+        metavar="ROLE=EFFORT",
+        help=(
+            "override one External role's reasoning effort; otherwise inherit "
+            "its user default"
+        ),
+    )
+    init.add_argument(
+        "--role-fast",
+        action="append",
+        metavar="ROLE",
+        help="enable Codex fast mode for one External role",
+    )
+    init.add_argument(
+        "--role-launch-mode",
+        action="append",
+        metavar="ROLE=MODE",
+        help=(
+            "select interactive (default) or headless execution for one "
+            "External role"
+        ),
+    )
     init.add_argument("--initial-role", required=True)
     init.add_argument("--origin-harness", default="codex")
     init.add_argument("--max-turns", type=int, default=20)
@@ -783,12 +853,43 @@ def dispatch(args: argparse.Namespace) -> int:
         return 0
     if command == "init":
         workspace = _workspace(args.workspace)
+        role_models = _role_value_options(
+            args.role_model,
+            option="--role-model",
+        )
+        role_efforts = _role_value_options(
+            args.role_reasoning_effort,
+            option="--role-reasoning-effort",
+        )
+        fast_roles = _role_flags(args.role_fast, option="--role-fast")
+        role_launch_modes = _role_value_options(
+            args.role_launch_mode,
+            option="--role-launch-mode",
+        )
         roles = {}
         for spec in args.role:
-            role_id, role = parse_role_spec(spec)
+            candidate = spec.split("=", 1)[0] if "=" in spec else ""
+            role_id, role = parse_role_spec(
+                spec,
+                model=role_models.get(candidate),
+                reasoning_effort=role_efforts.get(candidate),
+                fast_mode=True if candidate in fast_roles else None,
+                launch_mode=role_launch_modes.get(candidate),
+            )
             if role_id in roles:
                 raise InvalidArgument(f"duplicate role: {role_id}")
             roles[role_id] = role
+        unknown_options = (
+            set(role_models)
+            | set(role_efforts)
+            | fast_roles
+            | set(role_launch_modes)
+        ) - set(roles)
+        if unknown_options:
+            raise InvalidArgument(
+                "role launch options reference unknown roles: "
+                + ", ".join(sorted(unknown_options))
+            )
         run_id = args.run_id or generate_run_id()
         required_sections = (
             REQUIRED_AUDIT_PAYLOAD_SECTIONS

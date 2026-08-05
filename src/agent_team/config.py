@@ -23,9 +23,19 @@ TEAM_REQUIRED = {
     "limits",
 }
 TEAM_V2_REQUIRED = TEAM_REQUIRED | {"observability"}
+TEAM_V3_REQUIRED = TEAM_V2_REQUIRED
+TEAM_V4_REQUIRED = TEAM_V3_REQUIRED
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
 REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
+MAX_MODEL_ID_LENGTH = 2048
+CODEX_REASONING_EFFORTS = frozenset(
+    {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
+CLAUDE_REASONING_EFFORTS = frozenset(
+    {"auto", "low", "medium", "high", "xhigh", "max"}
+)
+ROLE_LAUNCH_MODES = frozenset({"headless", "interactive"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +64,10 @@ class Role:
     session_policy: str | None = None
     launch_profile: str | None = None
     launch_profile_sha256: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    fast_mode: bool | None = None
+    launch_mode: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         if self.binding == "origin":
@@ -64,6 +78,14 @@ class Role:
             "session_policy": self.session_policy,
             "launch_profile": self.launch_profile,
             "launch_profile_sha256": self.launch_profile_sha256,
+            "launch_mode": (
+                "interactive" if self.launch_mode is None else self.launch_mode
+            ),
+            "harness_options": {
+                "model": self.model,
+                "reasoning_effort": self.reasoning_effort,
+                "fast_mode": self.fast_mode,
+            },
         }
 
 
@@ -77,11 +99,11 @@ class Team:
     max_turns: int
     max_wall_time_seconds: int
     observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
-    config_schema_version: int = 2
+    config_schema_version: int = 4
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
+            "schema_version": 4,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -117,6 +139,17 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
+def valid_model_id(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and not value.startswith("-")
+        and len(value) <= MAX_MODEL_ID_LENGTH
+        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+    )
+
+
 def generate_run_id() -> str:
     import datetime as dt
 
@@ -138,6 +171,10 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_REQUIRED, "team.json")
     elif schema_version == 2:
         _require_exact(value, TEAM_V2_REQUIRED, "team.json")
+    elif schema_version == 3:
+        _require_exact(value, TEAM_V3_REQUIRED, "team.json")
+    elif schema_version == 4:
+        _require_exact(value, TEAM_V4_REQUIRED, "team.json")
     else:
         raise IntegrityError("unsupported team.json schema")
     run_id = value["run_id"]
@@ -181,21 +218,29 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
             _require_exact(role_value, {"binding"}, f"role {role_id}")
             roles[role_id] = Role(role_id, "origin")
         elif binding == "external":
+            external_fields = {
+                "binding",
+                "adapter",
+                "session_policy",
+                "launch_profile",
+                "launch_profile_sha256",
+            }
+            if schema_version >= 3:
+                external_fields.add("harness_options")
+            if schema_version >= 4:
+                external_fields.add("launch_mode")
             _require_exact(
                 role_value,
-                {
-                    "binding",
-                    "adapter",
-                    "session_policy",
-                    "launch_profile",
-                    "launch_profile_sha256",
-                },
+                external_fields,
                 f"role {role_id}",
             )
             adapter = role_value["adapter"]
             policy = role_value["session_policy"]
             profile = role_value["launch_profile"]
             fingerprint = role_value["launch_profile_sha256"]
+            launch_mode = (
+                role_value["launch_mode"] if schema_version >= 4 else "headless"
+            )
             if not isinstance(adapter, str) or adapter not in {
                 "codex",
                 "claude-code",
@@ -213,6 +258,49 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 or any(char not in "0123456789abcdef" for char in fingerprint)
             ):
                 raise IntegrityError(f"invalid launch profile hash for {role_id}")
+            if (
+                not isinstance(launch_mode, str)
+                or launch_mode not in ROLE_LAUNCH_MODES
+            ):
+                raise IntegrityError(f"invalid launch mode for {role_id}")
+            model: str | None = None
+            reasoning_effort: str | None = None
+            fast_mode: bool | None = None
+            if schema_version >= 3:
+                options = role_value["harness_options"]
+                if not isinstance(options, dict):
+                    raise IntegrityError(
+                        f"harness options for {role_id} must be an object"
+                    )
+                _require_exact(
+                    options,
+                    {"model", "reasoning_effort", "fast_mode"},
+                    f"role {role_id} harness options",
+                )
+                model = options["model"]
+                reasoning_effort = options["reasoning_effort"]
+                fast_mode = options["fast_mode"]
+                if model is not None and not valid_model_id(model):
+                    raise IntegrityError(f"invalid model for {role_id}")
+                efforts = (
+                    CODEX_REASONING_EFFORTS
+                    if adapter == "codex"
+                    else CLAUDE_REASONING_EFFORTS
+                )
+                if reasoning_effort is not None and (
+                    not isinstance(reasoning_effort, str)
+                    or reasoning_effort not in efforts
+                ):
+                    raise IntegrityError(
+                        f"invalid reasoning effort for {role_id}"
+                    )
+                if adapter == "codex":
+                    if fast_mode is not None and not isinstance(fast_mode, bool):
+                        raise IntegrityError(f"invalid fast mode for {role_id}")
+                elif fast_mode is not None:
+                    raise IntegrityError(
+                        f"fast mode is not supported for {role_id}"
+                    )
             roles[role_id] = Role(
                 role_id,
                 "external",
@@ -220,6 +308,10 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 policy,
                 profile,
                 fingerprint,
+                model,
+                reasoning_effort,
+                fast_mode,
+                launch_mode,
             )
         else:
             raise IntegrityError(f"invalid binding for role {role_id}: {binding!r}")
@@ -401,7 +493,7 @@ def make_team(
         max_turns,
         max_wall_time_seconds,
         observability or ObservabilityPolicy(),
-        2,
+        4,
     )
     try:
         return parse_team(team.to_json())

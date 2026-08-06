@@ -227,6 +227,24 @@ specifically needs the non-interactive JSON/stream protocol. Launch mode is
 frozen in `team.json`; schema 1–3 Runs continue to load as `headless` rather
 than silently changing behavior after an upgrade.
 
+Before the first interactive Claude Code Run in a worktree, establish Claude's
+own workspace trust once from a normal terminal:
+
+```bash
+cd /path/to/worktree
+claude
+# Accept “Yes, I trust this folder”, then exit Claude Code.
+```
+
+Agent-Team never edits Claude's user trust database or answers that prompt with
+simulated keys. If trust is absent or later revoked, `start` fails before
+Kickoff (or a later Turn fails closed before launching Claude) with
+`HARNESS_WORKSPACE_TRUST_REQUIRED`; establish trust and retry the same
+UNSTARTED Run. Headless Claude roles do not require this TUI preflight. Codex
+interactive roles instead receive a private per-Run/Role `CODEX_HOME` whose
+immutable config contains only the exact current-workspace trust entry; user
+MCP, Hook, Plugin, and permission configuration is not copied.
+
 Each adapter exposes the same explicit Profile names:
 
 | Profile | Codex mapping | Claude Code mapping |
@@ -248,7 +266,9 @@ would therefore allow host-file writes outside the Workspace. Choose
 `full-access` explicitly when that wider host boundary is intended.
 
 All three Profiles ignore mutable local Codex/Claude permission settings and
-freeze an explicit Start/Resume mapping and hash in `team.json`. Selective
+freeze an explicit Start/Resume mapping and hash in `team.json`. Claude's
+separate workspace-trust decision is only preflight state, not permission
+configuration, and is rechecked before every interactive launch. Selective
 model, effort, and Codex fast defaults are snapshotted separately as described
 above; Profiles do not otherwise mean “reuse my current interactive session
 settings.” A protocol restriction such as “review only” remains a
@@ -284,6 +304,14 @@ role. During an interactive Turn, that window displays the native Harness TUI
 while the Worker → Supervisor → Runner identity and authorization chain remains
 in force. Repeating `start` converges through the same deterministic recovery
 path; it does not create a second Kickoff.
+
+`agent-team attach` deliberately opens a read-only tmux client. When an
+operator explicitly uses a writable tmux client for the same Session, the
+Supervisor temporarily places the Worker Pane's stdin in raw mode and relays
+keyboard bytes unchanged to the Harness PTY; it restores the terminal flags
+afterward. Such manual TUI input is never a Handoff, Completion, Block, Resume,
+or other formal Agent-Team action—the validated Outbox and Journal remain the
+only control protocol.
 
 ### Observability modes
 
@@ -411,9 +439,11 @@ changes, usage, errors, and exposed reasoning summaries. Each event links back
 to the source stdout/stderr/terminal sequence range.
 
 `attach` is read-only. For an active `interactive` role it shows the native
-Harness TUI; for a `headless` role it shows only Worker-level diagnostics.
-Neither Pane text nor raw logs participate in routing, completion, Resume, or
-recovery decisions, and Agent-Team never uses `tmux send-keys` as automation.
+Harness TUI; for a `headless` role it shows only Worker-level diagnostics. A
+separately opened writable tmux client can provide manual raw TUI input, but
+neither that input, Pane text, nor raw logs participate in routing, completion,
+Resume, or recovery decisions, and Agent-Team never uses `tmux send-keys` as
+automation.
 
 ## Blocks, Resume, and cancellation
 
@@ -473,9 +503,14 @@ raw streams, and completion artifacts. A separate per-account fixed state
 directory contains the durable Workspace owner and operation lock.
 Interactive Codex roles also receive a private per-Run/per-Role `CODEX_HOME`
 under that fixed state directory. Agent-Team copies only private authentication
-state, creates an empty isolated config, and passes the frozen role model,
-effort, fast, and permission choices explicitly; mutable user MCP, Hook,
-Plugin, and permission settings are not imported.
+state, creates an isolated config containing only the exact Workspace trust
+entry, and passes the frozen role model, effort, fast, and permission choices
+explicitly; mutable user MCP, Hook, Plugin, and permission settings are not
+imported. Project-level configuration inside the trusted Workspace remains
+part of the Workspace's own security boundary. After an interactive Codex
+process group is proven quiescent, Agent-Team removes Codex's transient wrapper
+directory and clears group/other permission bits from durable private-Home
+state while preserving the resumable Session Store.
 
 After an External Turn becomes quiescent, Agent-Team writes
 `turns/<turn-id>/trace.jsonl` and `trace-manifest.json`. The manifest records

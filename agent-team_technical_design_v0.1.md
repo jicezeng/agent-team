@@ -1168,7 +1168,10 @@ TTY，校验不可变 `process/prompt.md` 后把一条只引用该文件的 Boot
 
 Supervisor 留在 Runner 进程组之外。Headless Mode 持久化 Harness 原始
 stdout/stderr；Interactive Mode 持久化 PTY Terminal Chunk，并把相同原始字节写回
-自身 stdout，使 tmux Pane 实时显示原生 TUI。Supervisor 同时监听 Journal、
+自身 stdout，使 tmux Pane 实时显示原生 TUI。可用的 Worker stdin 是 TTY 时，
+Supervisor 保存其 Termios 与文件状态标志，临时切换到 Raw / Non-blocking Mode，
+逐字节转发到 Harness PTY，并在退出或取消时恢复原状态；因此 Enter、方向键和
+Ctrl 组合不会被行缓冲、Echo 或 CR→LF 改写。Supervisor 同时监听 Journal、
 Deadline、可用的结构化 Permission Evidence、正式 Outbox，以及 Kickoff Hash、
 当前 Event / `input.md` / `process/prompt.md` Hash、Runner / 启动许可、State Root 和
 Workspace Owner 的固定完整性守卫。Interactive TUI 在模型一轮结束后通常继续等待
@@ -1418,8 +1421,10 @@ tmux Pane
 ```
 
 Interactive Supervisor 可以继承 Worker 的 tmux stdin 并转发真实终端输入到 Slave
-PTY，但公开 `agent-team attach` 固定使用 tmux Read-only Client；自动控制不得使用
-`send-keys`、不得生成模拟键盘输入，也不得把 Pane 输入作为正式动作。Headless
+PTY；转发期间必须使用 Raw Mode 并在结束时恢复原 Termios 和文件状态标志。公开
+`agent-team attach` 固定使用 tmux Read-only Client；操作者只有显式使用可写 tmux
+Client 时才可手工控制原生 TUI。自动控制不得使用 `send-keys`、不得生成模拟键盘
+输入，也不得把 Pane 输入作为正式动作。Headless
 Supervisor / Runner 不继承该 stdin，继续使用 PIPE / DEVNULL 边界。
 
 ## 15.3 Best-effort 通知与诊断
@@ -1906,6 +1911,13 @@ v0.1 实现：
 - Interactive Start/Resume 去掉 `-p` 与 Stream JSON 参数，保持同一 Profile、Plugin、
   Setting-Source 和 Session UUID 语义，由 Runner 把引用不可变 Prompt 文件的短
   Bootstrap Prompt 作为位置参数传入；Headless 才从 stdin 读取完整 Prompt。
+- Claude 的 Workspace Trust Prompt 不属于 Permission Profile，也没有保留工作区
+  边界的可靠自动确认接口。Interactive Run 因此在 Kickoff 前读取 Claude 用户状态，
+  要求当前规范化 Workspace 或其父目录已有 `hasTrustDialogAccepted=true`；缺失时以
+  `HARNESS_WORKSPACE_TRUST_REQUIRED` 保持 UNSTARTED，并提示用户在普通终端运行一次
+  `cd <workspace> && claude` 完成确认。Agent-Team 不直接改写该用户状态、不用
+  `send-keys` 接受提示；每个 Interactive Turn 启动前再次检查，撤销或损坏时
+  Fail Closed。显式 Headless Role 不需要 TUI Trust 预检。
 
 概念命令：
 
@@ -1947,8 +1959,15 @@ claude -p \
 - `full-access` 使用 `danger-full-access` 与 `approval_policy=never`，只有用户明确选择时启用；
 - Headless 的三种 Profile 使用 `--ignore-user-config` 和 `--ignore-rules`。Interactive
   CLI 不接受这两个 Exec-only 参数，因此 Agent-Team 在固定状态目录创建每个
-  Run/Role 独立的 `CODEX_HOME`：空配置、私有认证副本和独立 Session Store；启动前
-  在该 Home 内再次验证认证，不继承本机可变 Permission、MCP、Hook 或 Plugin；
+  Run/Role 独立的 `CODEX_HOME`：只含当前规范化 Workspace `trust_level="trusted"`
+  的不可变最小配置、私有认证副本和独立 Session Store；该 Trust 条目只消除原生
+  TUI 的确认页，不复制用户 Permission、MCP、Hook 或 Plugin。启动前在该 Home 内
+  再次验证认证；Workspace 自身受信任后可生效的项目级配置仍属于 Workspace 内容；
+- Codex 可能无视受管 Umask，为内建缓存显式创建 0755/0644 条目，并在 `tmp/`
+  创建指向 CLI 的进程期 Wrapper Symlink。只有对应 Runner PGID 已证明 Quiescent 后，
+  Adapter 才删除该 Home 的临时 Wrapper 目录、保留 Session Store，并递归清除持久
+  条目的 Group/Other 权限位；发现临时目录根或其他持久条目为未知 Symlink/特殊类型时
+  Fail Closed；
 - 冻结的 `model` 通过 `--model` 应用于 Start / Resume，Reasoning Effort 通过 `model_reasoning_effort` 覆盖；`fast_mode=true` 同时启用 `features.fast_mode` 并设置 `service_tier="fast"`；
 - 可通过 `-o` 保存最终消息到本 Turn 的 `output.md`，但它只用于诊断，不产生 Handoff、Completion 或正常完成证据。
 - Interactive 使用 `--no-alt-screen` 便于 tmux 保留可观察历史；Fresh Session Ref 从
@@ -3521,7 +3540,9 @@ sequenceDiagram
 5. 存在 External Binding 时自动创建 tmux Session；纯 Origin Run 不依赖 tmux；
    新建 External Role 默认使用 Interactive Mode；Runner 的 stdin/stdout/stderr
    都是受管 TTY，原生 Codex / Claude Code TUI 可通过只读 Attach 实时查看；显式
-   Headless Role 保留旧 JSON/Stream 路径，Schema 1–3 Run 不被升级为 Interactive；
+   可写 tmux Client 的按键经 Raw Relay 原样到达 TUI 并在结束后恢复 TTY；Claude
+   Interactive Role 在 Kickoff 前要求用户已确认 Workspace Trust；显式 Headless
+   Role 保留旧 JSON/Stream 路径，Schema 1–3 Run 不被升级为 Interactive；
 6. 初始角色无论绑定外部 Harness 还是 Origin 都能自动启动；
 7. 同一外部角色至少可 Resume 五轮；
 8. Handoff 目标由 Agent 显式选择；
@@ -4312,11 +4333,14 @@ Origin Codex 不只转发 Completion 文件，而应输出：
 CLI 版本或参数当作永久事实：
 
 - Codex Adapter 默认使用私有 `CODEX_HOME` 的原生 TUI，显式 Headless Role 使用
-  JSONL；两者都冻结 Start/Resume Profile；
+  JSONL；私有 Home 仅含精确 Workspace Trust 与认证副本，两者都冻结 Start/Resume
+  Profile；
 - Claude Code Adapter 默认使用原生 TUI，显式 Headless Role 使用 Stream JSON；
-  两者都保持显式 Session Start/Resume、Plugin 与 Sandbox/Permission Profile；
+  Interactive 启动前要求用户已在 Claude 中确认 Workspace Trust，两者都保持显式
+  Session Start/Resume、Plugin 与 Sandbox/Permission Profile；
 - tmux 承载可 Detach Worker，并在 Interactive Turn 显示 Supervisor PTY 镜像；
-  `wait-for` 通知、只读 `capture-pane` 与 Attach 都不是工作流协议；
+  可写 Client 输入通过可恢复的 Raw Relay 到达 Harness；`wait-for` 通知、只读
+  `capture-pane` 与 Attach 都不是工作流协议；
 - `send-keys`、Pane 文本和 tmux 锁均不参与状态转换。
 
 Start/Resume 参数、可执行路径、版本、权限等价性和进程组行为由每台机器的 Probe 重新

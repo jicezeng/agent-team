@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
+import pty
 import subprocess
 import sys
+import termios
+import tty
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,6 +36,7 @@ from agent_team.supervisor import (
     StreamRecorder,
     _base_snapshot,
     _fresh_interactive_session_candidate,
+    _relay_terminal_input,
     supervise_turn,
     validate_supervisor,
 )
@@ -52,12 +57,74 @@ from agent_team.worker import (
     finalize_external_turn_locked,
 )
 
-
 PROFILE = "test-noninteractive"
 PROFILE_HASH = "0" * 64
 NONCE = "test-launch-nonce"
 SUPERVISOR_PID = 700_001
 RUNNER_PID = 700_002
+
+
+def test_interactive_terminal_input_is_raw_and_tty_state_is_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_master, source_slave = pty.openpty()
+    destination_master, destination_slave = pty.openpty()
+    original_termios = termios.tcgetattr(source_slave)
+    original_flags = fcntl.fcntl(source_slave, fcntl.F_GETFL)
+    tty.setraw(destination_slave, when=termios.TCSANOW)
+    os.set_blocking(destination_slave, False)
+    monkeypatch.setattr(
+        "agent_team.supervisor.sys",
+        SimpleNamespace(stdin=SimpleNamespace(fileno=lambda: source_slave)),
+    )
+
+    async def exercise() -> bytes:
+        task = asyncio.create_task(_relay_terminal_input(destination_master))
+        try:
+            for _ in range(100):
+                current = termios.tcgetattr(source_slave)
+                if not current[3] & termios.ICANON and not current[3] & termios.ECHO:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("terminal input relay did not enter raw mode")
+            payload = b"\r\x1b[A\x03"
+            os.write(source_master, payload)
+            received = b""
+            for _ in range(100):
+                try:
+                    received += os.read(destination_slave, 4096)
+                except BlockingIOError:
+                    pass
+                if len(received) >= len(payload):
+                    return received
+                await asyncio.sleep(0.01)
+            raise AssertionError(f"terminal input relay returned {received!r}")
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    try:
+        assert asyncio.run(exercise()) == b"\r\x1b[A\x03"
+        restored_termios = termios.tcgetattr(source_slave)
+        # Darwin may add the transient PENDIN state bit when tcsetattr restores
+        # canonical input. It is not a configured terminal mode.
+        pendin = getattr(termios, "PENDIN", 0)
+        restored_termios[3] &= ~pendin
+        original_termios[3] &= ~pendin
+        assert restored_termios == original_termios
+        assert fcntl.fcntl(source_slave, fcntl.F_GETFL) == original_flags
+    finally:
+        for fd in (
+            source_master,
+            source_slave,
+            destination_master,
+            destination_slave,
+        ):
+            os.close(fd)
 
 
 class _BootstrapAdapter:
@@ -88,6 +155,17 @@ class _BootstrapAdapter:
         assert options.fast_mode is None
 
     def prepare_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        assert run_dir.name.startswith("at-")
+        assert role_id == "developer"
+        assert launch_mode == self.launch_mode
+
+    def finalize_run_state(
         self,
         *,
         run_dir: Path,
@@ -2098,6 +2176,11 @@ def test_interactive_supervisor_uses_pty_and_stops_after_durable_action(
     monkeypatch.setattr(
         "agent_team.worker.get_adapter",
         lambda _adapter: CodexAdapter(),
+    )
+    monkeypatch.setattr(
+        CodexAdapter,
+        "finalize_run_state",
+        lambda _self, **_kwargs: None,
     )
     monkeypatch.setattr(
         "agent_team.worker.process_identity_state",

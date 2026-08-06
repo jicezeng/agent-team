@@ -62,7 +62,6 @@ from .util import (
     set_private_umask,
 )
 
-
 ROLE_REQUIRED = {
     "schema_version",
     "role_id",
@@ -408,6 +407,20 @@ def _session_was_made_unavailable_by_turn(
     )
 
 
+def _finalize_adapter_run_state(
+    run_dir: Path,
+    *,
+    role: Role,
+) -> Any:
+    adapter = get_adapter(role.adapter or "")
+    adapter.finalize_run_state(
+        run_dir=run_dir,
+        role_id=role.role_id,
+        launch_mode=role.launch_mode or "headless",
+    )
+    return adapter
+
+
 def finalize_external_turn_locked(
     run_dir: Path,
     runtime: dict[str, Any],
@@ -557,6 +570,8 @@ def finalize_external_turn_locked(
                 runner_start_id=runner["runner_start_id"],
             )
         safely_stopped = supervisor_identity in {"gone", "reused"} and group_quiescent
+        if safely_stopped:
+            _finalize_adapter_run_state(run_dir, role=role)
         session_unavailable = _session_was_made_unavailable_by_turn(
             run_dir,
             role=role,
@@ -613,6 +628,7 @@ def finalize_external_turn_locked(
         save_runtime(turn_dir, runtime, team=team)
         return event
     _copy_supervisor_result(runtime, supervisor)
+    adapter = _finalize_adapter_run_state(run_dir, role=role)
     trace_manifest = _anchor_turn_trace(run_dir, runtime)
     session_unavailable = _session_was_made_unavailable_by_turn(
         run_dir,
@@ -697,7 +713,6 @@ def finalize_external_turn_locked(
         runtime["terminal_event_id"] = event["event_id"]
         save_runtime(turn_dir, runtime, team=team)
         return event
-    adapter = get_adapter(role.adapter or "")
     result = ProcessResult(
         process_exit_code=runtime["process_exit_code"],
         termination_kind=runtime["termination_kind"] or "unknown",

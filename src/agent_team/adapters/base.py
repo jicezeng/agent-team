@@ -12,8 +12,21 @@ from agent_team import __version__
 from agent_team.errors import AgentTeamError, IntegrityError
 from agent_team.util import canonical_json_bytes, sha256_bytes
 
-
 LAUNCH_MODES = frozenset({"headless", "interactive"})
+
+
+def workspace_from_run_dir(run_dir: Path) -> Path:
+    """Resolve the canonical workspace that owns an Agent-Team Run."""
+
+    try:
+        resolved_run = run_dir.resolve(strict=True)
+        workspace = resolved_run.parent.parent.parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise IntegrityError("run path cannot be resolved safely") from exc
+    expected = workspace / ".agent-team" / "runs" / resolved_run.name
+    if run_dir.is_symlink() or not resolved_run.is_dir() or resolved_run != expected:
+        raise IntegrityError("run directory is outside the canonical workspace path")
+    return workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +108,7 @@ class LaunchSpec:
         return sha256_bytes(canonical_json_bytes(self.to_json()))
 
     @classmethod
-    def from_json(cls, value: dict[str, Any]) -> "LaunchSpec":
+    def from_json(cls, value: dict[str, Any]) -> LaunchSpec:
         legacy_required = {
             "adapter_id",
             "argv",
@@ -417,6 +430,17 @@ class HarnessAdapter(abc.ABC):
         launch_mode: str,
     ) -> None:
         """Prepare private, adapter-owned state before a Run starts."""
+
+        self.assert_launch_mode(launch_mode)
+
+    def finalize_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        """Finalize private adapter state after its process group is quiescent."""
 
         self.assert_launch_mode(launch_mode)
 

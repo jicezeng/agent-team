@@ -14,6 +14,7 @@ import stat
 import struct
 import sys
 import termios
+import tty
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,6 @@ from .util import (
     sha256_bytes,
     write_all,
 )
-
 
 SUPERVISOR_REQUIRED = {
     "schema_version",
@@ -636,12 +636,20 @@ async def _read_pty(
 
 
 async def _relay_terminal_input(master_fd: int) -> None:
-    source_fd = sys.stdin.fileno()
-    if not os.isatty(source_fd):
-        return
-    original_flags = fcntl.fcntl(source_fd, fcntl.F_GETFL)
-    fcntl.fcntl(source_fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
     try:
+        source_fd = sys.stdin.fileno()
+        if not os.isatty(source_fd):
+            return
+        original_flags = fcntl.fcntl(source_fd, fcntl.F_GETFL)
+        original_termios = termios.tcgetattr(source_fd)
+    except (AttributeError, OSError, ValueError, termios.error):
+        return
+    try:
+        # Native TUIs consume individual bytes. Canonical mode would buffer a
+        # line, ECHO would duplicate it in the Worker pane, and ICRNL would
+        # rewrite Enter before it reached the Harness PTY.
+        tty.setraw(source_fd, when=termios.TCSANOW)
+        fcntl.fcntl(source_fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
         while True:
             try:
                 data = os.read(source_fd, 4096)
@@ -658,6 +666,12 @@ async def _relay_terminal_input(master_fd: int) -> None:
     finally:
         with contextlib.suppress(OSError):
             fcntl.fcntl(source_fd, fcntl.F_SETFL, original_flags)
+        with contextlib.suppress(OSError, termios.error):
+            termios.tcsetattr(
+                source_fd,
+                termios.TCSANOW,
+                original_termios,
+            )
 
 
 async def _read_status_fd(fd: int) -> bytes:

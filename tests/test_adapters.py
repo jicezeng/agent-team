@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,8 @@ import pytest
 from agent_team.adapters.base import (
     AdapterEvidence,
     AdapterEvidenceSnapshot,
-    HarnessLaunchOptions,
     HarnessAdapter,
+    HarnessLaunchOptions,
     LaunchSpec,
     ProcessResult,
     StreamRecord,
@@ -729,7 +730,11 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     isolated_home = Path(launch.env["CODEX_HOME"])
 
     assert isolated_home != source_home
-    assert (isolated_home / "config.toml").read_bytes() == b""
+    assert tomllib.loads(
+        (isolated_home / "config.toml").read_text(encoding="utf-8")
+    ) == {
+        "projects": {str(workspace): {"trust_level": "trusted"}}
+    }
     assert (isolated_home / "auth.json").read_bytes() == source_auth.read_bytes()
     assert (isolated_home / "auth.json").stat().st_ino != source_auth.stat().st_ino
     assert launch.launch_mode == "interactive"
@@ -753,6 +758,37 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     )
     assert resumed.argv[1] == "resume"
     assert resumed.expected_session_ref == "019fa804-8bc9-7bc3-a8e9-baf8cee27430"
+
+    generated = isolated_home / "plugins" / "cache"
+    generated.mkdir(parents=True)
+    generated.chmod(0o755)
+    cache_file = generated / "metadata.json"
+    cache_file.write_text("{}\n", encoding="utf-8")
+    cache_file.chmod(0o644)
+    session_file = isolated_home / "sessions" / "kept.jsonl"
+    session_file.parent.mkdir()
+    session_file.write_text("{}\n", encoding="utf-8")
+    session_file.chmod(0o644)
+    temporary = isolated_home / "tmp" / "arg0"
+    temporary.mkdir(parents=True)
+    (temporary / "wrapper").symlink_to("/bin/codex")
+
+    adapter.finalize_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+
+    assert not (isolated_home / "tmp").exists()
+    assert session_file.read_text(encoding="utf-8") == "{}\n"
+    for path in (
+        state_dir / "harness-homes",
+        state_dir / "harness-homes" / "codex",
+        isolated_home,
+        *isolated_home.rglob("*"),
+    ):
+        assert not path.is_symlink()
+        assert path.stat().st_mode & 0o077 == 0
 
 
 def test_codex_interactive_session_refs_are_scoped_to_home_and_workspace(
@@ -810,6 +846,11 @@ def test_claude_interactive_launch_uses_native_tui_and_known_session(
         "agent_team.adapters.claude_code.claude_internal_tmpdir",
         lambda: Path("/tmp/claude-501"),
     )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_interactive_workspace_trusted",
+        lambda _workspace: None,
+    )
 
     launch = adapter.prepare_launch(
         launch_context(
@@ -833,6 +874,66 @@ def test_claude_interactive_launch_uses_native_tui_and_known_session(
     assert launch.env["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
     assert "--setting-sources" in launch.argv
     assert launch.argv[launch.argv.index("--setting-sources") + 1] == ""
+
+
+def test_claude_interactive_run_state_requires_pretrusted_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-adapter-test"
+    run_dir.mkdir(parents=True)
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    adapter = ClaudeCodeAdapter()
+
+    with pytest.raises(AgentTeamError) as rejected:
+        adapter.prepare_run_state(
+            run_dir=run_dir,
+            role_id="developer",
+            launch_mode="interactive",
+        )
+
+    assert rejected.value.code == "HARNESS_WORKSPACE_TRUST_REQUIRED"
+    assert f"cd {workspace} && claude" in rejected.value.message
+
+    (config_dir / ".claude.json").write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(tmp_path): {"hasTrustDialogAccepted": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+
+
+def test_claude_interactive_trust_rejects_invalid_user_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".config.json").write_text(
+        '{"projects": []}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+    with pytest.raises(AgentTeamError) as rejected:
+        ClaudeCodeAdapter._assert_interactive_workspace_trusted(workspace)
+
+    assert rejected.value.code == "HARNESS_USER_CONFIG_INVALID"
 
 
 def test_launch_spec_reads_legacy_headless_schema() -> None:

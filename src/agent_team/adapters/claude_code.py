@@ -13,12 +13,13 @@ from agent_team.errors import AgentTeamError, InvalidArgument
 
 from .base import (
     AdapterEvidence,
-    HarnessLaunchOptions,
     HarnessAdapter,
+    HarnessLaunchOptions,
     LaunchSpec,
     NormalizedTraceEvent,
     StreamRecord,
     TurnLaunchContext,
+    workspace_from_run_dir,
 )
 
 
@@ -162,6 +163,90 @@ class ClaudeCodeAdapter(HarnessAdapter):
         except subprocess.TimeoutExpired:
             return None
         return result.returncode == 0
+
+    @staticmethod
+    def _user_state_path() -> Path:
+        configured = os.environ.get("CLAUDE_CONFIG_DIR")
+        if configured:
+            base = Path(configured).expanduser()
+            current = base / ".config.json"
+            return current if current.exists() else base / ".claude.json"
+        return Path.home() / ".claude.json"
+
+    @classmethod
+    def _workspace_is_trusted(cls, workspace: Path) -> bool:
+        state_path = cls._user_state_path()
+        try:
+            raw = state_path.read_bytes()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_UNREADABLE",
+                f"cannot read Claude Code user state {state_path}: {exc}",
+            ) from exc
+        try:
+            state = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"Claude Code user state is invalid: {state_path}",
+            ) from exc
+        if not isinstance(state, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user state must be an object",
+            )
+        projects = state.get("projects", {})
+        if not isinstance(projects, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user state projects must be an object",
+            )
+        try:
+            resolved = workspace.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise AgentTeamError(
+                "HARNESS_WORKSPACE_UNREADABLE",
+                f"cannot resolve Claude Code workspace: {workspace}",
+            ) from exc
+        for candidate in (resolved, *resolved.parents):
+            project = projects.get(str(candidate))
+            if (
+                isinstance(project, dict)
+                and project.get("hasTrustDialogAccepted") is True
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _assert_interactive_workspace_trusted(cls, workspace: Path) -> None:
+        if cls._workspace_is_trusted(workspace):
+            return
+        resolved = workspace.resolve(strict=True)
+        raise AgentTeamError(
+            "HARNESS_WORKSPACE_TRUST_REQUIRED",
+            "Claude Code has not trusted the interactive workspace "
+            f"{resolved}. Run `cd {resolved} && claude`, accept the workspace "
+            "trust prompt, exit Claude, then retry the Agent-Team command.",
+        )
+
+    def prepare_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().prepare_run_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        if launch_mode == "interactive":
+            self._assert_interactive_workspace_trusted(
+                workspace_from_run_dir(run_dir)
+            )
 
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
         if options.model is not None and not valid_model_id(options.model):
@@ -326,6 +411,10 @@ class ClaudeCodeAdapter(HarnessAdapter):
             fast_mode=context.fast_mode,
         )
         self.assert_launch_options(options)
+        if context.launch_mode == "interactive":
+            # Recheck on every Turn so a revoked or corrupted trust decision
+            # fails closed before Claude starts a native TUI.
+            self._assert_interactive_workspace_trusted(Path(context.workspace))
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
         selection: tuple[str, ...] = (

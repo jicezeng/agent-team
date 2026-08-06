@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tomllib
@@ -24,12 +25,13 @@ from agent_team.util import (
 
 from .base import (
     AdapterEvidence,
-    HarnessLaunchOptions,
     HarnessAdapter,
+    HarnessLaunchOptions,
     LaunchSpec,
     NormalizedTraceEvent,
     StreamRecord,
     TurnLaunchContext,
+    workspace_from_run_dir,
 )
 
 
@@ -131,6 +133,48 @@ class CodexAdapter(HarnessAdapter):
         }
 
     @staticmethod
+    def _interactive_config(run_dir: Path) -> bytes:
+        workspace = workspace_from_run_dir(run_dir)
+        quoted_workspace = json.dumps(str(workspace), ensure_ascii=False)
+        config = (
+            f"[projects.{quoted_workspace}]\n"
+            'trust_level = "trusted"\n'
+        ).encode()
+        # Keep this generated security boundary both minimal and syntactically
+        # valid. No mutable user MCP, Hook, Plugin, or permission setting is
+        # copied into the isolated interactive home.
+        parsed = tomllib.loads(config.decode("utf-8"))
+        if parsed != {
+            "projects": {str(workspace): {"trust_level": "trusted"}}
+        }:
+            raise IntegrityError("generated Codex interactive config is invalid")
+        return config
+
+    def _ensure_private_interactive_home(
+        self,
+        run_dir: Path,
+        role_id: str,
+    ) -> Path:
+        home = self._interactive_home(run_dir, role_id)
+        state_dir = fixed_state_dir()
+        hierarchy = (
+            state_dir,
+            state_dir / "harness-homes",
+            state_dir / "harness-homes" / "codex",
+            home.parent,
+            home,
+        )
+        for directory in hierarchy:
+            ensure_dir(directory)
+            info = directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise IntegrityError(
+                    f"Codex interactive state directory is unsafe: {directory}"
+                )
+            directory.chmod(0o700)
+        return home
+
+    @staticmethod
     def _source_codex_home() -> Path:
         configured = os.environ.get("CODEX_HOME")
         supplied = (
@@ -183,8 +227,7 @@ class CodexAdapter(HarnessAdapter):
         )
         if launch_mode != "interactive":
             return
-        home = self._interactive_home(run_dir, role_id)
-        ensure_dir(home)
+        home = self._ensure_private_interactive_home(run_dir, role_id)
         marker_path = home / "agent-team-home.json"
         marker = self._interactive_marker(run_dir, role_id)
         if path_entry_exists(marker_path):
@@ -194,9 +237,14 @@ class CodexAdapter(HarnessAdapter):
                 )
         else:
             atomic_json(marker_path, marker, immutable=True)
-        # An empty immutable config prevents the interactive entry point from
-        # importing mutable user MCP, Hook, Plugin, or permission settings.
-        atomic_write(home / "config.toml", b"", immutable=True)
+        # A trust-only immutable config bypasses Codex's native workspace
+        # confirmation without importing mutable user MCP, Hook, Plugin, or
+        # permission settings into this Run-owned interactive home.
+        atomic_write(
+            home / "config.toml",
+            self._interactive_config(run_dir),
+            immutable=True,
+        )
         source_auth = self._source_codex_home() / "auth.json"
         target_auth = home / "auth.json"
         if path_entry_exists(source_auth):
@@ -236,6 +284,86 @@ class CodexAdapter(HarnessAdapter):
             fsync_dir(home)
         self._assert_interactive_authentication(home)
 
+    def finalize_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().finalize_run_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        if launch_mode != "interactive":
+            return
+        home = self._interactive_home(run_dir, role_id)
+        try:
+            home_info = home.lstat()
+        except OSError as exc:
+            raise IntegrityError(
+                f"Codex interactive state is unavailable: {home}"
+            ) from exc
+        if home.is_symlink() or not stat.S_ISDIR(home_info.st_mode):
+            raise IntegrityError(f"Codex interactive state is unsafe: {home}")
+        marker_path = home / "agent-team-home.json"
+        if (
+            not path_entry_exists(marker_path)
+            or read_json(marker_path) != self._interactive_marker(run_dir, role_id)
+        ):
+            raise IntegrityError(
+                f"Codex interactive state is not owned by this Run: {home}"
+            )
+        for directory in (
+            fixed_state_dir(),
+            fixed_state_dir() / "harness-homes",
+            fixed_state_dir() / "harness-homes" / "codex",
+            home.parent,
+            home,
+        ):
+            info = directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise IntegrityError(
+                    f"Codex interactive state directory is unsafe: {directory}"
+                )
+            directory.chmod(0o700)
+        # Codex creates per-process wrapper symlinks below tmp and may assign
+        # explicit 0755/0644 modes to caches despite the managed 0077 umask.
+        # The process group is already proven quiescent here, so transient tmp
+        # state can be removed and all durable state can be made account-only.
+        temporary = home / "tmp"
+        if path_entry_exists(temporary):
+            temporary_info = temporary.lstat()
+            if temporary.is_symlink() or not stat.S_ISDIR(temporary_info.st_mode):
+                raise IntegrityError(
+                    f"Codex interactive temporary state is unsafe: {temporary}"
+                )
+            shutil.rmtree(temporary)
+            fsync_dir(home)
+
+        for directory, child_dirs, files in os.walk(
+            home,
+            topdown=False,
+            followlinks=False,
+        ):
+            current = Path(directory)
+            for name in (*child_dirs, *files):
+                path = current / name
+                info = path.lstat()
+                if path.is_symlink() or not (
+                    stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                ):
+                    raise IntegrityError(
+                        f"Codex interactive state entry is unsafe: {path}"
+                    )
+                if stat.S_ISDIR(info.st_mode):
+                    path.chmod(0o700)
+                else:
+                    owner_mode = stat.S_IMODE(info.st_mode) & 0o700
+                    path.chmod(owner_mode or 0o600)
+            current.chmod(0o700)
+
     def _assert_interactive_home(self, context: TurnLaunchContext) -> Path:
         run_dir = Path(context.turn_dir).parent.parent
         home = self._interactive_home(run_dir, context.role_id)
@@ -265,7 +393,7 @@ class CodexAdapter(HarnessAdapter):
         if (
             not stat.S_ISREG(config_info.st_mode)
             or stat.S_IMODE(config_info.st_mode) & 0o077
-            or read_regular(config) != b""
+            or read_regular(config) != self._interactive_config(run_dir)
         ):
             raise IntegrityError("Codex interactive config is not isolated")
         return home

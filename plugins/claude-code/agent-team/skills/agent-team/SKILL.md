@@ -64,7 +64,13 @@ existing Run:
    `interactive` PTY execution in their tmux Pane. Add
    `--role-launch-mode <role>=headless` only when the user explicitly requests
    headless/structured-stream execution; an explicit `interactive` value may
-   be recorded but is normally redundant.
+   be recorded but is normally redundant. Before starting any interactive
+   Claude Code role, require the user to have opened `claude` once in the exact
+   Workspace (or a trusted parent), accepted its workspace-trust prompt, and
+   exited. Never edit Claude's user trust state or accept the prompt with
+   `send-keys`. `HARNESS_WORKSPACE_TRUST_REQUIRED` occurs before Kickoff, so
+   after that one-time confirmation retry the same UNSTARTED Run; headless
+   Claude roles do not require this preflight.
 7. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
@@ -136,9 +142,10 @@ Pane text, human-readable Status, Harness prose, or logs to decide routing,
 completion, Resume, Unlock, or recovery.
 
 `agent-team attach <run-id> --role <role>` is a read-only live view. An
-interactive role shows its native Harness TUI, but neither the Pane nor tmux
-input is an action channel; formal CLI Outbox actions and the Journal remain
-authoritative.
+interactive role shows its native Harness TUI. An operator may explicitly use
+a writable tmux client for manual TUI input, which the Supervisor relays as raw
+terminal bytes, but neither the Pane nor that input is a formal Agent-Team
+action channel; formal CLI Outbox actions and the Journal remain authoritative.
 
 Never share, guess, or replace another Origin session's Claim. Claim loss has
 no takeover path in v0.1: diagnose read-only, cancel the old Run, confirm the

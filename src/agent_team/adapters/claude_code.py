@@ -167,11 +167,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
     @staticmethod
     def _user_state_path() -> Path:
         configured = os.environ.get("CLAUDE_CONFIG_DIR")
-        if configured:
-            base = Path(configured).expanduser()
-            current = base / ".config.json"
-            return current if current.exists() else base / ".claude.json"
-        return Path.home() / ".claude.json"
+        current_base = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".claude"
+        )
+        current = current_base / ".config.json"
+        if current.exists():
+            return current
+        legacy_base = Path(configured).expanduser() if configured else Path.home()
+        return legacy_base / ".claude.json"
 
     @classmethod
     def _workspace_is_trusted(cls, workspace: Path) -> bool:

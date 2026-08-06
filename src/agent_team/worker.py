@@ -518,6 +518,11 @@ def finalize_external_turn_locked(
             runtime["terminal_event_id"] = event["event_id"]
             save_runtime(turn_dir, runtime, team=team)
             return event
+    if supervisor["state"] == "stopping" and supervisor_identity == "match":
+        # A live Supervisor owns termination of the Runner group. Recovery may
+        # observe this snapshot between its durable write and group shutdown;
+        # wait instead of touching adapter state that the Runner may still use.
+        return None
     if supervisor["state"] == "stopping" and supervisor_identity in {
         "gone",
         "reused",
@@ -628,7 +633,6 @@ def finalize_external_turn_locked(
         save_runtime(turn_dir, runtime, team=team)
         return event
     _copy_supervisor_result(runtime, supervisor)
-    adapter = _finalize_adapter_run_state(run_dir, role=role)
     trace_manifest = _anchor_turn_trace(run_dir, runtime)
     session_unavailable = _session_was_made_unavailable_by_turn(
         run_dir,
@@ -648,10 +652,10 @@ def finalize_external_turn_locked(
         )
     projection = scan_journal(run_dir)
     terminal = projection.terminal_for_turn(runtime["turn_id"])
-    if terminal is not None:
-        _finalize_existing_terminal(run_dir, runtime, terminal)
-        return terminal
     if not runtime["group_quiescent"]:
+        if terminal is not None:
+            _finalize_existing_terminal(run_dir, runtime, terminal)
+            return terminal
         runtime["phase"] = "recovery_required"
         runtime["outcome"] = "failed"
         event = commit_technical_block_locked(
@@ -663,6 +667,10 @@ def finalize_external_turn_locked(
         runtime["terminal_event_id"] = event["event_id"]
         save_runtime(turn_dir, runtime, team=team)
         return event
+    adapter = _finalize_adapter_run_state(run_dir, role=role)
+    if terminal is not None:
+        _finalize_existing_terminal(run_dir, runtime, terminal)
+        return terminal
     if session_unavailable:
         event = commit_technical_block_locked(
             run_dir,

@@ -58,6 +58,7 @@ from .util import (
 )
 from .worker import (
     _anchor_turn_trace,
+    _finalize_adapter_run_state,
     _load_launch_spec_for_runtime,
     _validate_external_process_chain,
     finalize_external_turn_locked,
@@ -717,6 +718,8 @@ def _recover_unique_damaged_runtime_locked(
     if owner is None or owner["run_id"] != team.run_id:
         return None
 
+    if process_safely_stopped:
+        _finalize_adapter_run_state(run_dir, role=role)
     event = commit_technical_block_locked(
         run_dir,
         runtime=initial,

@@ -791,6 +791,68 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
         assert path.stat().st_mode & 0o077 == 0
 
 
+@pytest.mark.parametrize(
+    ("legacy_config", "should_migrate"),
+    [
+        (b"", True),
+        (b"[mcp_servers.must_not_replace]\ncommand = 'unsafe'\n", False),
+    ],
+)
+def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    legacy_config: bytes,
+    should_migrate: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-adapter-legacy"
+    run_dir.mkdir(parents=True)
+    source_home = tmp_path / "user-codex-home"
+    source_home.mkdir()
+    source_auth = source_home / "auth.json"
+    source_auth.write_text('{"token":"test-only"}\n', encoding="utf-8")
+    source_auth.chmod(0o600)
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: state_dir,
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_assert_interactive_authentication",
+        lambda _home: None,
+    )
+    home = adapter._interactive_home(run_dir, "developer")
+    home.mkdir(parents=True)
+    marker_path = home / "agent-team-home.json"
+    marker_path.write_text(
+        json.dumps(adapter._interactive_marker(run_dir, "developer")),
+        encoding="utf-8",
+    )
+    marker_path.chmod(0o600)
+    config_path = home / "config.toml"
+    config_path.write_bytes(legacy_config)
+    config_path.chmod(0o600)
+
+    if should_migrate:
+        adapter.prepare_run_state(
+            run_dir=run_dir,
+            role_id="developer",
+            launch_mode="interactive",
+        )
+        assert config_path.read_bytes() == adapter._interactive_config(run_dir)
+    else:
+        with pytest.raises(IntegrityError, match="unexpected content"):
+            adapter.prepare_run_state(
+                run_dir=run_dir,
+                role_id="developer",
+                launch_mode="interactive",
+            )
+        assert config_path.read_bytes() == legacy_config
+
+
 def test_codex_interactive_session_refs_are_scoped_to_home_and_workspace(
     tmp_path: Path,
 ) -> None:
@@ -914,6 +976,61 @@ def test_claude_interactive_run_state_requires_pretrusted_workspace(
         role_id="developer",
         launch_mode="interactive",
     )
+
+
+@pytest.mark.parametrize(
+    ("current_trusted", "legacy_trusted"),
+    [(True, False), (False, True)],
+)
+def test_claude_default_state_prefers_current_config_then_legacy_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    current_trusted: bool,
+    legacy_trusted: bool,
+) -> None:
+    home = tmp_path / "home"
+    current_dir = home / ".claude"
+    current_dir.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current_path = current_dir / ".config.json"
+    legacy_path = home / ".claude.json"
+    current_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(workspace): {
+                        "hasTrustDialogAccepted": current_trusted,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(workspace): {
+                        "hasTrustDialogAccepted": legacy_trusted,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.Path.home",
+        lambda: home,
+    )
+
+    assert ClaudeCodeAdapter._user_state_path() == current_path
+    assert ClaudeCodeAdapter._workspace_is_trusted(workspace) is current_trusted
+
+    current_path.unlink()
+    assert ClaudeCodeAdapter._user_state_path() == legacy_path
+    assert ClaudeCodeAdapter._workspace_is_trusted(workspace) is legacy_trusted
 
 
 def test_claude_interactive_trust_rejects_invalid_user_state(

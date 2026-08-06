@@ -702,6 +702,13 @@ def test_unique_damaged_runtime_becomes_recovery_block(
             json.dumps(damaged, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+    finalize_calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        "agent_team.management._finalize_adapter_run_state",
+        lambda recovered_run, *, role: finalize_calls.append(
+            (recovered_run, role.role_id)
+        ),
+    )
 
     result = recover_run(run_dir)
 
@@ -720,6 +727,7 @@ def test_unique_damaged_runtime_becomes_recovery_block(
     assert persisted["outcome"] == "failed"
     assert persisted["group_quiescent"] is True
     assert derive_observation(run_dir)["run_status"] == "BLOCKED"
+    assert finalize_calls == [(run_dir, "developer")]
 
     repeated = recover_run(run_dir)
     assert repeated["status"] == "BLOCKED"
@@ -808,6 +816,49 @@ def test_repeated_start_converges_unique_damaged_runtime(
         f"runtime-recovery-block:{runtime['turn_id']}:block-0002"
     ]
     assert len(scan_journal(run_dir).events) == 2
+
+
+def test_live_stopping_supervisor_does_not_finalize_adapter_state(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-stopping-supervisor-live",
+    )
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            runtime,
+            supervisor_state="stopping",
+        )
+    finalize_calls: list[str] = []
+    monkeypatch.setattr(
+        "agent_team.worker.process_identity_state",
+        lambda *_args, **_kwargs: "match",
+    )
+    monkeypatch.setattr(
+        "agent_team.worker._finalize_adapter_run_state",
+        lambda _run_dir, *, role: finalize_calls.append(role.role_id),
+    )
+
+    with locked_run(run_dir, exclusive=True):
+        current = load_runtime(
+            run_dir / "turns" / runtime["turn_id"],
+            team=scan_journal(run_dir).team,
+        )
+        event = finalize_external_turn_locked(run_dir, current)
+
+    assert event is None
+    assert finalize_calls == []
+    persisted = load_runtime(
+        run_dir / "turns" / runtime["turn_id"],
+        team=scan_journal(run_dir).team,
+    )
+    assert persisted["phase"] == "running"
 
 
 def test_finished_supervisor_is_not_exited_until_process_is_gone(

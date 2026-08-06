@@ -174,6 +174,25 @@ class CodexAdapter(HarnessAdapter):
             directory.chmod(0o700)
         return home
 
+    def _prepare_interactive_config(self, run_dir: Path, home: Path) -> None:
+        config_path = home / "config.toml"
+        expected = self._interactive_config(run_dir)
+        if not path_entry_exists(config_path):
+            atomic_write(config_path, expected, immutable=True)
+            return
+        existing = read_regular(config_path)
+        if existing == expected:
+            return
+        if existing != b"":
+            raise IntegrityError(
+                f"Codex interactive config has unexpected content: {config_path}"
+            )
+        # Versions before the trust-only config created an empty config after
+        # committing this Run-owned marker. prepare_run_state is called only
+        # for an UNSTARTED Run, so that exact legacy state can be migrated
+        # without accepting or replacing any other pre-existing content.
+        atomic_write(config_path, expected)
+
     @staticmethod
     def _source_codex_home() -> Path:
         configured = os.environ.get("CODEX_HOME")
@@ -240,11 +259,7 @@ class CodexAdapter(HarnessAdapter):
         # A trust-only immutable config bypasses Codex's native workspace
         # confirmation without importing mutable user MCP, Hook, Plugin, or
         # permission settings into this Run-owned interactive home.
-        atomic_write(
-            home / "config.toml",
-            self._interactive_config(run_dir),
-            immutable=True,
-        )
+        self._prepare_interactive_config(run_dir, home)
         source_auth = self._source_codex_home() / "auth.json"
         target_auth = home / "auth.json"
         if path_entry_exists(source_auth):

@@ -1,7 +1,7 @@
 # Agent-Team 产品需求文档
 
 > **版本**：v0.1<br>
-> **最近修订**：2026-08-04<br>
+> **最近修订**：2026-08-12<br>
 > **状态**：已实现并完成本地真实场景验证<br>
 > **目标读者**：产品负责人、使用者、维护者和集成开发者
 
@@ -105,7 +105,8 @@ v0.1 不承诺：
   冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
 - Codex 与 Claude Code External Role 都可显式选择 Model 和 Reasoning Effort，
   Codex 还可显式启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
-  默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；
+  默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；新建 Codex Role
+  把未启用 Fast Mode 的有效结果明确冻结为 `false`，不留给后续 Harness 默认值漂移；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -136,6 +137,8 @@ v0.1 不承诺：
 - 每个完成收口的 External Turn 生成 `trace.jsonl` 和 `trace-manifest.json`；
 - Manifest 记录 Policy、Capture 计数、摘要及保留 Artifact 的大小和 SHA-256，并由
   Turn Runtime 设置一次 Hash 锚点；
+- Retention 改写或删除必须由可恢复的瞬态 Receipt 保护；任一收口写入点崩溃后可幂等
+  继续，Manifest 必须精确覆盖所有受支持的实际保留 Artifact 并验证 Retention 语义；
 - Normalized Trace 支持 Agent Message、Tool Call/Result、File Change、Usage、
   Error、Session、Turn、Fallback，以及 Harness 明确暴露的 Reasoning Summary；
 - 每个事件保留 stdout/stderr/terminal 原始 Sequence 范围；交互式 TUI 字节作为
@@ -188,7 +191,14 @@ v0.1 的发布验收必须同时满足：
 现有证据见：
 
 - [`docs/validation/runtime-lifecycle-v0.1-validation-report.md`](docs/validation/runtime-lifecycle-v0.1-validation-report.md)；
-- [`docs/validation/observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md)。
+- [`docs/validation/observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md)；
+- [`docs/validation/interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md)。
+
+前两份报告是 Headless/Observability 历史基线，保留当时的版本和测试计数；第三份记录
+v0.1.2 验证时点的 Interactive Codex PTY、Action Termination、Session Resume 和
+235 项回归验证。报告中的计数都是证据快照，不随之后新增测试回写。
+当前仓库尚未保存真实 Interactive Claude Code 闭环报告，因此不能用第三份报告替代
+Claude 的历史 Headless 证据或宣称该组合已经完成 Interactive 实机验收。
 
 ## 9. 隐私与数据保留
 

@@ -31,6 +31,7 @@ from .util import (
     path_entry_exists,
     read_json,
     read_regular,
+    resolve_run_path,
     rfc3339,
     sha256_bytes,
 )
@@ -455,7 +456,7 @@ def _validate_authoritative_snapshots(
 def _journal_tail(event: dict[str, Any] | None) -> dict[str, Any] | None:
     if event is None:
         return None
-    return {
+    result = {
         key: event.get(key)
         for key in {
             "event_id",
@@ -468,6 +469,28 @@ def _journal_tail(event: dict[str, Any] | None) -> dict[str, Any] | None:
             "created_at",
         }
     }
+    result["created_at"] = rfc3339(parse_rfc3339(event["created_at"]))
+    return result
+
+
+def _validated_evidence_paths(
+    run_dir: Path | None,
+    values: tuple[str, ...] | list[str],
+) -> list[str]:
+    if run_dir is None:
+        return []
+    retained: set[str] = set()
+    for relative in values:
+        if not isinstance(relative, str) or not relative:
+            continue
+        try:
+            path = resolve_run_path(run_dir, relative)
+            info = path.lstat()
+        except (IntegrityError, OSError, RuntimeError):
+            continue
+        if stat.S_ISREG(info.st_mode) and not path.is_symlink():
+            retained.add(relative)
+    return sorted(retained)
 
 
 def _origin_state(run_dir: Path, projection: Any) -> str:
@@ -943,8 +966,9 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
 
 def corrupted_observation(
     run_id: str,
-    message: str,
+    _message: str,
     *,
+    run_dir: Path | None = None,
     evidence_paths: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     return {
@@ -974,9 +998,8 @@ def corrupted_observation(
             "runner_pgid": None,
             "runner_start_id": None,
             "owner_run_id": None,
-            "corruption": message,
         },
-        "evidence_paths": sorted(set(evidence_paths)),
+        "evidence_paths": _validated_evidence_paths(run_dir, evidence_paths),
         "_observed_at": rfc3339(),
     }
 
@@ -1040,22 +1063,37 @@ def diagnose(
     preexisting_failure: str | None = None,
 ) -> dict[str, Any]:
     if preexisting_failure is not None:
-        observation = corrupted_observation(run_dir.name, preexisting_failure)
+        observation = corrupted_observation(
+            run_dir.name,
+            preexisting_failure,
+            run_dir=run_dir,
+        )
         failure = preexisting_failure
         failure_paths: list[str] = []
+        failure_targets: list[str] = []
     else:
         try:
             observation = derive_observation(run_dir)
             failure = None
             failure_paths = []
+            failure_targets = []
         except IntegrityError as exc:
             observation = corrupted_observation(
                 run_dir.name,
                 str(exc),
+                run_dir=run_dir,
                 evidence_paths=exc.evidence_paths,
             )
             failure = str(exc)
-            failure_paths = list(exc.evidence_paths)
+            failure_paths = observation["evidence_paths"]
+            failure_targets = [
+                relative
+                for relative in exc.evidence_paths
+                if isinstance(relative, str)
+                and relative
+                and not Path(relative).is_absolute()
+                and ".." not in Path(relative).parts
+            ]
     if (
         role_id is not None
         and observation["roles"]
@@ -1335,7 +1373,14 @@ def diagnose(
                 {
                     "check": name,
                     "subject_role_id": subject_role_id,
-                    "subject_path": target_path,
+                    "subject_path": (
+                        failure_targets[0]
+                        if failure
+                        and name == failure_check
+                        and target_path is None
+                        and failure_targets
+                        else target_path
+                    ),
                     "status": status,
                     "code": code,
                     "summary": summary,

@@ -1,5 +1,11 @@
 # Observability Claude Code/Codex Validation Report
 
+> Historical Headless structured-stream validation from 2026-07-29. Native-TUI
+> Interactive Codex evidence added later is recorded separately in
+> [`interactive-runtime-v0.1.2-validation-report.md`](interactive-runtime-v0.1.2-validation-report.md).
+> This report preserves the package version, commands, counts, and Harness mode
+> that were actually validated at the time.
+
 ## Result
 
 The six observability acceptance areas in

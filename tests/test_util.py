@@ -11,6 +11,7 @@ from agent_team.util import (
     parse_rfc3339,
     random_token,
     read_json,
+    require_schema_version,
     set_private_umask,
 )
 
@@ -74,3 +75,13 @@ def test_read_json_rejects_duplicate_object_keys(tmp_path: Path) -> None:
 
     with pytest.raises(IntegrityError, match="invalid JSON file"):
         read_json(path)
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1", None])
+def test_schema_version_requires_an_exact_non_boolean_integer(value: object) -> None:
+    with pytest.raises(IntegrityError, match="unsupported test snapshot schema"):
+        require_schema_version(
+            {"schema_version": value},
+            1,
+            subject="test snapshot",
+        )

@@ -5,6 +5,9 @@
 > that time. Current observability acceptance and the later 176-test suite are
 > documented in
 > [`observability-claude-codex-report.md`](observability-claude-codex-report.md).
+> Native-TUI Interactive Codex evidence added later is recorded separately in
+> [`interactive-runtime-v0.1.2-validation-report.md`](interactive-runtime-v0.1.2-validation-report.md);
+> this historical report does not claim Interactive validation.
 
 ## Candidate
 

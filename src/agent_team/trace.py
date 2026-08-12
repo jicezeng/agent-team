@@ -8,17 +8,19 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .adapters import get_adapter
-from .adapters.base import StreamRecord
-from .config import ObservabilityPolicy
+from .adapters.base import LaunchSpec, StreamRecord
+from .config import MAX_LIMIT_VALUE, ObservabilityPolicy
 from .errors import IntegrityError, InvalidArgument
 from .util import (
     atomic_write,
     canonical_json_bytes,
     fsync_dir,
+    parse_rfc3339,
     path_entry_exists,
     read_json,
     read_regular,
     require_keys,
+    require_schema_version,
     resolve_run_path,
     rfc3339,
     sha256_bytes,
@@ -37,6 +39,75 @@ TRACE_MANIFEST_REQUIRED = {
     "summary",
     "artifacts",
 }
+RAW_STREAM_V1_REQUIRED = {
+    "schema_version",
+    "seq",
+    "observed_at",
+    "source",
+    "encoding",
+    "data",
+}
+RAW_STREAM_V2_REQUIRED = RAW_STREAM_V1_REQUIRED | {
+    "original_first_seq",
+    "original_last_seq",
+    "redacted",
+}
+TRACE_EVENT_REQUIRED = {
+    "schema_version",
+    "trace_seq",
+    "observed_at",
+    "run_id",
+    "turn_id",
+    "role_id",
+    "adapter_id",
+    "event_type",
+    "raw_ref",
+    "data",
+}
+CAPTURE_FILE_REQUIRED = {
+    "schema_version",
+    "source_bytes",
+    "stored_source_bytes",
+    "dropped_source_bytes",
+    "chunks_observed",
+    "chunks_stored",
+    "truncated",
+    "closed_at",
+}
+TRACE_CAPTURE_REQUIRED = CAPTURE_FILE_REQUIRED | {
+    "normalized_trace_truncated",
+    "normalized_events_omitted",
+    "records_observed",
+    "normalized_events_observed",
+    "normalized_events_stored",
+    "trace_redactions",
+    "stream_redactions",
+}
+OBSERVABILITY_POLICY_REQUIRED = {
+    "audit_mode",
+    "redaction",
+    "max_trace_bytes",
+    "raw_retention",
+    "required_payload_sections",
+}
+TRACE_ARTIFACT_PATHS = {
+    "input": "input.md",
+    "launch": "process/launch.json",
+    "capture": "process/capture.json",
+    "harness_stream": "process/stream.jsonl",
+    "stderr": "process/stderr.log",
+    "formal_action": "outbox.json",
+    "formal_output": "outbox-payload.md",
+    "final_message": "output.md",
+    "normalized_trace": "trace.jsonl",
+}
+TRACE_PREPARATION_REQUIRED = {
+    "schema_version",
+    "source_stream_sha256",
+    "source_stderr_sha256",
+    "manifest",
+}
+TRACE_PREPARATION_PATH = "process/trace-finalization.json"
 TRACE_EVENT_TYPES = {
     "agent_message",
     "diagnostic",
@@ -147,10 +218,178 @@ def _decode_outer_data(value: dict[str, Any]) -> bytes:
     raise IntegrityError(f"stream record has invalid encoding: {encoding!r}")
 
 
-def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        value[key] = item
+    return value
+
+
+def _json_object_line(raw_line: bytes, *, subject: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw_line, object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise IntegrityError(f"invalid {subject}") from exc
+    if not isinstance(value, dict):
+        raise IntegrityError(f"{subject} entry must be an object")
+    return value
+
+
+def _stream_envelopes(stream_path: Path) -> list[dict[str, Any]]:
     if not path_entry_exists(stream_path):
         return []
-    raw = read_regular(stream_path)
+    # Only LF-terminated records are committed. A Supervisor crash may leave one
+    # incomplete tail, which is diagnostic truncation rather than a JSON record.
+    lines = read_regular(stream_path).split(b"\n")[:-1]
+    envelopes: list[dict[str, Any]] = []
+    stream_schema: int | None = None
+    for expected_seq, raw_line in enumerate(lines, start=1):
+        outer = _json_object_line(raw_line, subject=f"stream JSONL: {stream_path}")
+        schema_version = outer.get("schema_version")
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version not in {1, 2}
+        ):
+            raise IntegrityError("unsupported stream JSONL schema")
+        required = (
+            RAW_STREAM_V1_REQUIRED
+            if schema_version == 1
+            else RAW_STREAM_V2_REQUIRED
+        )
+        require_keys(outer, required=required, subject="stream JSONL entry")
+        if stream_schema is None:
+            stream_schema = schema_version
+        elif schema_version != stream_schema:
+            raise IntegrityError("stream JSONL mixes schema versions")
+        source = outer["source"]
+        seq = outer["seq"]
+        if (
+            not isinstance(source, str)
+            or source not in STREAM_SOURCES
+            or isinstance(seq, bool)
+            or not isinstance(seq, int)
+            or seq != expected_seq
+        ):
+            raise IntegrityError("stream JSONL entry has invalid envelope")
+        parse_rfc3339(outer["observed_at"])
+        _decode_outer_data(outer)
+        if schema_version == 2:
+            first = outer["original_first_seq"]
+            last = outer["original_last_seq"]
+            if (
+                isinstance(first, bool)
+                or not isinstance(first, int)
+                or isinstance(last, bool)
+                or not isinstance(last, int)
+                or first < 1
+                or last < first
+                or not isinstance(outer["redacted"], bool)
+            ):
+                raise IntegrityError(
+                    "archived stream record has invalid raw reference"
+                )
+        envelopes.append(outer)
+    return envelopes
+
+
+def _validate_capture_file(value: dict[str, Any]) -> dict[str, Any]:
+    require_keys(value, required=CAPTURE_FILE_REQUIRED, subject="turn capture")
+    require_schema_version(value, 1, subject="turn capture")
+    for key in {
+        "source_bytes",
+        "stored_source_bytes",
+        "dropped_source_bytes",
+        "chunks_observed",
+        "chunks_stored",
+    }:
+        item = value[key]
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            raise IntegrityError(f"turn capture {key} is invalid")
+    if (
+        not isinstance(value["truncated"], bool)
+        or value["source_bytes"]
+        != value["stored_source_bytes"] + value["dropped_source_bytes"]
+        or value["chunks_stored"] > value["chunks_observed"]
+        or value["truncated"] != bool(value["dropped_source_bytes"])
+    ):
+        raise IntegrityError("turn capture summary is inconsistent")
+    parse_rfc3339(value["closed_at"])
+    return value
+
+
+def _validate_capture_against_stream(
+    capture: dict[str, Any],
+    envelopes: list[dict[str, Any]],
+) -> None:
+    if envelopes and envelopes[0]["schema_version"] != 1:
+        # Schema 2 is a post-validation redacted archive used by an idempotent
+        # retry. Its entries are framed records, not the original byte chunks.
+        return
+    stored_bytes = sum(len(_decode_outer_data(item)) for item in envelopes)
+    if (
+        capture["chunks_stored"] != len(envelopes)
+        or capture["stored_source_bytes"] != stored_bytes
+    ):
+        raise IntegrityError("turn capture does not match the retained raw stream")
+
+
+def _policy_from_json(value: dict[str, Any]) -> ObservabilityPolicy:
+    require_keys(
+        value,
+        required=OBSERVABILITY_POLICY_REQUIRED,
+        subject="trace manifest policy",
+    )
+    audit_mode = value["audit_mode"]
+    redaction = value["redaction"]
+    max_trace_bytes = value["max_trace_bytes"]
+    raw_retention = value["raw_retention"]
+    sections = value["required_payload_sections"]
+    if not isinstance(audit_mode, str) or audit_mode not in {"standard", "full"}:
+        raise IntegrityError("trace manifest audit mode is invalid")
+    if not isinstance(redaction, str) or redaction not in {"standard", "none"}:
+        raise IntegrityError("trace manifest redaction policy is invalid")
+    if (
+        isinstance(max_trace_bytes, bool)
+        or not isinstance(max_trace_bytes, int)
+        or max_trace_bytes < 1024
+        or max_trace_bytes > MAX_LIMIT_VALUE
+    ):
+        raise IntegrityError("trace manifest byte limit is invalid")
+    if not isinstance(raw_retention, str) or raw_retention not in {
+        "redacted",
+        "keep",
+        "delete",
+    }:
+        raise IntegrityError("trace manifest raw retention is invalid")
+    if raw_retention == "redacted" and redaction != "standard":
+        raise IntegrityError("trace manifest redacted retention is inconsistent")
+    if (
+        not isinstance(sections, list)
+        or not all(isinstance(section, str) and section.strip() for section in sections)
+        or len({section.casefold() for section in sections}) != len(sections)
+    ):
+        raise IntegrityError("trace manifest payload sections are invalid")
+    if audit_mode == "full":
+        folded = {section.casefold() for section in sections}
+        if raw_retention == "delete" or not {
+            "decision rationale",
+            "evidence",
+        }.issubset(folded):
+            raise IntegrityError("trace manifest full audit policy is inconsistent")
+    return ObservabilityPolicy(
+        audit_mode=audit_mode,
+        redaction=redaction,
+        max_trace_bytes=max_trace_bytes,
+        raw_retention=raw_retention,
+        required_payload_sections=tuple(sections),
+    )
+
+
+def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
+    envelopes = _stream_envelopes(stream_path)
     buffers = {source: bytearray() for source in STREAM_SOURCES}
     first_seq: dict[str, int | None] = {
         source: None for source in STREAM_SOURCES
@@ -160,37 +399,14 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
     }
     records: list[StreamRecord] = []
     last_seq = 0
-    for raw_line in raw.splitlines():
-        try:
-            outer = json.loads(raw_line)
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise IntegrityError(f"invalid stream JSONL: {stream_path}") from exc
-        if not isinstance(outer, dict):
-            raise IntegrityError("stream JSONL entry must be an object")
-        schema_version = outer.get("schema_version")
-        source = outer.get("source")
-        seq = outer.get("seq")
-        if (
-            source not in STREAM_SOURCES
-            or isinstance(seq, bool)
-            or not isinstance(seq, int)
-            or seq <= last_seq
-            or not isinstance(outer.get("observed_at"), str)
-        ):
-            raise IntegrityError("stream JSONL entry has invalid envelope")
+    for outer in envelopes:
+        schema_version = outer["schema_version"]
+        source = outer["source"]
+        seq = outer["seq"]
         last_seq = seq
         if schema_version == 2:
-            first = outer.get("original_first_seq")
-            last = outer.get("original_last_seq")
-            if (
-                isinstance(first, bool)
-                or not isinstance(first, int)
-                or isinstance(last, bool)
-                or not isinstance(last, int)
-                or first < 1
-                or last < first
-            ):
-                raise IntegrityError("archived stream record has invalid raw reference")
+            first = outer["original_first_seq"]
+            last = outer["original_last_seq"]
             data = _decode_outer_data(outer)
             try:
                 decoded = data.decode("utf-8")
@@ -209,8 +425,6 @@ def iter_stream_records(stream_path: Path) -> list[StreamRecord]:
                 )
             )
             continue
-        if schema_version != 1:
-            raise IntegrityError("unsupported stream JSONL schema")
         data = _decode_outer_data(outer)
         if source == "terminal":
             try:
@@ -408,166 +622,67 @@ def _redacted_stream(
     return b"".join(outer_lines), bytes(stderr), redactor.count
 
 
-def _artifact(path: Path, turn_dir: Path, kind: str) -> dict[str, Any]:
-    raw = read_regular(path)
+def _artifact_bytes(relative: str, kind: str, raw: bytes) -> dict[str, Any]:
     return {
-        "path": path.relative_to(turn_dir).as_posix(),
+        "path": relative,
         "kind": kind,
         "size_bytes": len(raw),
         "sha256": sha256_bytes(raw),
     }
 
 
-def _record_size(record: StreamRecord) -> int:
-    if record.encoding == "utf-8":
-        return len(record.data.encode("utf-8"))
-    try:
-        return len(base64.b64decode(record.data, validate=True))
-    except ValueError as exc:
-        raise IntegrityError("normalized stream record has invalid base64 data") from exc
-
-
-def finalize_turn_trace(
-    *,
-    run_id: str,
-    turn_dir: Path,
-    role_id: str,
-    adapter_id: str,
-    policy: ObservabilityPolicy,
-) -> tuple[dict[str, Any], str]:
-    manifest_path = turn_dir / "trace-manifest.json"
-    if path_entry_exists(manifest_path):
-        manifest = validate_trace_manifest(
-            turn_dir,
-            expected_run_id=run_id,
-            expected_role_id=role_id,
-            expected_adapter_id=adapter_id,
-            expected_policy=policy,
-        )
-        return manifest, sha256_bytes(read_regular(manifest_path))
-    process_dir = turn_dir / "process"
-    stream_path = process_dir / "stream.jsonl"
-    records = iter_stream_records(stream_path)
-    events, trace_redactions = _normalized_events(
-        run_id=run_id,
-        turn_id=turn_dir.name,
-        role_id=role_id,
-        adapter_id=adapter_id,
-        records=records,
-        redaction=policy.redaction,
-    )
-    (
-        trace_bytes,
-        stored_events,
-        normalized_truncated,
-        omitted_events,
-    ) = _serialize_trace(
-        events,
-        max_bytes=policy.max_trace_bytes,
-    )
-    trace_path = turn_dir / "trace.jsonl"
-    atomic_write(trace_path, trace_bytes, immutable=True)
-
-    stream_redactions = 0
-    if policy.raw_retention == "redacted" and path_entry_exists(stream_path):
-        archived, stderr, stream_redactions = _redacted_stream(
-            records,
-            redaction=policy.redaction,
-        )
-        atomic_write(stream_path, archived)
-        stderr_path = process_dir / "stderr.log"
-        if path_entry_exists(stderr_path):
-            atomic_write(stderr_path, stderr)
-    elif policy.raw_retention == "delete":
-        for path in (stream_path, process_dir / "stderr.log"):
-            if path_entry_exists(path):
-                path.unlink()
-        fsync_dir(process_dir)
-
-    capture_path = process_dir / "capture.json"
-    if path_entry_exists(capture_path):
-        capture = read_json(capture_path)
-    else:
-        retained_size = sum(_record_size(record) for record in records)
-        capture = {
-            "schema_version": 1,
-            "source_bytes": retained_size,
-            "stored_source_bytes": retained_size,
-            "dropped_source_bytes": 0,
-            "chunks_observed": len(records),
-            "chunks_stored": len(records),
-            "truncated": False,
-            "closed_at": rfc3339(),
-        }
-    capture = {
-        **capture,
-        "normalized_trace_truncated": normalized_truncated,
-        "normalized_events_omitted": omitted_events,
-        "records_observed": len(records),
-        "normalized_events_observed": len(events),
-        "normalized_events_stored": len(stored_events),
-        "trace_redactions": trace_redactions,
-        "stream_redactions": stream_redactions,
-    }
-    artifact_specs = [
-        (turn_dir / "input.md", "input"),
-        (process_dir / "launch.json", "launch"),
-        (capture_path, "capture"),
-        (stream_path, "harness_stream"),
-        (process_dir / "stderr.log", "stderr"),
-        (turn_dir / "outbox.json", "formal_action"),
-        (turn_dir / "outbox-payload.md", "formal_output"),
-        (turn_dir / "output.md", "final_message"),
-        (trace_path, "normalized_trace"),
+def _artifact_specs(turn_dir: Path) -> list[tuple[Path, str, str]]:
+    return [
+        (turn_dir / relative, kind, relative)
+        for kind, relative in TRACE_ARTIFACT_PATHS.items()
     ]
-    artifacts = [
-        _artifact(path, turn_dir, kind)
-        for path, kind in artifact_specs
-        if path_entry_exists(path)
-    ]
-    created_at = capture.get("closed_at")
-    if not isinstance(created_at, str) or not created_at:
-        created_at = rfc3339()
-    manifest = {
-        "schema_version": 1,
-        "run_id": run_id,
-        "turn_id": turn_dir.name,
-        "role_id": role_id,
-        "adapter_id": adapter_id,
-        "created_at": created_at,
-        "policy": policy.to_json(),
-        "capture": capture,
-        "summary": _usage_summary(stored_events),
-        "artifacts": artifacts,
-    }
-    atomic_write(manifest_path, canonical_json_bytes(manifest), immutable=True)
-    return manifest, sha256_bytes(read_regular(manifest_path))
 
 
-def validate_trace_manifest(
+def _planned_artifacts(
     turn_dir: Path,
     *,
-    expected_sha256: str | None = None,
+    overrides: dict[str, bytes | None],
+) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for path, kind, relative in _artifact_specs(turn_dir):
+        if relative in overrides:
+            raw = overrides[relative]
+            if raw is None:
+                continue
+        elif path_entry_exists(path):
+            raw = read_regular(path)
+        else:
+            continue
+        artifacts.append(_artifact_bytes(relative, kind, raw))
+    return artifacts
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _parse_manifest_header(
+    manifest: dict[str, Any],
+    turn_dir: Path,
+    *,
     expected_run_id: str | None = None,
     expected_role_id: str | None = None,
     expected_adapter_id: str | None = None,
     expected_policy: ObservabilityPolicy | None = None,
-) -> dict[str, Any]:
-    path = turn_dir / "trace-manifest.json"
-    raw = read_regular(path)
-    if expected_sha256 is not None and sha256_bytes(raw) != expected_sha256:
-        raise IntegrityError(
-            f"trace manifest hash mismatch: {turn_dir.name}",
-            f"turns/{turn_dir.name}/trace-manifest.json",
-        )
-    manifest = read_json(path)
+) -> ObservabilityPolicy:
     require_keys(
         manifest,
         required=TRACE_MANIFEST_REQUIRED,
         subject="trace manifest",
     )
     if (
-        manifest["schema_version"] != 1
+        isinstance(manifest["schema_version"], bool)
+        or not isinstance(manifest["schema_version"], int)
+        or manifest["schema_version"] != 1
         or manifest["turn_id"] != turn_dir.name
         or not isinstance(manifest["run_id"], str)
         or not manifest["run_id"]
@@ -591,10 +706,18 @@ def validate_trace_manifest(
         manifest["adapter_id"] != expected_adapter_id
     ):
         raise IntegrityError("trace manifest adapter identity is invalid")
-    if expected_policy is not None and manifest["policy"] != expected_policy.to_json():
+    parse_rfc3339(manifest["created_at"])
+    parsed_policy = _policy_from_json(manifest["policy"])
+    if expected_policy is not None and parsed_policy != expected_policy:
         raise IntegrityError("trace manifest policy does not match the Run")
+    return parsed_policy
+
+
+def _parse_artifact_descriptors(
+    manifest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     seen: set[str] = set()
-    kinds: dict[str, str] = {}
+    artifacts: dict[str, dict[str, Any]] = {}
     for artifact in manifest["artifacts"]:
         if not isinstance(artifact, dict):
             raise IntegrityError("trace manifest artifact must be an object")
@@ -612,34 +735,75 @@ def validate_trace_manifest(
             or not relative
             or relative in seen
             or not isinstance(kind, str)
-            or not kind
-            or kind in kinds
+            or kind not in TRACE_ARTIFACT_PATHS
+            or relative != TRACE_ARTIFACT_PATHS[kind]
+            or kind in artifacts
             or isinstance(size, bool)
             or not isinstance(size, int)
             or size < 0
-            or not isinstance(digest, str)
-            or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)
+            or not _is_sha256(digest)
         ):
             raise IntegrityError("trace manifest artifact path is invalid")
         seen.add(relative)
-        kinds[kind] = relative
+        artifacts[kind] = artifact
+    if "normalized_trace" not in artifacts:
+        raise IntegrityError("trace manifest does not anchor trace.jsonl")
+    if "capture" not in artifacts:
+        raise IntegrityError("trace manifest does not anchor process/capture.json")
+    return artifacts
+
+
+def _validate_artifact_files(
+    turn_dir: Path,
+    artifacts: dict[str, dict[str, Any]],
+) -> None:
+    actual = {
+        kind
+        for path, kind, _relative in _artifact_specs(turn_dir)
+        if path_entry_exists(path)
+    }
+    if set(artifacts) != actual:
+        raise IntegrityError(
+            "trace manifest artifact set does not match retained files"
+        )
+    for kind, artifact in artifacts.items():
+        relative = artifact["path"]
         artifact_path = resolve_run_path(turn_dir, relative)
         raw_artifact = read_regular(artifact_path)
         if (
-            size != len(raw_artifact)
-            or digest != sha256_bytes(raw_artifact)
+            artifact["size_bytes"] != len(raw_artifact)
+            or artifact["sha256"] != sha256_bytes(raw_artifact)
         ):
             raise IntegrityError(
                 f"trace artifact hash mismatch: {relative}",
                 f"turns/{turn_dir.name}/{relative}",
             )
-    if kinds.get("normalized_trace") != "trace.jsonl":
-        raise IntegrityError("trace manifest does not anchor trace.jsonl")
+
+
+def _validate_manifest_trace_and_capture(
+    turn_dir: Path,
+    manifest: dict[str, Any],
+    parsed_policy: ObservabilityPolicy,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     events = read_trace_events(turn_dir)
-    if manifest["summary"] != _usage_summary(events):
+    for event in events:
+        if (
+            event["run_id"] != manifest["run_id"]
+            or event["turn_id"] != manifest["turn_id"]
+            or event["role_id"] != manifest["role_id"]
+            or event["adapter_id"] != manifest["adapter_id"]
+        ):
+            raise IntegrityError("normalized trace identity does not match manifest")
+    if canonical_json_bytes(manifest["summary"]) != canonical_json_bytes(
+        _usage_summary(events)
+    ):
         raise IntegrityError("trace manifest summary does not match trace.jsonl")
     capture = manifest["capture"]
+    require_keys(
+        capture,
+        required=TRACE_CAPTURE_REQUIRED,
+        subject="trace manifest capture",
+    )
     for key in {
         "source_bytes",
         "stored_source_bytes",
@@ -656,12 +820,17 @@ def validate_trace_manifest(
         value = capture.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise IntegrityError(f"trace manifest capture {key} is invalid")
+    capture_file = _validate_capture_file(
+        {key: capture[key] for key in CAPTURE_FILE_REQUIRED}
+    )
+    persisted_capture = _validate_capture_file(
+        read_json(turn_dir / "process/capture.json")
+    )
+    if capture_file != persisted_capture:
+        raise IntegrityError("trace manifest capture does not match capture.json")
     if (
-        capture.get("schema_version") != 1
-        or not isinstance(capture.get("closed_at"), str)
-        or not capture["closed_at"]
-        or not isinstance(capture.get("truncated"), bool)
-        or not isinstance(capture.get("normalized_trace_truncated"), bool)
+        capture["closed_at"] != manifest["created_at"]
+        or not isinstance(capture["normalized_trace_truncated"], bool)
         or capture["source_bytes"]
         != capture["stored_source_bytes"] + capture["dropped_source_bytes"]
         or capture["chunks_stored"] > capture["chunks_observed"]
@@ -673,41 +842,516 @@ def validate_trace_manifest(
         != bool(capture["normalized_events_omitted"])
     ):
         raise IntegrityError("trace manifest capture summary is inconsistent")
+    if capture["stored_source_bytes"] > parsed_policy.max_trace_bytes:
+        raise IntegrityError("trace manifest capture exceeds its byte limit")
+    return events, capture_file
+
+
+def _validate_retention_state(
+    turn_dir: Path,
+    *,
+    policy: ObservabilityPolicy,
+    artifacts: dict[str, dict[str, Any]],
+    events: list[dict[str, Any]],
+    capture: dict[str, Any],
+    capture_file: dict[str, Any],
+) -> None:
+    stream_path = turn_dir / "process/stream.jsonl"
+    stderr_path = turn_dir / "process/stderr.log"
+    if policy.raw_retention == "delete":
+        if (
+            "harness_stream" in artifacts
+            or "stderr" in artifacts
+            or path_entry_exists(stream_path)
+            or path_entry_exists(stderr_path)
+        ):
+            raise IntegrityError("trace retention delete left raw process output")
+        return
+    if "harness_stream" not in artifacts:
+        raise IntegrityError("trace manifest does not anchor the retained raw stream")
+    if "stderr" not in artifacts:
+        raise IntegrityError("trace manifest does not anchor the retained stderr")
+    envelopes = _stream_envelopes(stream_path)
+    if envelopes:
+        schema_version = envelopes[0]["schema_version"]
+        if policy.raw_retention == "keep" and schema_version != 1:
+            raise IntegrityError("trace keep retention requires a Schema 1 raw stream")
+        if policy.raw_retention == "redacted" and (
+            schema_version != 2
+            or any(envelope["redacted"] is not True for envelope in envelopes)
+        ):
+            raise IntegrityError(
+                "trace redacted retention requires a redacted Schema 2 stream"
+            )
+    _validate_capture_against_stream(capture_file, envelopes)
+    records = iter_stream_records(stream_path)
+    if read_regular(stderr_path) != _archived_stderr(stream_path):
+        raise IntegrityError("retained stderr does not match the raw stream")
+    if capture["records_observed"] != len(records):
+        raise IntegrityError("trace manifest record count does not match raw stream")
+    raw_refs = {
+        (record.source, record.first_seq, record.last_seq) for record in records
+    }
+    if any(
+        (
+            event["raw_ref"]["source"],
+            event["raw_ref"]["first_seq"],
+            event["raw_ref"]["last_seq"],
+        )
+        not in raw_refs
+        for event in events
+    ):
+        raise IntegrityError("normalized trace contains an unknown raw reference")
+
+
+def _validate_trace_manifest_value(
+    turn_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    expected_run_id: str | None = None,
+    expected_role_id: str | None = None,
+    expected_adapter_id: str | None = None,
+    expected_policy: ObservabilityPolicy | None = None,
+) -> dict[str, Any]:
+    parsed_policy = _parse_manifest_header(
+        manifest,
+        turn_dir,
+        expected_run_id=expected_run_id,
+        expected_role_id=expected_role_id,
+        expected_adapter_id=expected_adapter_id,
+        expected_policy=expected_policy,
+    )
+    artifacts = _parse_artifact_descriptors(manifest)
+    _validate_artifact_files(turn_dir, artifacts)
+    events, capture_file = _validate_manifest_trace_and_capture(
+        turn_dir,
+        manifest,
+        parsed_policy,
+    )
+    _validate_retention_state(
+        turn_dir,
+        policy=parsed_policy,
+        artifacts=artifacts,
+        events=events,
+        capture=manifest["capture"],
+        capture_file=capture_file,
+    )
     return manifest
+
+
+def _prepare_trace_finalization(
+    *,
+    run_id: str,
+    turn_dir: Path,
+    role_id: str,
+    adapter_id: str,
+    policy: ObservabilityPolicy,
+) -> tuple[dict[str, Any], dict[str, bytes | None]]:
+    process_dir = turn_dir / "process"
+    stream_path = process_dir / "stream.jsonl"
+    stderr_path = process_dir / "stderr.log"
+    capture_path = process_dir / "capture.json"
+    if not path_entry_exists(capture_path):
+        raise IntegrityError(
+            f"turn capture is missing: {turn_dir.name}",
+            f"turns/{turn_dir.name}/process/capture.json",
+        )
+    if not path_entry_exists(stream_path):
+        raise IntegrityError(
+            f"turn raw stream is missing: {turn_dir.name}",
+            f"turns/{turn_dir.name}/process/stream.jsonl",
+        )
+    if not path_entry_exists(stderr_path):
+        raise IntegrityError(
+            f"turn stderr capture is missing: {turn_dir.name}",
+            f"turns/{turn_dir.name}/process/stderr.log",
+        )
+    capture_file = _validate_capture_file(read_json(capture_path))
+    if capture_file["stored_source_bytes"] > policy.max_trace_bytes:
+        raise IntegrityError("turn capture exceeds the frozen trace byte limit")
+    source_stream = read_regular(stream_path)
+    source_stderr = read_regular(stderr_path)
+    envelopes = _stream_envelopes(stream_path)
+    if envelopes and envelopes[0]["schema_version"] != 1:
+        raise IntegrityError("turn raw stream was archived before trace preparation")
+    _validate_capture_against_stream(capture_file, envelopes)
+    records = iter_stream_records(stream_path)
+    if source_stderr != _archived_stderr(stream_path):
+        raise IntegrityError("turn stderr capture does not match the raw stream")
+    events, trace_redactions = _normalized_events(
+        run_id=run_id,
+        turn_id=turn_dir.name,
+        role_id=role_id,
+        adapter_id=adapter_id,
+        records=records,
+        redaction=policy.redaction,
+    )
+    (
+        trace_bytes,
+        stored_events,
+        normalized_truncated,
+        omitted_events,
+    ) = _serialize_trace(events, max_bytes=policy.max_trace_bytes)
+    stream_redactions = 0
+    retained_stream: bytes | None = source_stream
+    retained_stderr: bytes | None = source_stderr
+    if policy.raw_retention == "redacted":
+        retained_stream, archived_stderr, stream_redactions = _redacted_stream(
+            records,
+            redaction=policy.redaction,
+        )
+        retained_stderr = archived_stderr
+    elif policy.raw_retention == "delete":
+        retained_stream = None
+        retained_stderr = None
+    capture = {
+        **capture_file,
+        "normalized_trace_truncated": normalized_truncated,
+        "normalized_events_omitted": omitted_events,
+        "records_observed": len(records),
+        "normalized_events_observed": len(events),
+        "normalized_events_stored": len(stored_events),
+        "trace_redactions": trace_redactions,
+        "stream_redactions": stream_redactions,
+    }
+    retained = {
+        "trace.jsonl": trace_bytes,
+        "process/stream.jsonl": retained_stream,
+        "process/stderr.log": retained_stderr,
+    }
+    manifest = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "turn_id": turn_dir.name,
+        "role_id": role_id,
+        "adapter_id": adapter_id,
+        "created_at": capture["closed_at"],
+        "policy": policy.to_json(),
+        "capture": capture,
+        "summary": _usage_summary(stored_events),
+        "artifacts": _planned_artifacts(turn_dir, overrides=retained),
+    }
+    preparation = {
+        "schema_version": 1,
+        "source_stream_sha256": sha256_bytes(source_stream),
+        "source_stderr_sha256": sha256_bytes(source_stderr),
+        "manifest": manifest,
+    }
+    return preparation, retained
+
+
+def _parse_trace_preparation(
+    value: dict[str, Any],
+    turn_dir: Path,
+    *,
+    run_id: str,
+    role_id: str,
+    adapter_id: str,
+    policy: ObservabilityPolicy,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    require_keys(
+        value,
+        required=TRACE_PREPARATION_REQUIRED,
+        subject="trace finalization receipt",
+    )
+    if (
+        isinstance(value["schema_version"], bool)
+        or not isinstance(value["schema_version"], int)
+        or value["schema_version"] != 1
+        or not _is_sha256(value["source_stream_sha256"])
+        or not _is_sha256(value["source_stderr_sha256"])
+        or not isinstance(value["manifest"], dict)
+    ):
+        raise IntegrityError("trace finalization receipt is invalid")
+    manifest = value["manifest"]
+    parsed_policy = _parse_manifest_header(
+        manifest,
+        turn_dir,
+        expected_run_id=run_id,
+        expected_role_id=role_id,
+        expected_adapter_id=adapter_id,
+        expected_policy=policy,
+    )
+    artifacts = _parse_artifact_descriptors(manifest)
+    if parsed_policy.raw_retention == "delete":
+        if "harness_stream" in artifacts or "stderr" in artifacts:
+            raise IntegrityError("trace deletion receipt retains raw process output")
+    elif "harness_stream" not in artifacts:
+        raise IntegrityError("trace receipt omits the retained raw stream")
+    elif "stderr" not in artifacts:
+        raise IntegrityError("trace receipt omits the retained stderr")
+    return manifest, artifacts
+
+
+def _assert_prepared_payload(
+    artifact: dict[str, Any],
+    data: bytes,
+) -> None:
+    if (
+        artifact["size_bytes"] != len(data)
+        or artifact["sha256"] != sha256_bytes(data)
+    ):
+        raise IntegrityError("trace finalization receipt payload is inconsistent")
+
+
+def _verify_prepared_file(
+    turn_dir: Path,
+    artifact: dict[str, Any],
+) -> None:
+    raw = read_regular(resolve_run_path(turn_dir, artifact["path"]))
+    _assert_prepared_payload(artifact, raw)
+
+
+def _archived_stderr(stream_path: Path) -> bytes:
+    stderr = bytearray()
+    for record in iter_stream_records(stream_path):
+        if record.source != "stderr":
+            continue
+        if record.encoding == "utf-8":
+            stderr.extend(record.data.encode("utf-8"))
+        else:
+            try:
+                stderr.extend(base64.b64decode(record.data, validate=True))
+            except ValueError as exc:
+                raise IntegrityError("archived stderr record is invalid") from exc
+    return bytes(stderr)
+
+
+def _apply_trace_preparation(
+    turn_dir: Path,
+    preparation: dict[str, Any],
+    *,
+    run_id: str,
+    role_id: str,
+    adapter_id: str,
+    policy: ObservabilityPolicy,
+    retained: dict[str, bytes | None] | None,
+) -> dict[str, Any]:
+    manifest, artifacts = _parse_trace_preparation(
+        preparation,
+        turn_dir,
+        run_id=run_id,
+        role_id=role_id,
+        adapter_id=adapter_id,
+        policy=policy,
+    )
+    trace_path = turn_dir / "trace.jsonl"
+    trace_artifact = artifacts["normalized_trace"]
+    if retained is not None:
+        trace_bytes = retained["trace.jsonl"]
+        assert trace_bytes is not None
+        _assert_prepared_payload(trace_artifact, trace_bytes)
+        atomic_write(trace_path, trace_bytes, immutable=True)
+    else:
+        _verify_prepared_file(turn_dir, trace_artifact)
+
+    # Validate every non-retention semantic field before changing or deleting
+    # the source stream. The prepared receipt is the durable recovery source
+    # only after the normalized Trace has also been proven intact.
+    parsed_policy = _policy_from_json(manifest["policy"])
+    _validate_manifest_trace_and_capture(turn_dir, manifest, parsed_policy)
+
+    process_dir = turn_dir / "process"
+    stream_path = process_dir / "stream.jsonl"
+    stderr_path = process_dir / "stderr.log"
+    if policy.raw_retention == "redacted":
+        stream_artifact = artifacts["harness_stream"]
+        if retained is not None:
+            stream_bytes = retained["process/stream.jsonl"]
+            assert stream_bytes is not None
+            _assert_prepared_payload(stream_artifact, stream_bytes)
+            atomic_write(stream_path, stream_bytes)
+        else:
+            _verify_prepared_file(turn_dir, stream_artifact)
+        stderr_bytes = (
+            retained["process/stderr.log"]
+            if retained is not None
+            else _archived_stderr(stream_path)
+        )
+        assert stderr_bytes is not None
+        _assert_prepared_payload(artifacts["stderr"], stderr_bytes)
+        atomic_write(stderr_path, stderr_bytes)
+    elif policy.raw_retention == "delete":
+        for path in (stream_path, stderr_path):
+            if path_entry_exists(path):
+                path.unlink()
+        fsync_dir(process_dir)
+
+    _validate_trace_manifest_value(
+        turn_dir,
+        manifest,
+        expected_run_id=run_id,
+        expected_role_id=role_id,
+        expected_adapter_id=adapter_id,
+        expected_policy=policy,
+    )
+    return manifest
+
+
+def _remove_trace_preparation(path: Path) -> None:
+    if not path_entry_exists(path):
+        return
+    path.unlink()
+    fsync_dir(path.parent)
+
+
+def finalize_turn_trace(
+    *,
+    run_id: str,
+    turn_dir: Path,
+    role_id: str,
+    adapter_id: str,
+    policy: ObservabilityPolicy,
+) -> tuple[dict[str, Any], str]:
+    manifest_path = turn_dir / "trace-manifest.json"
+    preparation_path = turn_dir / TRACE_PREPARATION_PATH
+    if path_entry_exists(manifest_path):
+        manifest = validate_trace_manifest(
+            turn_dir,
+            expected_run_id=run_id,
+            expected_role_id=role_id,
+            expected_adapter_id=adapter_id,
+            expected_policy=policy,
+        )
+        _remove_trace_preparation(preparation_path)
+        return manifest, sha256_bytes(read_regular(manifest_path))
+    retained: dict[str, bytes | None] | None = None
+    if path_entry_exists(preparation_path):
+        preparation = read_json(preparation_path)
+        _parse_trace_preparation(
+            preparation,
+            turn_dir,
+            run_id=run_id,
+            role_id=role_id,
+            adapter_id=adapter_id,
+            policy=policy,
+        )
+        stream_path = turn_dir / "process/stream.jsonl"
+        if path_entry_exists(stream_path):
+            envelopes = _stream_envelopes(stream_path)
+            if not envelopes or envelopes[0]["schema_version"] == 1:
+                recomputed, retained = _prepare_trace_finalization(
+                    run_id=run_id,
+                    turn_dir=turn_dir,
+                    role_id=role_id,
+                    adapter_id=adapter_id,
+                    policy=policy,
+                )
+                if canonical_json_bytes(recomputed) != canonical_json_bytes(preparation):
+                    raise IntegrityError(
+                        "trace finalization receipt no longer matches source artifacts"
+                    )
+            elif policy.raw_retention != "redacted":
+                raise IntegrityError("unexpected archived stream during trace retry")
+        elif policy.raw_retention != "delete":
+            raise IntegrityError("retained stream disappeared during trace finalization")
+    else:
+        preparation, retained = _prepare_trace_finalization(
+            run_id=run_id,
+            turn_dir=turn_dir,
+            role_id=role_id,
+            adapter_id=adapter_id,
+            policy=policy,
+        )
+        atomic_write(
+            preparation_path,
+            canonical_json_bytes(preparation),
+            immutable=True,
+        )
+    manifest = _apply_trace_preparation(
+        turn_dir,
+        preparation,
+        run_id=run_id,
+        role_id=role_id,
+        adapter_id=adapter_id,
+        policy=policy,
+        retained=retained,
+    )
+    atomic_write(manifest_path, canonical_json_bytes(manifest), immutable=True)
+    digest = sha256_bytes(read_regular(manifest_path))
+    validate_trace_manifest(
+        turn_dir,
+        expected_sha256=digest,
+        expected_run_id=run_id,
+        expected_role_id=role_id,
+        expected_adapter_id=adapter_id,
+        expected_policy=policy,
+    )
+    _remove_trace_preparation(preparation_path)
+    return manifest, digest
+
+
+def validate_trace_manifest(
+    turn_dir: Path,
+    *,
+    expected_sha256: str | None = None,
+    expected_run_id: str | None = None,
+    expected_role_id: str | None = None,
+    expected_adapter_id: str | None = None,
+    expected_policy: ObservabilityPolicy | None = None,
+) -> dict[str, Any]:
+    path = turn_dir / "trace-manifest.json"
+    raw = read_regular(path)
+    if expected_sha256 is not None and sha256_bytes(raw) != expected_sha256:
+        raise IntegrityError(
+            f"trace manifest hash mismatch: {turn_dir.name}",
+            f"turns/{turn_dir.name}/trace-manifest.json",
+        )
+    manifest = read_json(path)
+    return _validate_trace_manifest_value(
+        turn_dir,
+        manifest,
+        expected_run_id=expected_run_id,
+        expected_role_id=expected_role_id,
+        expected_adapter_id=expected_adapter_id,
+        expected_policy=expected_policy,
+    )
 
 
 def read_trace_events(turn_dir: Path) -> list[dict[str, Any]]:
     path = turn_dir / "trace.jsonl"
     if not path_entry_exists(path):
         return []
+    raw = read_regular(path)
+    if raw and not raw.endswith(b"\n"):
+        raise IntegrityError(
+            f"normalized trace has an incomplete tail: {turn_dir.name}"
+        )
     events: list[dict[str, Any]] = []
-    for expected, raw_line in enumerate(read_regular(path).splitlines(), start=1):
-        try:
-            event = json.loads(raw_line)
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise IntegrityError(f"invalid normalized trace: {turn_dir.name}") from exc
+    for expected, raw_line in enumerate(raw.split(b"\n")[:-1], start=1):
+        event = _json_object_line(
+            raw_line,
+            subject=f"normalized trace: {turn_dir.name}",
+        )
+        require_keys(
+            event,
+            required=TRACE_EVENT_REQUIRED,
+            subject="normalized trace event",
+        )
+        event_type = event["event_type"]
+        require_schema_version(event, 1, subject="normalized trace event")
         if (
-            not isinstance(event, dict)
-            or event.get("schema_version") != 1
-            or event.get("trace_seq") != expected
-            or event.get("turn_id") != turn_dir.name
-            or event.get("event_type") not in TRACE_EVENT_TYPES
-            or not isinstance(event.get("data"), dict)
+            isinstance(event["trace_seq"], bool)
+            or not isinstance(event["trace_seq"], int)
+            or event["trace_seq"] != expected
+            or event["turn_id"] != turn_dir.name
+            or not isinstance(event_type, str)
+            or event_type not in TRACE_EVENT_TYPES
+            or not isinstance(event["data"], dict)
         ):
             raise IntegrityError(f"normalized trace event is invalid: {turn_dir.name}")
-        raw_ref = event.get("raw_ref")
+        raw_ref = event["raw_ref"]
         if (
-            not isinstance(event.get("run_id"), str)
+            not isinstance(event["run_id"], str)
             or not event["run_id"]
-            or not isinstance(event.get("role_id"), str)
+            or not isinstance(event["role_id"], str)
             or not event["role_id"]
-            or not isinstance(event.get("adapter_id"), str)
+            or not isinstance(event["adapter_id"], str)
             or not event["adapter_id"]
-            or not isinstance(event.get("observed_at"), str)
-            or not event["observed_at"]
             or not isinstance(raw_ref, dict)
             or set(raw_ref) != {"source", "first_seq", "last_seq"}
-            or raw_ref["source"] not in STREAM_SOURCES
+            or not isinstance(raw_ref.get("source"), str)
+            or raw_ref.get("source") not in STREAM_SOURCES
             or isinstance(raw_ref["first_seq"], bool)
             or not isinstance(raw_ref["first_seq"], int)
             or isinstance(raw_ref["last_seq"], bool)
@@ -718,6 +1362,7 @@ def read_trace_events(turn_dir: Path) -> list[dict[str, Any]]:
             raise IntegrityError(
                 f"normalized trace raw reference is invalid: {turn_dir.name}"
             )
+        parse_rfc3339(event["observed_at"])
         events.append(event)
     return events
 
@@ -837,10 +1482,8 @@ def build_transcript(
         launch_path = current_turn_dir / "process" / "launch.json"
         prompt = ""
         if path_entry_exists(launch_path):
-            launch = read_json(launch_path)
-            supplied_prompt = launch.get("stdin")
-            if isinstance(supplied_prompt, str):
-                prompt = redactor.text(supplied_prompt)
+            launch = LaunchSpec.from_json(read_json(launch_path))
+            prompt = redactor.text(launch.stdin)
         outbox = load_outbox(current_turn_dir)
         formal_output = None
         if outbox is not None:

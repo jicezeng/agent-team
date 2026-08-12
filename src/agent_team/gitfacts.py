@@ -14,6 +14,7 @@ from .util import (
     canonical_json_bytes,
     read_json,
     require_keys,
+    require_schema_version,
     rfc3339,
     sha256_bytes,
 )
@@ -469,8 +470,7 @@ def validate_workspace_facts(
     expected_boundary: str | None = None,
 ) -> dict[str, Any]:
     require_keys(value, required=FACTS_REQUIRED, subject="workspace facts")
-    if value["schema_version"] != 1:
-        raise IntegrityError("unsupported workspace facts schema")
+    require_schema_version(value, 1, subject="workspace facts")
     if value["snapshot_scope"] != "git_visible":
         raise IntegrityError("workspace facts have invalid scope")
     if not isinstance(value["boundary"], str) or value["boundary"] not in {

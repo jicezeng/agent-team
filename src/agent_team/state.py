@@ -22,6 +22,7 @@ from .util import (
     parse_rfc3339,
     path_entry_exists,
     require_keys,
+    require_schema_version,
     sha256_bytes,
 )
 
@@ -179,6 +180,7 @@ def validate_state_root(workspace: Path) -> dict[str, Any]:
     marker = root_dir / "root.json"
     value = read_json(marker)
     require_keys(value, required=ROOT_REQUIRED, subject="root.json")
+    require_schema_version(value, 1, subject="root.json")
     state_dir = fixed_state_dir()
     expected_workspace = str(workspace.resolve(strict=True))
     expected_state = str(state_dir)
@@ -376,9 +378,8 @@ def validate_owner_file(workspace: Path, value: dict[str, Any]) -> dict[str, Any
     from .config import RUN_ID_RE
 
     require_keys(value, required=OWNER_REQUIRED, subject="workspace owner")
+    require_schema_version(value, 1, subject="workspace owner")
     expected_path_hash = workspace_hash(workspace)
-    if value["schema_version"] != 1:
-        raise IntegrityError("unsupported workspace owner schema")
     if value["workspace_realpath"] != str(workspace.resolve(strict=True)):
         raise IntegrityError("workspace owner points to a different workspace")
     if value["workspace_sha256"] != expected_path_hash:

@@ -8,7 +8,12 @@ from typing import Any
 
 from .errors import IntegrityError, InvalidArgument
 from .state import validate_state_root
-from .util import canonical_json_bytes, read_json, require_keys
+from .util import (
+    canonical_json_bytes,
+    read_json,
+    require_keys,
+    require_schema_version,
+)
 
 
 ROLE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -166,7 +171,11 @@ def _require_exact(
 
 
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
-    schema_version = value.get("schema_version")
+    schema_version = require_schema_version(
+        value,
+        (1, 2, 3, 4),
+        subject="team.json",
+    )
     if schema_version == 1:
         _require_exact(value, TEAM_REQUIRED, "team.json")
     elif schema_version == 2:
@@ -175,8 +184,6 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_V3_REQUIRED, "team.json")
     elif schema_version == 4:
         _require_exact(value, TEAM_V4_REQUIRED, "team.json")
-    else:
-        raise IntegrityError("unsupported team.json schema")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise IntegrityError("team.json run_id is invalid")
@@ -415,10 +422,14 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                     "full audit mode requires every business role to use an "
                     f"External binding: {', '.join(origin_roles)}"
                 )
+            folded_sections = {
+                section.casefold()
+                for section in observability.required_payload_sections
+            }
             missing_sections = [
                 section
                 for section in REQUIRED_AUDIT_PAYLOAD_SECTIONS
-                if section not in observability.required_payload_sections
+                if section.casefold() not in folded_sections
             ]
             if missing_sections:
                 raise IntegrityError(

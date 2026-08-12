@@ -169,6 +169,16 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def parse_json_object(raw: bytes, *, subject: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise IntegrityError(f"invalid {subject}") from exc
+    if not isinstance(value, dict):
+        raise IntegrityError(f"{subject} must be an object")
+    return value
+
+
 def fsync_dir(path: Path) -> None:
     directory_flag = getattr(os, "O_DIRECTORY", 0)
     fd = os.open(path, os.O_RDONLY | directory_flag)
@@ -282,6 +292,23 @@ def require_keys(
         raise IntegrityError(f"{subject} missing fields: {sorted(missing)}")
     if unknown:
         raise IntegrityError(f"{subject} has unknown fields: {sorted(unknown)}")
+
+
+def require_schema_version(
+    value: dict[str, Any],
+    supported: int | set[int] | frozenset[int] | tuple[int, ...],
+    *,
+    subject: str,
+) -> int:
+    versions = {supported} if isinstance(supported, int) else set(supported)
+    schema_version = value.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in versions
+    ):
+        raise IntegrityError(f"unsupported {subject} schema")
+    return schema_version
 
 
 def random_token(bytes_count: int = 24) -> str:

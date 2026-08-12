@@ -50,12 +50,15 @@ def effective_claude_plugin() -> Path:
 
 
 def effective_agent_team_cli() -> Path:
-    located = shutil.which("agent-team")
-    if located:
-        return Path(located).resolve(strict=True)
+    # Worker processes are launched with the exact interpreter that started
+    # the Run. Prefer its sibling console script so a tmux server's inherited
+    # PATH cannot change the absolute command embedded in launch profiles.
     candidate = Path(sys.executable).parent / "agent-team"
     if candidate.exists() and candidate.is_file():
         return candidate.resolve(strict=True)
+    located = shutil.which("agent-team")
+    if located:
+        return Path(located).resolve(strict=True)
     raise AgentTeamError(
         "AGENT_TEAM_CLI_NOT_FOUND",
         "cannot locate the agent-team console script",

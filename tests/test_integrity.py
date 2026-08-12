@@ -133,6 +133,43 @@ def test_team_rejects_unhashable_external_discriminators(
         parse_team(team)
 
 
+@pytest.mark.parametrize("schema_version", [True, 4.0, "4", None])
+def test_team_schema_version_requires_an_exact_integer(
+    workspace: Path,
+    schema_version: object,
+) -> None:
+    team = make_team(
+        run_id="at-test-team-schema-type",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    team["schema_version"] = schema_version
+
+    with pytest.raises(IntegrityError, match="unsupported team.json schema"):
+        parse_team(team)
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_journal_schema_version_requires_an_exact_integer(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    schema_version: object,
+) -> None:
+    run_dir = _run(workspace, request_protocol, "at-test-event-schema-type")
+    start_run(run_dir)
+    event_path = run_dir / "events" / "0001-kickoff-0001.json"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["schema_version"] = schema_version
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+
+    with pytest.raises(IntegrityError, match="unsupported event"):
+        scan_journal(run_dir)
+
+
 def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
     team = make_team(
         run_id="at-test-harness-options",
@@ -322,6 +359,38 @@ def test_full_audit_mode_accepts_external_roles_and_required_sections(
 
     assert team.observability.audit_mode == "full"
     assert team.roles["reviewer"].binding == "external"
+
+
+def test_full_audit_required_sections_are_case_insensitive(
+    workspace: Path,
+) -> None:
+    team = make_team(
+        run_id="at-test-full-audit-section-case",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "codex",
+                "fresh",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+        observability=ObservabilityPolicy(
+            audit_mode="full",
+            required_payload_sections=("decision RATIONALE", "EVIDENCE"),
+        ),
+    )
+
+    assert team.observability.required_payload_sections == (
+        "decision RATIONALE",
+        "EVIDENCE",
+    )
 
 
 def test_full_audit_mode_rejects_raw_trace_deletion(

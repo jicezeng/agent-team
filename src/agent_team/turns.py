@@ -41,6 +41,7 @@ from .util import (
     read_json,
     read_regular,
     require_keys,
+    require_schema_version,
     resolve_run_path,
     rfc3339,
     safe_relative,
@@ -212,13 +213,16 @@ def validate_runtime(
     *,
     team: Team | None = None,
 ) -> dict[str, Any]:
-    if value.get("schema_version") == 1 and "trace_manifest_sha256" not in value:
+    require_schema_version(value, 1, subject="turn runtime")
+    if (
+        "trace_manifest_sha256" not in value
+        and team is not None
+        and team.config_schema_version == 1
+    ):
         # v0.1 Runs predate anchored Turn traces. Normalize them in memory so
         # observation and recovery can remain backward-compatible.
-        value["trace_manifest_sha256"] = None
+        value = {**value, "trace_manifest_sha256": None}
     require_keys(value, required=RUNTIME_REQUIRED, subject="turn runtime")
-    if value["schema_version"] != 1:
-        raise IntegrityError("unsupported turn runtime schema")
     if not isinstance(value["turn_id"], str) or not TURN_ID_RE.fullmatch(
         value["turn_id"]
     ):
@@ -723,7 +727,8 @@ def _base_runtime(
 
 def validate_session(value: dict[str, Any], *, role: Role) -> dict[str, Any]:
     require_keys(value, required=SESSION_REQUIRED, subject="session snapshot")
-    if value["schema_version"] != 1 or value["role_id"] != role.role_id:
+    require_schema_version(value, 1, subject="session snapshot")
+    if value["role_id"] != role.role_id:
         raise IntegrityError("session identity is invalid")
     if value["adapter"] != role.adapter:
         raise IntegrityError("session adapter mismatch")
@@ -1214,7 +1219,8 @@ Current external session ref: {session_ref or "new session"}.
 
 def validate_outbox(value: dict[str, Any], *, turn_id: str) -> dict[str, Any]:
     require_keys(value, required=OUTBOX_REQUIRED, subject="turn outbox")
-    if value["schema_version"] != 1 or value["turn_id"] != turn_id:
+    require_schema_version(value, 1, subject="turn outbox")
+    if value["turn_id"] != turn_id:
         raise IntegrityError("outbox identity is invalid")
     if not isinstance(value["action"], str) or value["action"] not in {
         "handoff",

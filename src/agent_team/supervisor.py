@@ -42,13 +42,14 @@ from .turns import (
 )
 from .util import (
     atomic_json,
-    atomic_write,
     create_empty_regular,
+    parse_json_object,
     parse_rfc3339,
     path_entry_exists,
     read_json,
     read_regular,
     require_keys,
+    require_schema_version,
     rfc3339,
     set_private_umask,
     sha256_bytes,
@@ -103,15 +104,40 @@ AUTH_REQUIRED = {
     "launch_profile_sha256",
     "authorized_at",
 }
+EXEC_ERROR_REQUIRED = {"schema_version", "code", "message"}
+EXEC_ERROR_CODES = {
+    "AUTHORIZATION_INVALID",
+    "AUTHORIZATION_TIMEOUT",
+    "EXEC_FAILED",
+    "RUNNER_BOOTSTRAP_FAILED",
+    "RUNNER_NOT_GROUP_LEADER",
+}
+
+
+def validate_exec_error(value: dict[str, Any]) -> dict[str, Any]:
+    require_keys(value, required=EXEC_ERROR_REQUIRED, subject="Runner status")
+    require_schema_version(value, 1, subject="Runner status")
+    if (
+        not isinstance(value["code"], str)
+        or value["code"] not in EXEC_ERROR_CODES
+        or not isinstance(value["message"], str)
+        or not value["message"]
+    ):
+        raise IntegrityError("Runner status fields are invalid")
+    return value
+
+
+def _parse_exec_error_bytes(raw: bytes) -> dict[str, Any]:
+    return validate_exec_error(parse_json_object(raw, subject="Runner status JSON"))
 
 
 def validate_runner(
     value: dict[str, Any], *, turn_id: str, nonce: str
 ) -> dict[str, Any]:
     require_keys(value, required=RUNNER_REQUIRED, subject="runner identity")
+    require_schema_version(value, 1, subject="runner identity")
     if (
-        value["schema_version"] != 1
-        or value["turn_id"] != turn_id
+        value["turn_id"] != turn_id
         or value["launch_nonce"] != nonce
     ):
         raise IntegrityError("runner identity context mismatch")
@@ -139,9 +165,9 @@ def validate_authorization(
     nonce: str,
 ) -> dict[str, Any]:
     require_keys(value, required=AUTH_REQUIRED, subject="launch authorization")
+    require_schema_version(value, 1, subject="launch authorization")
     if (
-        value["schema_version"] != 1
-        or value["turn_id"] != turn_id
+        value["turn_id"] != turn_id
         or value["launch_nonce"] != nonce
     ):
         raise IntegrityError("launch authorization context mismatch")
@@ -173,8 +199,7 @@ def validate_authorization(
 
 def validate_supervisor(value: dict[str, Any]) -> dict[str, Any]:
     require_keys(value, required=SUPERVISOR_REQUIRED, subject="supervisor snapshot")
-    if value["schema_version"] != 1:
-        raise IntegrityError("unsupported supervisor schema")
+    require_schema_version(value, 1, subject="supervisor snapshot")
     state = value["state"]
     if not isinstance(state, str) or state not in SUPERVISOR_STATE_ORDER:
         raise IntegrityError("invalid supervisor state")
@@ -433,6 +458,8 @@ class StreamRecorder:
     async def record(self, source: str, data: bytes) -> None:
         if source not in self.buffers:
             raise IntegrityError(f"unsupported Harness stream source: {source}")
+        if not data:
+            return
         async with self.lock:
             self.chunks_observed += 1
             self.source_bytes += len(data)
@@ -863,9 +890,9 @@ async def supervise_turn(
                 await recorder.record("stderr", stderr_bytes)
         status_bytes = await status_task
         if status_bytes:
-            atomic_write(
+            atomic_json(
                 process_dir / "exec-error.json",
-                status_bytes,
+                _parse_exec_error_bytes(status_bytes),
                 immutable=True,
             )
         elif not isinstance(exc, asyncio.CancelledError):
@@ -1095,7 +1122,11 @@ async def supervise_turn(
             await terminal_input_task
     status_bytes = await status_task
     if status_bytes:
-        atomic_write(process_dir / "exec-error.json", status_bytes, immutable=True)
+        atomic_json(
+            process_dir / "exec-error.json",
+            _parse_exec_error_bytes(status_bytes),
+            immutable=True,
+        )
     if not recorder.stream_path_is_original():
         termination_reason = termination_reason or "corrupted"
     if termination_reason == "deadline":

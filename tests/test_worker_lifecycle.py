@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import fcntl
 import json
 import os
@@ -41,6 +42,7 @@ from agent_team.supervisor import (
     validate_supervisor,
 )
 from agent_team.tmux_runtime import session_name
+from agent_team.trace import finalize_turn_trace
 from agent_team.turns import (
     create_business_turn_locked,
     iter_runtimes,
@@ -162,7 +164,7 @@ class _BootstrapAdapter:
         launch_mode: str,
     ) -> None:
         assert run_dir.name.startswith("at-")
-        assert role_id == "developer"
+        assert role_id in {"developer", "reviewer"}
         assert launch_mode == self.launch_mode
 
     def finalize_run_state(
@@ -173,7 +175,7 @@ class _BootstrapAdapter:
         launch_mode: str,
     ) -> None:
         assert run_dir.name.startswith("at-")
-        assert role_id == "developer"
+        assert role_id in {"developer", "reviewer"}
         assert launch_mode == self.launch_mode
 
 
@@ -191,12 +193,14 @@ def _external_run(
     max_turns: int = 4,
     max_wall_time_seconds: int = 300,
     include_origin_reviewer: bool = False,
+    include_external_reviewer: bool = False,
     observability: ObservabilityPolicy | None = None,
     launch_mode: str = "headless",
 ) -> tuple[Path, dict[str, Any]]:
     request, protocol = request_protocol
     adapter = _BootstrapAdapter(launch_mode)
     monkeypatch.setattr("agent_team.bootstrap.get_adapter", lambda _adapter: adapter)
+    monkeypatch.setattr("agent_team.ownership.get_adapter", lambda _adapter: adapter)
     monkeypatch.setattr("agent_team.bootstrap.tmux_executable", lambda: "/bin/true")
     empty_tmux = {
         "session": "test-session",
@@ -226,6 +230,16 @@ def _external_run(
     }
     if include_origin_reviewer:
         roles["reviewer"] = Role("reviewer", "origin")
+    if include_external_reviewer:
+        roles["reviewer"] = Role(
+            "reviewer",
+            "external",
+            "codex",
+            "fresh",
+            PROFILE,
+            PROFILE_HASH,
+            launch_mode=launch_mode,
+        )
     team = make_team(
         run_id=run_id,
         workspace=workspace,
@@ -444,6 +458,7 @@ def _persist_process_chain(
     execution_started: bool = True,
     runtime_phase: str = "running",
     runtime_has_identities: bool = True,
+    write_capture: bool = True,
 ) -> tuple[LaunchSpec, dict[str, Any]]:
     turn_dir = run_dir / "turns" / runtime["turn_id"]
     process_dir = turn_dir / "process"
@@ -499,6 +514,23 @@ def _persist_process_chain(
         supervisor,
         immutable=True,
     )
+    if supervisor_state == "finished" and write_capture:
+        atomic_write(process_dir / "stream.jsonl", b"", immutable=True)
+        atomic_write(process_dir / "stderr.log", b"", immutable=True)
+        atomic_json(
+            process_dir / "capture.json",
+            {
+                "schema_version": 1,
+                "source_bytes": 0,
+                "stored_source_bytes": 0,
+                "dropped_source_bytes": 0,
+                "chunks_observed": 0,
+                "chunks_stored": 0,
+                "truncated": False,
+                "closed_at": rfc3339(),
+            },
+            immutable=True,
+        )
     if write_authorization:
         atomic_json(
             process_dir / "launch-authorized.json",
@@ -1002,6 +1034,8 @@ def test_observation_rejects_unexpected_tmux_role_window(
         ("phase", []),
         ("outcome", []),
         ("termination_kind", []),
+        ("schema_version", True),
+        ("schema_version", 1.0),
     ],
 )
 def test_runtime_rejects_boolean_values_in_typed_fields(
@@ -1025,11 +1059,39 @@ def test_runtime_rejects_boolean_values_in_typed_fields(
         validate_runtime(runtime)
 
 
+def test_runtime_trace_anchor_compatibility_is_limited_to_legacy_team_schema(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-runtime-trace-compat",
+    )
+    team = scan_journal(run_dir).team
+    runtime.pop("trace_manifest_sha256")
+
+    with pytest.raises(IntegrityError, match="trace_manifest_sha256"):
+        validate_runtime(runtime, team=team)
+    with pytest.raises(IntegrityError, match="trace_manifest_sha256"):
+        validate_runtime(runtime)
+
+    legacy = replace(team, config_schema_version=1)
+    normalized = validate_runtime(runtime, team=legacy)
+
+    assert normalized["trace_manifest_sha256"] is None
+    assert "trace_manifest_sha256" not in runtime
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("state", []),
         ("termination_kind", []),
+        ("schema_version", True),
+        ("schema_version", 1.0),
     ],
 )
 def test_supervisor_rejects_unhashable_discriminators(
@@ -1203,7 +1265,25 @@ def test_full_audit_mode_blocks_a_turn_when_capture_is_truncated(
     )
     turn_dir = run_dir / "turns" / runtime["turn_id"]
     with locked_run(run_dir, exclusive=True):
-        _persist_process_chain(run_dir, runtime)
+        _persist_process_chain(run_dir, runtime, write_capture=False)
+        raw_chunk = {
+            "schema_version": 1,
+            "seq": 1,
+            "observed_at": rfc3339(),
+            "source": "stdout",
+            "encoding": "utf-8",
+            "data": "x" * 1024,
+        }
+        atomic_write(
+            turn_dir / "process" / "stream.jsonl",
+            (json.dumps(raw_chunk, separators=(",", ":")) + "\n").encode(),
+            immutable=True,
+        )
+        atomic_write(
+            turn_dir / "process" / "stderr.log",
+            b"",
+            immutable=True,
+        )
         atomic_json(
             turn_dir / "process" / "capture.json",
             {
@@ -1211,7 +1291,7 @@ def test_full_audit_mode_blocks_a_turn_when_capture_is_truncated(
                 "source_bytes": 2048,
                 "stored_source_bytes": 1024,
                 "dropped_source_bytes": 1024,
-                "chunks_observed": 2,
+                "chunks_observed": 1,
                 "chunks_stored": 1,
                 "truncated": True,
                 "closed_at": rfc3339(),
@@ -1234,6 +1314,44 @@ def test_full_audit_mode_blocks_a_turn_when_capture_is_truncated(
     assert persisted["phase"] == "finalized"
     assert persisted["trace_manifest_sha256"] is not None
     assert derive_observation(run_dir)["run_status"] == "BLOCKED"
+
+
+def test_finalize_reuses_manifest_committed_before_runtime_anchor(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-trace-anchor-retry",
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    policy = scan_journal(run_dir).team.observability
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(run_dir, runtime)
+        manifest, digest = finalize_turn_trace(
+            run_id=run_dir.name,
+            turn_dir=turn_dir,
+            role_id=runtime["role_id"],
+            adapter_id="codex",
+            policy=policy,
+        )
+        assert runtime["trace_manifest_sha256"] is None
+
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+
+    assert event is not None
+    assert event["block_reason"] == "no_action"
+    persisted = load_runtime(turn_dir, team=scan_journal(run_dir).team)
+    assert persisted["trace_manifest_sha256"] == digest
+    assert read_json(turn_dir / "trace-manifest.json") == manifest
+    assert not (turn_dir / "process" / "trace-finalization.json").exists()
 
 
 def test_external_handoff_on_final_business_turn_blocks_without_staging_outbox(
@@ -1423,6 +1541,72 @@ def test_terminal_owner_release_rechecks_supervisor_and_runner_group(
     )
     with locked_run(run_dir, exclusive=True):
         assert release_terminal_owner_locked(run_dir)
+    assert read_owner(workspace) is None
+
+
+def test_terminal_owner_release_finalizes_unvisited_external_roles(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-release-all-adapters",
+        include_external_reviewer=True,
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    completion = turn_dir / "completion-source.md"
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(run_dir, runtime)
+        atomic_write(completion, b"# Completion\n\nDone.\n", immutable=True)
+        stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="complete",
+            source_file=completion,
+            to_role=None,
+        )
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+    assert event is not None and event["event_type"] == "complete"
+
+    finalized: list[tuple[str, str]] = []
+
+    class _TerminalAdapter:
+        def finalize_run_state(
+            self,
+            *,
+            run_dir: Path,
+            role_id: str,
+            launch_mode: str,
+        ) -> None:
+            assert run_dir.name == "at-worker-release-all-adapters"
+            finalized.append((role_id, launch_mode))
+
+    monkeypatch.setattr(
+        "agent_team.ownership.get_adapter",
+        lambda _adapter: _TerminalAdapter(),
+    )
+    monkeypatch.setattr(
+        "agent_team.ownership.process_identity_state",
+        lambda *_args, **_kwargs: "gone",
+    )
+    monkeypatch.setattr(
+        "agent_team.ownership.process_group_exists",
+        lambda _pgid: False,
+    )
+    with locked_run(run_dir, exclusive=True):
+        assert release_terminal_owner_locked(run_dir)
+
+    assert finalized == [
+        ("developer", "headless"),
+        ("reviewer", "headless"),
+    ]
     assert read_owner(workspace) is None
 
 
@@ -1649,6 +1833,23 @@ def test_cancel_precedes_recovery_when_supervisor_disappears(
             run_dir,
             runtime,
             supervisor_state="running",
+        )
+        process_dir = run_dir / "turns" / runtime["turn_id"] / "process"
+        atomic_write(process_dir / "stream.jsonl", b"", immutable=True)
+        atomic_write(process_dir / "stderr.log", b"", immutable=True)
+        atomic_json(
+            process_dir / "capture.json",
+            {
+                "schema_version": 1,
+                "source_bytes": 0,
+                "stored_source_bytes": 0,
+                "dropped_source_bytes": 0,
+                "chunks_observed": 0,
+                "chunks_stored": 0,
+                "truncated": False,
+                "closed_at": rfc3339(),
+            },
+            immutable=True,
         )
     cancelled = cancel_run(run_dir)
     monkeypatch.setattr(

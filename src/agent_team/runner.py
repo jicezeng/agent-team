@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from .adapters.base import LaunchSpec
+from .config import load_team
 from .errors import IntegrityError
 from .processes import current_identity, identity_matches
 from .state import locked_run
@@ -87,6 +88,7 @@ def _run_harness_runner(
         return 75
     try:
         with locked_run(run_dir, exclusive=False):
+            team = load_team(run_dir)
             authorization = validate_authorization(
                 read_json(authorization_path),
                 turn_id=turn_id,
@@ -94,7 +96,7 @@ def _run_harness_runner(
             )
             runtime = load_runtime(
                 run_dir / "turns" / turn_id,
-                team=None,
+                team=team,
             )
             launch = LaunchSpec.from_json(read_json(process_dir / "launch.json"))
             if (

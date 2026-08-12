@@ -47,11 +47,11 @@ cd /path/to/agent-team
 uv build --wheel
 ```
 
-Copy `dist/agent_team-0.1.1-py3-none-any.whl` to the target macOS or Linux
+Copy `dist/agent_team-0.1.2-py3-none-any.whl` to the target macOS or Linux
 machine, then run:
 
 ```bash
-uv tool install --force /path/to/agent_team-0.1.1-py3-none-any.whl
+uv tool install --force /path/to/agent_team-0.1.2-py3-none-any.whl
 agent-team install
 agent-team doctor --workspace /path/to/worktree --json
 ```
@@ -216,7 +216,10 @@ reads only the relevant user-level values and freezes the effective result in
 `team.json`: Codex `model`, `model_reasoning_effort`, and fast service-tier
 settings; Claude Code `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` (when
 set), then user `model` / `effortLevel` settings. If the user has not configured
-a value, the Harness retains its own account/model default. This selective
+a model or reasoning-effort value, the Harness retains its own account/model
+default. Codex Fast Mode is different: a new role freezes the effective value
+as `true` only when the user's `service_tier="fast"` setting is active and the
+feature is not disabled; otherwise it freezes `false`. This selective
 inheritance does not load user permissions, MCP servers, hooks, or other
 mutable Harness settings.
 
@@ -554,6 +557,10 @@ The real two-Codex and mixed Claude Code/Codex validation materials are in
 [`docs/validation`](docs/validation). The observability implementation's
 mixed-Harness evidence is summarized in
 [`observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md).
+The current native-TUI Codex PTY, action-termination, same-session Resume, and
+mixed Interactive Claude Code/Codex evidence is summarized separately in
+[`interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md).
+The earlier mixed-Harness reports remain the Headless Claude baseline.
 These validations define a resumable Developer / Reviewer loop where every
 P0–P3 finding must be accepted and fixed or rejected with evidence, followed
 by a complete re-review.

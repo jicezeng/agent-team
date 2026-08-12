@@ -522,6 +522,7 @@ def _recover_unique_damaged_runtime_locked(
         "termination_kind": None,
         "terminal_event_id": None,
         "origin_claim_id": None,
+        "trace_manifest_sha256": None,
         "created_at": created_at,
         "updated_at": rfc3339(),
     }
@@ -825,10 +826,7 @@ def _recover_run_strict(run_dir: Path) -> dict[str, Any]:
                     actions.append(f"start-failure:{runtime['turn_id']}")
         projection = scan_journal(run_dir)
         if projection.status in {"COMPLETED", "CANCELLED"}:
-            owner = read_owner(projection.team.workspace)
-            released = False
-            if owner is not None and owner["run_id"] == projection.team.run_id:
-                released = release_terminal_owner_locked(run_dir)
+            released = release_terminal_owner_locked(run_dir)
             return {
                 "run_id": projection.team.run_id,
                 "status": projection.status,

@@ -30,6 +30,7 @@ from .state import locked_run, read_owner
 from .supervisor import (
     _save_snapshot,
     validate_authorization,
+    validate_exec_error,
     validate_runner,
     validate_supervisor,
 )
@@ -58,6 +59,7 @@ from .util import (
     random_token,
     read_json,
     read_regular,
+    require_schema_version,
     rfc3339,
     set_private_umask,
 )
@@ -123,9 +125,9 @@ def _write_role_snapshot(run_dir: Path, role_id: str) -> dict[str, Any]:
 def validate_role_snapshot(value: dict[str, Any], role_id: str) -> dict[str, Any]:
     if set(value) != ROLE_REQUIRED:
         raise IntegrityError("role worker snapshot has invalid fields")
+    require_schema_version(value, 1, subject="role worker snapshot")
     if (
-        value["schema_version"] != 1
-        or value["role_id"] != role_id
+        value["role_id"] != role_id
         or isinstance(value["worker_pid"], bool)
         or not isinstance(value["worker_pid"], int)
         or value["worker_pid"] <= 0
@@ -768,10 +770,13 @@ def finalize_external_turn_locked(
             runtime["outcome"] = _terminal_outcome(event)
     else:
         exec_error = turn_dir / "process" / "exec-error.json"
+        has_exec_error = path_entry_exists(exec_error)
+        if has_exec_error:
+            validate_exec_error(read_json(exec_error))
         reason = (
             "start_failure"
             if not runtime["agent_execution_started"]
-            and (authorization is None or path_entry_exists(exec_error))
+            and (authorization is None or has_exec_error)
             else "recovery"
         )
         event = commit_technical_block_locked(

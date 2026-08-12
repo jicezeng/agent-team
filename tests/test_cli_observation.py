@@ -8,7 +8,7 @@ import pytest
 from agent_team.bootstrap import start_run
 from agent_team.cli import _role_flags, _role_value_options, build_parser, main
 from agent_team.management import cancel_run
-from agent_team.observation import diagnose
+from agent_team.observation import _journal_tail, corrupted_observation, diagnose
 from agent_team.origin import origin_context, wait_origin
 from agent_team.state import state_paths
 from agent_team.turns import iter_runtimes
@@ -207,6 +207,49 @@ def test_structured_argument_error_uses_error_envelope(
     assert result["error"]["code"] == "INVALID_ARGUMENT"
 
 
+def test_corrupted_observation_preserves_fixed_details_and_only_real_evidence(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "at-corrupted-observation"
+    run_dir.mkdir()
+    (run_dir / "team.json").write_text("{}\n", encoding="utf-8")
+
+    observation = corrupted_observation(
+        run_dir.name,
+        "team snapshot is damaged",
+        run_dir=run_dir,
+        evidence_paths=["team.json", "missing.json", "../outside.json"],
+    )
+
+    assert set(observation["details"]) == {
+        "supervisor_pid",
+        "supervisor_start_id",
+        "runner_pid",
+        "runner_pgid",
+        "runner_start_id",
+        "owner_run_id",
+    }
+    assert observation["evidence_paths"] == ["team.json"]
+
+
+def test_journal_tail_normalizes_event_time_to_utc() -> None:
+    tail = _journal_tail(
+        {
+            "event_id": "kickoff-0001",
+            "event_seq": 1,
+            "event_type": "kickoff",
+            "from_role": None,
+            "to_role": "developer",
+            "turn_id": None,
+            "payload_path": "REQUEST.md",
+            "created_at": "2026-08-12T20:00:00+08:00",
+        }
+    )
+
+    assert tail is not None
+    assert tail["created_at"] == "2026-08-12T12:00:00.000Z"
+
+
 def test_origin_context_never_claims_an_unclaimed_event(
     workspace: Path,
     request_protocol: tuple[Path, Path],
@@ -392,7 +435,19 @@ def test_transcript_and_tail_expose_normalized_role_filtered_events(
         for seq, value in enumerate(inner, start=1)
     )
     atomic_write(process_dir / "stream.jsonl", stream)
-    atomic_json(process_dir / "launch.json", {"stdin": "Review the current tree."})
+    atomic_json(
+        process_dir / "launch.json",
+        {
+            "adapter_id": "codex",
+            "argv": ["codex", "exec"],
+            "cwd": str(workspace),
+            "env": {},
+            "stdin": "Review the current tree.",
+            "launch_profile": "default",
+            "launch_profile_sha256": "0" * 64,
+            "starts_new_session": True,
+        },
+    )
 
     with pytest.raises(SystemExit) as transcript_exit:
         main(
@@ -436,3 +491,20 @@ def test_transcript_and_tail_expose_normalized_role_filtered_events(
     tailed = json.loads(capsys.readouterr().out)
     assert tailed["event_type"] == "usage"
     assert tailed["role_id"] == "developer"
+
+    launch = json.loads((process_dir / "launch.json").read_text(encoding="utf-8"))
+    launch["unexpected"] = True
+    atomic_json(process_dir / "launch.json", launch)
+    with pytest.raises(SystemExit) as damaged_launch:
+        main(
+            [
+                "transcript",
+                run_dir.name,
+                "--workspace",
+                str(workspace),
+                "--json",
+            ]
+        )
+    assert damaged_launch.value.code == 1
+    error = json.loads(capsys.readouterr().out)
+    assert error["error"]["code"] == "TEAM_CORRUPTED"

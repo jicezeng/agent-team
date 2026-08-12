@@ -16,6 +16,7 @@ from .util import (
     read_json,
     read_regular,
     require_keys,
+    require_schema_version,
     resolve_run_path,
     rfc3339,
     sha256_bytes,
@@ -110,8 +111,7 @@ def _validate_event_schema(event: dict[str, Any], path: Path) -> None:
         optional=EVENT_OPTIONAL,
         subject=f"event {path.name}",
     )
-    if event["schema_version"] != 1:
-        raise IntegrityError(f"unsupported event schema: {path.name}")
+    require_schema_version(event, 1, subject=f"event {path.name}")
     if (
         not isinstance(event["event_type"], str)
         or event["event_type"] not in EVENT_TYPES

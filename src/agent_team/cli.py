@@ -183,7 +183,8 @@ def _env_turn() -> tuple[Path, dict[str, Any]]:
     from .state import locked_run
 
     with locked_run(run_dir, exclusive=False):
-        runtime = load_runtime(run_dir / "turns" / turn_id)
+        team = load_team(run_dir)
+        runtime = load_runtime(run_dir / "turns" / turn_id, team=team)
         if runtime["role_id"] != role_id or run_dir.name != run_id:
             raise IntegrityError("worker environment does not match turn runtime")
     return run_dir, runtime
@@ -195,13 +196,18 @@ def _observe(
     preexisting_corruption: str | None = None,
 ) -> dict[str, Any]:
     if preexisting_corruption:
-        return corrupted_observation(run_dir.name, preexisting_corruption)
+        return corrupted_observation(
+            run_dir.name,
+            preexisting_corruption,
+            run_dir=run_dir,
+        )
     try:
         return derive_observation(run_dir)
     except IntegrityError as exc:
         return corrupted_observation(
             run_dir.name,
             str(exc),
+            run_dir=run_dir,
             evidence_paths=exc.evidence_paths,
         )
     except OSError as exc:
@@ -1091,7 +1097,11 @@ def dispatch(args: argparse.Namespace) -> int:
         from .state import locked_run
 
         with locked_run(run_dir, exclusive=True):
-            runtime = load_runtime(run_dir / "turns" / runtime["turn_id"])
+            team = load_team(run_dir)
+            runtime = load_runtime(
+                run_dir / "turns" / runtime["turn_id"],
+                team=team,
+            )
             result = stage_external_action_locked(
                 run_dir,
                 runtime=runtime,

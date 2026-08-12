@@ -12,7 +12,7 @@ import pytest
 from agent_team.adapters.base import LaunchSpec
 from agent_team.errors import IntegrityError
 from agent_team.runner import run_harness_runner
-from agent_team.supervisor import validate_runner
+from agent_team.supervisor import validate_exec_error, validate_runner
 from agent_team.util import atomic_json, rfc3339
 
 
@@ -36,6 +36,38 @@ def test_runner_identity_rejects_boolean_pid_fields() -> None:
 
     with pytest.raises(IntegrityError, match="process group"):
         validate_runner(value, turn_id=TURN_ID, nonce=NONCE)
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_runner_identity_rejects_non_integer_schema_version(
+    schema_version: object,
+) -> None:
+    value = {
+        "schema_version": schema_version,
+        "turn_id": TURN_ID,
+        "launch_nonce": NONCE,
+        "runner_pid": RUNNER_PID,
+        "runner_pgid": RUNNER_PID,
+        "runner_start_id": "runner-start",
+        "created_at": rfc3339(),
+    }
+
+    with pytest.raises(IntegrityError, match="unsupported runner identity schema"):
+        validate_runner(value, turn_id=TURN_ID, nonce=NONCE)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"schema_version": True, "code": "EXEC_FAILED", "message": "failed"},
+        {"schema_version": 1.0, "code": "EXEC_FAILED", "message": "failed"},
+        {"schema_version": 1, "code": "UNKNOWN", "message": "failed"},
+        {"schema_version": 1, "code": "EXEC_FAILED", "message": ""},
+    ],
+)
+def test_runner_status_uses_a_closed_schema(value: dict[str, object]) -> None:
+    with pytest.raises(IntegrityError):
+        validate_exec_error(value)
 
 
 def _runner_fixture(
@@ -102,6 +134,10 @@ def _runner_fixture(
     monkeypatch.setattr(
         "agent_team.runner.load_runtime",
         lambda *_args, **_kwargs: runtime,
+    )
+    monkeypatch.setattr(
+        "agent_team.runner.load_team",
+        lambda _run_dir: SimpleNamespace(),
     )
     monkeypatch.setattr(
         "agent_team.runner.identity_matches",

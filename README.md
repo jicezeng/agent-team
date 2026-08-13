@@ -60,6 +60,20 @@ The wheel is platform-independent, but the target machine must still satisfy
 the requirements above. Configure and authenticate each harness CLI on that
 machine before starting a Run.
 
+### Install on macOS from the hosted package
+
+The fixed release package hosted by `agentteam.zengjice.com` can be installed
+or upgraded with:
+
+```bash
+curl -fsSL https://agentteam.zengjice.com:7001/install/mac.sh | bash
+```
+
+The installer verifies the wheel's pinned SHA-256 before replacing the tool,
+then refreshes and verifies both bundled integrations. The Mac must already
+provide `uv`, Git, tmux, and at least one of Codex CLI or Claude Code CLI. The
+installer refuses to upgrade while an Agent-Team Run owns a workspace.
+
 ### Install from a source checkout
 
 If the target machine has a copy of this repository, install directly from

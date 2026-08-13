@@ -1,7 +1,7 @@
 # Agent-Team 产品需求文档
 
 > **版本**：v0.1<br>
-> **最近修订**：2026-08-13<br>
+> **最近修订**：2026-08-14<br>
 > **状态**：已实现并完成本地真实场景验证<br>
 > **目标读者**：产品负责人、使用者、维护者和集成开发者
 
@@ -34,7 +34,7 @@ v0.1 的核心取舍是：
 
 ### 3.1 目标用户
 
-- 希望让 Codex 与 Claude Code 在同一代码任务中协作的开发者；
+- 希望让 Codex、Claude Code 与 OpenCode 在同一代码任务中协作的开发者；
 - 需要 Developer/Reviewer 等多轮闭环，但不想维护固定工作流 DSL 的团队；
 - 需要可恢复会话、显式交接、工作区排他和本地审计证据的高级用户；
 - 评估不同 Agent/Harness 协作质量的维护者和研究者。
@@ -43,7 +43,7 @@ v0.1 的核心取舍是：
 
 1. Developer 修改，Reviewer 独立审查，Finding 循环直到完成；
 2. Planner、Developer、Reviewer 等任意动态顺序拓扑；
-3. Codex 与 Claude Code 角色混合，并按角色恢复各自原 Session；
+3. Codex、Claude Code 与 OpenCode 角色混合，并按角色恢复各自原 Session；
 4. Origin 只作为控制面，全部业务角色使用 External Binding 并开启 Full Audit；
 5. 运行中断后，在不猜测业务路线的前提下诊断、确定性恢复或返回用户 Block。
 
@@ -52,7 +52,7 @@ v0.1 的核心取舍是：
 v0.1 必须做到：
 
 1. 用户以一次自然语言请求定义临时团队，不需要预先编写图或状态机；
-2. 支持任意名称的动态角色、Origin/External Binding，以及 Codex/Claude Code
+2. 支持任意名称的动态角色、Origin/External Binding，以及 Codex/Claude Code/OpenCode
    External Adapter；
 3. 任意时刻只有一个业务角色持有执行 Token，Handoff 目标显式且可审计；
 4. External Role 可选择 `resume` 或 `fresh` Session Policy；
@@ -92,14 +92,14 @@ v0.1 不承诺：
 ### 6.2 动态角色与执行权
 
 - Role ID 由本次任务定义，不从 `developer`、`reviewer` 等名称推断权限；
-- Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex` 和
-  `claude-code`；
+- Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex`、
+  `claude-code` 和 `opencode`；
 - External Role 支持 `resume` 与 `fresh`；
 - External Role 支持 `interactive|headless` Launch Mode；新 Run 默认
-  `interactive`，通过受管 PTY 在角色 tmux Pane 中显示原生 Codex / Claude Code
-  TUI，只有用户明确要求时才选择 `headless`；旧 Schema 1–3 Run 固定按
+  `interactive`，通过受管 PTY 在角色 tmux Pane 中显示原生 Codex / Claude Code TUI
+  或 OpenCode Direct-interactive Terminal，只有用户明确要求时才选择 `headless`；旧 Schema 1–3 Run 固定按
   `headless` 读取；
-- Codex 与 Claude Code 都提供 `default`、`trusted-workspace` 和 `full-access`
+- Codex、Claude Code 与 OpenCode 都提供 `default`、`trusted-workspace` 和 `full-access`
   三个显式 Launch Profile；新 External Role 省略 Profile 时默认冻结为
   `full-access`（YOLO），`default` 与 `trusted-workspace` 作为显式受限选项；
 - 任一 External Role 使用 `full-access` 时，新 Run 的首次 `start` 必须在 Adapter
@@ -115,6 +115,12 @@ v0.1 不承诺：
   `features.hooks=false`。受信任 Workspace 内其余 Project Config、Instruction 与
   Extension 仍属于 Workspace Trust Boundary；Start/Resume 参数及 Hash 在 Kickoff
   前冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
+- OpenCode 使用每个 Run/Role 独立的 `XDG_CONFIG_HOME`、内联高优先级配置、
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1` 与 `--pure`，不继承用户/项目 Permission、MCP、
+  Agent 或外部 Plugin；认证与 Session Data 仍使用本机 OpenCode Store。OpenCode
+  没有 Bash OS Sandbox，因此 `default`/`trusted-workspace` 只开放工作区内置文件工具
+  和三类 Formal Action，任意 Bash 保持 Deny；`trusted-workspace` 额外开放内置 Web
+  工具，`full-access` 才开放 Host Shell；
 - Codex 的管理员 Requirements 与 Claude 的 Enterprise Managed Settings 都不能由
   Agent-Team 覆盖，不进入 `launch_profile_sha256`，也不能由 `doctor` 证明云端或最终
   有效内容；Codex Requirements 可以约束并拒绝不兼容的 Sandbox、Approval、Permission
@@ -125,12 +131,15 @@ v0.1 不承诺：
   只允许 Workspace、Harness 必需的临时目录和经过固定参数校验的
   Formal Action；Codex 显式冻结空的额外 `writable_roots`，共享 Workspace Lock / Owner
   目录不作为 Harness 通用可写根；
-- Codex 与 Claude Code External Role 都可显式选择 Model 和 Reasoning Effort，
+- Codex、Claude Code 与 OpenCode External Role 都可显式选择 Model 和 Reasoning Effort，
   Codex 还可显式启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
   默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；新建 Codex Role
   把未启用 Fast Mode 的有效结果明确冻结为 `false`，不留给后续 Harness 默认值漂移；
   Claude 托管策略仍可能在执行时覆盖冻结的请求 Model，产品不得把请求值误报为已证明
   的最终有效 Model；
+  OpenCode Model 必须冻结为 `provider/model`，Reasoning Effort 映射为不透明的
+  Provider-specific Variant；未显式给 Model 时从目标 Workspace 的有效配置解析，
+  无法解析为完整 ID 时在 `init` Fail Closed；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -178,7 +187,7 @@ v0.1 不承诺：
 
 ### 6.6 安装与诊断
 
-- Python 包必须包含 CLI、Codex Skill 和 Claude Code Plugin；
+- Python 包必须包含 CLI、Codex/OpenCode Skill 和 Claude Code Plugin；
 - 支持从源码或平台无关 wheel 安装；
 - `agent-team install` 安装当前账号的集成副本；
 - `doctor` 检查 Harness、认证可见性、Profile、Resume、Git/tmux、文件系统能力、
@@ -203,6 +212,8 @@ v0.1 不承诺：
 v0.1 的发布验收必须同时满足：
 
 - Codex/Codex 与 Claude Code/Codex 真实循环均可完成；
+- OpenCode External Role 必须通过真实 Start、正式 Handoff、Session Resume 与
+  Completion 的多 Turn 端到端闭环；
 - Finding 能经历提出、接受或有证据拒绝、修复、同 Session 复审和关闭；
 - 至少五个后续 Turn 可恢复同一 External Role Session；
 - 生命周期、完整性、崩溃点、进程身份、Workspace Ownership 和观察接口测试通过；

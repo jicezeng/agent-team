@@ -9,8 +9,8 @@ tests.
 ## Installation and upgrades
 
 Agent-Team requires Python 3.11 or newer, `uv`, Git, and tmux when any role has
-an External binding. Install and authenticate Codex CLI and/or Claude Code CLI
-separately. Runs require macOS or Linux, a local filesystem with `flock`, atomic
+an External binding. Install and authenticate Codex CLI, Claude Code CLI,
+and/or OpenCode CLI separately. Runs require macOS or Linux, a local filesystem with `flock`, atomic
 same-directory rename and `fsync`, and exactly one normal Git worktree root.
 Sparse checkout and Gitlinks are not supported in v0.1.
 
@@ -24,10 +24,10 @@ Build the wheel from a source checkout:
 uv build --wheel
 ```
 
-Copy `dist/agent_team-0.1.3-py3-none-any.whl` to the target machine, then run:
+Copy `dist/agent_team-0.1.4-py3-none-any.whl` to the target machine, then run:
 
 ```bash
-uv tool install --force /path/to/agent_team-0.1.3-py3-none-any.whl
+uv tool install --force /path/to/agent_team-0.1.4-py3-none-any.whl
 agent-team install
 agent-team doctor --workspace /path/to/worktree --json
 ```
@@ -58,6 +58,7 @@ uv run agent-team doctor --workspace /path/to/worktree --json
 - Codex skill: `~/.codex/skills/agent-team`
 - Claude Code plugin: `installed/claude-code-plugin` under the fixed account
   state directory
+- OpenCode skill: `~/.config/opencode/skills/agent-team`
 
 The account state directory is `~/Library/Application Support/agent-team` on
 macOS and `~/.local/state/agent-team` on Linux. It is not configurable.
@@ -68,14 +69,15 @@ recover it first. Do not copy `.agent-team/` or the fixed account state to
 another machine to resume a Run: Harness Sessions, process identities, tmux
 workers, and workspace ownership are machine-local.
 
-## Start from Codex
+## Start from Codex or OpenCode
 
-The recommended entry point is the installed `$agent-team` skill:
+The recommended entry point is the installed Agent-Team Skill:
 
 ```bash
 cd /path/to/worktree
 agent-team doctor --workspace "$PWD" --json
 codex
+# or: opencode
 ```
 
 Give the skill a complete natural-language team request. For example:
@@ -98,7 +100,9 @@ Limits: at most 12 role turns and 7200 seconds.
 
 The skill preserves the request in `REQUEST.md`, generates `PROTOCOL.md`,
 checks the selected Harness profiles, starts the Run, and follows Origin
-handoffs. Keep the originating Codex Session open while the Run is active.
+handoffs. Keep the originating Codex or OpenCode Session open while the Run is
+active. In OpenCode, ask it to use the `agent-team` Skill; OpenCode discovers
+the installed Skill through its native `skill` tool.
 
 ## Manual CLI bootstrap
 
@@ -140,6 +144,7 @@ Role specifications are:
 ROLE=origin
 ROLE=codex:<resume|fresh>[:<profile>]
 ROLE=claude-code:<resume|fresh>[:<profile>]
+ROLE=opencode:<resume|fresh>[:<profile>]
 ```
 
 `resume` preserves the validated Harness Session across Turns; `fresh` creates
@@ -154,7 +159,10 @@ a Session for each Turn. External roles default to `interactive` launch and
 ```
 
 Omitted model and effort values inherit the relevant Harness default at
-`init`, then Agent-Team freezes the requested result in `team.json`.
+`init`, then Agent-Team freezes the requested result in `team.json`. OpenCode
+models must resolve to `provider/model`; its effort value is passed as the
+provider-specific model Variant. If the effective OpenCode default is absent
+or unqualified, supply `--role-model ROLE=provider/model` explicitly.
 `--role-fast` is Codex-only. Launch mode, Profile, model, effort, and fast mode
 cannot change after Kickoff.
 
@@ -174,11 +182,11 @@ UNSTARTED Run. Headless Claude roles do not require this TUI preflight.
 
 ## Permission profiles
 
-| Profile | Codex | Claude Code |
-| --- | --- | --- |
-| `default` | Workspace write, scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, internal scratch path, no fallback |
-| `trusted-workspace` | Same filesystem boundary with command network | `acceptEdits`, same OS workspace sandbox, no fallback |
-| `full-access` | `danger-full-access`, no approval prompts | `bypassPermissions`, Claude sandbox disabled |
+| Profile | Codex | Claude Code | OpenCode |
+| --- | --- | --- | --- |
+| `default` | Workspace write, scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, internal scratch path, no fallback | Worktree file/search/LSP/todo tools; arbitrary Bash, external paths, web, skills, tasks, and MCP tools denied |
+| `trusted-workspace` | Same filesystem boundary with command network | `acceptEdits`, same OS workspace sandbox, no fallback | Same worktree boundary; built-in web tools additionally allowed; arbitrary Bash still denied |
+| `full-access` | `danger-full-access`, no approval prompts | `bypassPermissions`, Claude sandbox disabled | All OpenCode tools and host Bash allowed; Agent-Team management command patterns remain denied |
 
 Omitting a Profile selects `full-access` (YOLO). It removes the Harness host
 filesystem boundary, opens command network access, and disables per-command
@@ -194,8 +202,20 @@ explicitly when host containment is required. Claude uses `acceptEdits` for
 both contained Profiles because its OS sandbox constrains Bash and children,
 while built-in Edit/Write tools still depend on the permission system.
 
+OpenCode has no OS sandbox around Bash. Its contained Profiles therefore allow
+only the exact absolute `handoff`, `complete`, and `block` command patterns;
+general shell commands—including test commands—are denied. Use an OpenCode
+`full-access` role when the task requires arbitrary commands, after the Run's
+YOLO confirmation. Agent-Team launches OpenCode with a private per-Run/Role
+`XDG_CONFIG_HOME`, inline permission/agent config,
+`OPENCODE_DISABLE_PROJECT_CONFIG=1`, and `--pure`. This excludes mutable user
+and project permission, MCP, agent, and external-plugin config while preserving
+the machine-local OpenCode credential and Session stores. Managed OpenCode
+configuration has higher priority and remains outside the Profile Hash.
+
 Agent-Team freezes the supplied mapping and `launch_profile_sha256`, excludes
-mutable user permission settings, and sets Codex `features.hooks=false`.
+mutable user permission settings, isolates OpenCode project config and external
+plugins, and sets Codex `features.hooks=false`.
 Managed administrator policy remains higher authority: it can reject a launch,
 force managed hooks, add paths or side effects, merge Claude sandbox arrays,
 or override scalars. `doctor` reports Agent-Team's mapping but cannot prove the
@@ -274,7 +294,8 @@ owner. `status`, `diagnose`, and `watch --jsonl` expose the same derived
 snapshot. `transcript` reconstructs selected Turn inputs, normalized events,
 formal outputs, and usage summaries. `tail` follows normalized events.
 
-`attach` opens a read-only tmux client. It shows the native TUI for an active
+`attach` opens a read-only tmux client. It shows the native Harness terminal
+(a Codex/Claude Code TUI or OpenCode direct-interactive output) for an active
 interactive role and Worker diagnostics for a headless role. Detach with
 `Ctrl-b d`. A separately opened writable tmux client may relay raw keyboard
 input, but that input is never a formal Agent-Team action.
@@ -347,8 +368,8 @@ still be alive. Run `diagnose --json` first.
 
 Each worktree contains `.agent-team/` with immutable inputs, Events, Runtime
 snapshots, traces, retained raw streams, and completion artifacts. A separate
-fixed account directory contains workspace ownership, operation locks, and
-private interactive Codex Homes.
+fixed account directory contains workspace ownership, operation locks, private
+interactive Codex Homes, and private OpenCode configuration Homes.
 
 Agent-Team does not modify `.gitignore` or `.git/info/exclude`. Never stage
 `.agent-team/`; `doctor` warns if a user-managed ignore rule does not cover it.
@@ -366,6 +387,6 @@ process from editing the same files. Avoid concurrent manual edits.
 
 ## Verification evidence
 
-Real Codex and mixed Claude Code/Codex validation reports are indexed in
+Real Codex, mixed Claude Code/Codex, and OpenCode validation reports are indexed in
 [`docs/validation`](validation/README.md). Reports are historical evidence;
 the technical design and current tests define the latest contract.

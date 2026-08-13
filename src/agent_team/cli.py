@@ -9,8 +9,9 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from . import __version__
 from .adapters import get_adapter
@@ -19,9 +20,12 @@ from .assets import (
     codex_skill_source,
     installed_claude_plugin,
     installed_codex_skill,
+    installed_opencode_skill,
+    opencode_skill_source,
 )
 from .bootstrap import initialize_run, parse_role_spec, start_run
 from .config import (
+    EXTERNAL_ADAPTER_IDS,
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
     generate_run_id,
@@ -77,7 +81,6 @@ from .util import (
     rfc3339,
 )
 from .worker import run_worker
-
 
 KNOWN_COMMANDS = {
     "install",
@@ -251,6 +254,70 @@ class _ArgumentParser(argparse.ArgumentParser):
         raise InvalidArgument(message)
 
 
+def _resume_help_supported(adapter_id: str, help_text: str) -> bool:
+    markers = {
+        "codex": "Resume a previous session",
+        "claude-code": "--resume",
+        "opencode": "--session",
+    }
+    marker = markers.get(adapter_id)
+    return marker is not None and marker in help_text
+
+
+def _permission_report(path: Path, *, recursive: bool) -> dict[str, Any]:
+    if not path_entry_exists(path):
+        return {"path": str(path), "exists": False, "private": None}
+    try:
+        root = path.resolve(strict=True)
+    except OSError:
+        root = path
+    candidates = [path]
+    if recursive and path.is_dir() and not path.is_symlink():
+        candidates.extend(path.rglob("*"))
+    unsafe: list[str] = []
+    invalid: list[str] = []
+    for candidate in candidates:
+        try:
+            info = candidate.lstat()
+        except OSError:
+            invalid.append(str(candidate))
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            if candidate == path:
+                invalid.append(str(candidate))
+                continue
+            try:
+                target = candidate.resolve(strict=True)
+                target_info = target.stat()
+            except OSError:
+                invalid.append(str(candidate))
+                continue
+            if (
+                not target.is_relative_to(root)
+                or not (
+                    stat.S_ISDIR(target_info.st_mode)
+                    or stat.S_ISREG(target_info.st_mode)
+                )
+            ):
+                invalid.append(str(candidate))
+            continue
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            invalid.append(str(candidate))
+            continue
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            unsafe.append(str(candidate))
+    return {
+        "path": str(path),
+        "exists": True,
+        "mode": oct(stat.S_IMODE(path.lstat().st_mode)),
+        "private": not unsafe and not invalid,
+        "unsafe_paths": unsafe[:20],
+        "unsafe_count": len(unsafe),
+        "invalid_paths": invalid[:20],
+        "invalid_count": len(invalid),
+    }
+
+
 def _doctor(workspace_value: str | None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -262,38 +329,6 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                 "details": details,
             }
         )
-
-    def permission_report(path: Path, *, recursive: bool) -> dict[str, Any]:
-        if not path_entry_exists(path):
-            return {"path": str(path), "exists": False, "private": None}
-        candidates = [path]
-        if recursive and path.is_dir() and not path.is_symlink():
-            candidates.extend(path.rglob("*"))
-        unsafe: list[str] = []
-        invalid: list[str] = []
-        for candidate in candidates:
-            try:
-                info = candidate.lstat()
-            except OSError:
-                invalid.append(str(candidate))
-                continue
-            if stat.S_ISLNK(info.st_mode) or not (
-                stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
-            ):
-                invalid.append(str(candidate))
-                continue
-            if stat.S_IMODE(info.st_mode) & 0o077:
-                unsafe.append(str(candidate))
-        return {
-            "path": str(path),
-            "exists": True,
-            "mode": oct(stat.S_IMODE(path.lstat().st_mode)),
-            "private": not unsafe and not invalid,
-            "unsafe_paths": unsafe[:20],
-            "unsafe_count": len(unsafe),
-            "invalid_paths": invalid[:20],
-            "invalid_count": len(invalid),
-        }
 
     def integration_report(source: Path, target: Path) -> tuple[bool, dict[str, Any]]:
         details: dict[str, Any] = {
@@ -339,13 +374,15 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         sys.version_info >= (3, 11),
         {"version": sys.version.split()[0], "executable": sys.executable},
     )
-    for command in ("git", "tmux", "codex", "claude"):
+    for command in ("git", "tmux", "codex", "claude", "opencode"):
         located = shutil.which(command)
         add(command, located is not None, {"executable": located})
-    for adapter_id in ("codex", "claude-code"):
+    for adapter_id in EXTERNAL_ADAPTER_IDS:
         try:
             report = get_adapter(adapter_id).probe()
-        except Exception as exc:
+        # Doctor is an observation boundary: one unexpected third-party
+        # Harness probe failure must be reported without hiding other checks.
+        except Exception as exc:  # noqa: BLE001
             add(f"adapter:{adapter_id}", False, {"error": str(exc)})
             add(
                 f"authentication:{adapter_id}",
@@ -386,11 +423,12 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                         },
                     )
             try:
-                command = (
-                    [report.executable, "exec", "resume", "--help"]
-                    if adapter_id == "codex"
-                    else [report.executable, "--help"]
-                )
+                if adapter_id == "codex":
+                    command = [report.executable, "exec", "resume", "--help"]
+                elif adapter_id == "opencode":
+                    command = [report.executable, "run", "--help"]
+                else:
+                    command = [report.executable, "--help"]
                 resume_help = subprocess.run(
                     command,
                     capture_output=True,
@@ -399,10 +437,9 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                     timeout=10,
                 )
                 help_text = resume_help.stdout + resume_help.stderr
-                resume_ok = resume_help.returncode == 0 and (
-                    "Resume a previous session" in help_text
-                    if adapter_id == "codex"
-                    else "--resume" in help_text
+                resume_ok = resume_help.returncode == 0 and _resume_help_supported(
+                    adapter_id,
+                    help_text,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 add(
@@ -418,7 +455,8 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                 )
     try:
         identity = current_identity()
-    except Exception as exc:
+    # Preserve Doctor output even on an unsupported platform/process backend.
+    except Exception as exc:  # noqa: BLE001
         add("process_start_id", False, {"error": str(exc)})
     else:
         add(
@@ -433,7 +471,7 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         state_dir = fixed_state_dir()
         add("fixed_state_dir", False, {"path": str(state_dir), "error": str(exc)})
     else:
-        state_permissions = permission_report(state_dir, recursive=True)
+        state_permissions = _permission_report(state_dir, recursive=True)
         add(
             "fixed_state_dir",
             bool(state_permissions["private"]),
@@ -463,6 +501,11 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         installed_claude_plugin(),
     )
     add("integration:claude_plugin", plugin_ok, plugin_details)
+    opencode_ok, opencode_details = integration_report(
+        opencode_skill_source(),
+        installed_opencode_skill(),
+    )
+    add("integration:opencode_skill", opencode_ok, opencode_details)
 
     workspace: Path | None = None
     try:
@@ -528,7 +571,7 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
             },
         )
         root_dir = workspace / ".agent-team"
-        root_permissions = permission_report(root_dir, recursive=True)
+        root_permissions = _permission_report(root_dir, recursive=True)
         add(
             "workspace_state_permissions",
             (
@@ -682,6 +725,9 @@ def _install_skill() -> dict[str, Any]:
     claude_source = claude_plugin_source()
     claude_target = installed_claude_plugin()
     install_tree(claude_source, claude_target)
+    opencode_source = opencode_skill_source()
+    opencode_target = installed_opencode_skill()
+    install_tree(opencode_source, opencode_target)
     return {
         "code": "INTEGRATIONS_INSTALLED",
         "codex": {
@@ -691,6 +737,10 @@ def _install_skill() -> dict[str, Any]:
         "claude_code": {
             "source": str(claude_source),
             "target": str(claude_target),
+        },
+        "opencode": {
+            "source": str(opencode_source),
+            "target": str(opencode_target),
         },
     }
 
@@ -920,6 +970,7 @@ def dispatch(args: argparse.Namespace) -> int:
                 reasoning_effort=role_efforts.get(candidate),
                 fast_mode=True if candidate in fast_roles else None,
                 launch_mode=role_launch_modes.get(candidate),
+                workspace=workspace,
             )
             if role_id in roles:
                 raise InvalidArgument(f"duplicate role: {role_id}")
@@ -1088,9 +1139,7 @@ def dispatch(args: argparse.Namespace) -> int:
                 turn_id=args.turn,
             )
             events = flattened_trace_events(transcript_data)
-            if first and not args.follow:
-                events = events[-args.lines :]
-            elif first:
+            if first:
                 events = events[-args.lines :]
             else:
                 events = [

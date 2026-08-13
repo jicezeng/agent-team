@@ -10,6 +10,7 @@ from .adapters import get_adapter
 from .adapters.base import HarnessLaunchOptions
 from .config import (
     DEFAULT_EXTERNAL_LAUNCH_PROFILE,
+    EXTERNAL_ADAPTER_IDS,
     Role,
     Team,
     load_team,
@@ -85,6 +86,7 @@ def parse_role_spec(
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
     launch_mode: str | None = None,
+    workspace: Path | None = None,
 ) -> tuple[str, Role]:
     if "=" not in spec:
         raise InvalidArgument(
@@ -114,17 +116,22 @@ def parse_role_spec(
         )
     adapter_id, session_policy = parts[:2]
     profile = parts[2] if len(parts) == 3 else DEFAULT_EXTERNAL_LAUNCH_PROFILE
-    if adapter_id not in {"codex", "claude-code"}:
+    if adapter_id not in EXTERNAL_ADAPTER_IDS:
         raise InvalidArgument(f"unsupported adapter: {adapter_id}")
     if session_policy not in {"resume", "fresh"}:
         raise InvalidArgument(f"invalid session policy: {session_policy}")
     adapter = get_adapter(adapter_id)
     effective_launch_mode = launch_mode or "interactive"
     adapter.assert_launch_mode(effective_launch_mode)
+    option_values: dict[str, object] = {
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "fast_mode": fast_mode,
+    }
+    if workspace is not None:
+        option_values["workspace"] = workspace
     options = adapter.resolve_launch_options(
-        model=model,
-        reasoning_effort=reasoning_effort,
-        fast_mode=fast_mode,
+        **option_values,
     )
     fingerprint = adapter.profile_fingerprint(
         profile,
@@ -205,7 +212,7 @@ def initialize_run(
         )
         temporary.mkdir(mode=0o700)
         try:
-            for directory in {
+            for directory in (
                 "roles",
                 "events",
                 "handoffs",
@@ -215,7 +222,7 @@ def initialize_run(
                 "artifacts",
                 "completion",
                 "logs",
-            }:
+            ):
                 (temporary / directory).mkdir(mode=0o700)
             atomic_write(temporary / "REQUEST.md", request, immutable=True)
             atomic_write(temporary / "PROTOCOL.md", protocol, immutable=True)
@@ -372,7 +379,7 @@ def start_run(
                     f"Initial role: `{team.initial_role}`.\n\n"
                     f"{full_access_confirmation}"
                     "Read REQUEST.md and PROTOCOL.md, then execute the initial role.\n"
-                ).encode("utf-8")
+                ).encode()
                 started_event = commit_event(
                     run_dir,
                     event_type="kickoff",

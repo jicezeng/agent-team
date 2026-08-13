@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Create and operate temporary, natural-language-defined coding-agent teams across Codex and Claude Code. Use when a user requests multiple agents or dynamic roles, cross-harness collaboration, explicit handoffs, iterative developer/reviewer or QA loops, resumable role sessions, or completion returned to the current Origin session.
+description: Create and operate temporary, natural-language-defined coding-agent teams across Codex, Claude Code, and OpenCode. Use when a user requests multiple agents or dynamic roles, cross-harness collaboration, explicit handoffs, iterative developer/reviewer or QA loops, resumable role sessions, or completion returned to the current Origin session.
 ---
 
 # Agent Team
@@ -61,6 +61,9 @@ existing Run:
    `trusted-workspace` may expand only
    capabilities its Adapter can expose without losing the Workspace boundary;
    Claude Code keeps `acceptEdits` and the same OS sandbox for this Profile.
+   OpenCode has no OS Bash sandbox, so its restricted Profiles keep arbitrary
+   Bash denied, allow only worktree file tools plus exact formal Agent-Team
+   commands, and let `trusted-workspace` add only built-in web tools.
    `full-access` removes the host sandbox and is appropriate only on a
    controlled machine or VM. Never infer elevated access from a role name, a
    request to run tests, or a natural-language `read-only` restriction, and
@@ -78,6 +81,9 @@ existing Run:
    choices the user explicitly made. Do not infer these choices from role names
    or task complexity. Omit each unspecified option so `init` snapshots that
    Harness user's default for the field. `--role-fast` is Codex-only.
+   OpenCode Model IDs must resolve to `provider/model`; its reasoning-effort
+   value is a provider-specific Variant. Supply an explicit OpenCode Model when
+   Doctor reports an absent or unqualified user default.
    Launch mode is separate: new External roles default to native
    `interactive` PTY execution in their tmux Pane. Add
    `--role-launch-mode <role>=headless` only when the user explicitly requests

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Team"
+  short_description: "Orchestrate temporary multi-agent coding teams"
+  default_prompt: "Use the agent-team skill to run this task through a temporary multi-agent team."

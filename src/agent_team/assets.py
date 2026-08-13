@@ -34,12 +34,20 @@ def claude_plugin_source() -> Path:
     return bundled_asset("plugins/claude-code/agent-team")
 
 
+def opencode_skill_source() -> Path:
+    return bundled_asset("skills/opencode/agent-team")
+
+
 def installed_claude_plugin() -> Path:
     return fixed_state_dir() / "installed" / "claude-code-plugin"
 
 
 def installed_codex_skill() -> Path:
     return account_home() / ".codex" / "skills" / "agent-team"
+
+
+def installed_opencode_skill() -> Path:
+    return account_home() / ".config" / "opencode" / "skills" / "agent-team"
 
 
 def effective_claude_plugin() -> Path:

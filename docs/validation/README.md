@@ -31,6 +31,13 @@ records native-TUI Codex and mixed Interactive Claude Code/Codex loops,
 including PTY capture, formal-action termination, process cleanup, trace
 anchoring, and same-role Session continuity.
 
+[`opencode-interactive-v0.1.4-validation-report.md`](opencode-interactive-v0.1.4-validation-report.md)
+records the real four-Turn OpenCode Developer/Reviewer loop, including
+independent Sessions, same-role Resume, a Reviewer finding cycle, exact output,
+Full Audit evidence, process cleanup, and package/Skill installation. Its
+retained [request](opencode-interactive-v0.1.4-request.md) and
+[protocol](opencode-interactive-v0.1.4-protocol.md) define the acceptance task.
+
 ## Reading the evidence
 
 - Start with the report matching the behavior under review.

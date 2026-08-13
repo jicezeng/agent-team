@@ -1199,8 +1199,11 @@ def _launch_turn(
                 if path_entry_exists(process_dir)
                 else set()
             )
+            expected_entries = {"launch.json"}
+            if launch.launch_mode == "interactive":
+                expected_entries.add("prompt.md")
             if (
-                entries != {"launch.json"}
+                entries != expected_entries
                 or current["phase"] != "starting"
                 or current["supervisor_pid"] is not None
                 or current["runner_pid"] is not None

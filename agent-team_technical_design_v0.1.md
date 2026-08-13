@@ -2,9 +2,9 @@
 
 > **版本**：v0.1<br>
 > **日期**：2026-07-25<br>
-> **最近修订**：2026-08-13<br>
+> **最近修订**：2026-08-14<br>
 > **状态**：Stage 1 v0.1 已实现规范<br>
-> **目标读者**：产品负责人、架构师、Codex/Claude Code 开发者、开源贡献者
+> **目标读者**：产品负责人、架构师、Codex/Claude Code/OpenCode 开发者、开源贡献者
 
 ---
 
@@ -46,7 +46,7 @@ Stage 1 的核心取舍是：
 - 使用 tmux 承载各角色 Worker，并通过 Harness 原生 Session Resume 保持每个 Agent 的会话连续性；
 - Agent 主动调用 `agent-team handoff` / `complete` 或对应的 Origin 命令完成正式交接，系统不从终端输出中猜测下一步。
 
-Stage 1 已通过 Codex/Codex 与 Claude Code/Codex 的真实循环验证两个关键产品假设：
+Stage 1 已通过 Codex/Codex、Claude Code/Codex 与 OpenCode External Role 的真实循环验证关键产品假设：
 
 1. Agent 能否根据本次动态协议，在正确时机主动 Handoff；
 2. 不同 Harness 的多个 Agent 能否在保持各自会话的情况下，形成连续、有价值的协作。
@@ -81,7 +81,7 @@ Agent-Team 希望建立一种新的使用方式：
 
 ### 3.2 它是什么
 
-- 一个 Codex Bootstrap Skill，以及供 Claude Code External Turn 使用的 Plugin Skill；
+- Codex 与 OpenCode Bootstrap Skill，以及供 Claude Code External Turn 使用的 Plugin Skill；
 - 一个很轻的本地 CLI；
 - 一个基于 tmux 的角色进程和会话承载层；
 - 一套 Agent 主动 Handoff 协议；
@@ -109,7 +109,7 @@ Agent-Team 希望建立一种新的使用方式：
 | 语义结构化 | 强 | 暂不结构化 |
 | 运行时结构化 | 强 | 仅保留最低限度 |
 | 会话连续性 | 常重新创建节点 | 每个角色可恢复原 Harness Session |
-| 用户入口 | 独立 UI/工作流编辑器 | 当前 Codex/Claude Code 会话 |
+| 用户入口 | 独立 UI/工作流编辑器 | 当前 Codex/Claude Code/OpenCode 会话 |
 | 最终交付 | 编排器 UI | 原始用户会话 |
 
 ---
@@ -182,13 +182,14 @@ agent-team complete --file <completion.md>
 
 绑定 `origin` 的动态 Role 使用显式携带 Run / Turn / Role / Claim 的 `origin-handoff`、`origin-complete`、`origin-block`；语义相同，但 `origin-handoff` 还负责在提交后立即保持等待。
 
-### 5.5 tmux 承载 Worker，Supervisor 承载原生 Harness TUI
+### 5.5 tmux 承载 Worker，Supervisor 承载原生 Harness 交互终端
 
 对每个 External Binding，tmux Window 运行一个长期存活的
 `agent-team _worker`。每个业务 Turn 再由一个短生命周期的
 `agent-team _turn-supervisor` 承载 Harness；新 Run 默认由 Supervisor 创建 PTY，
-让 Runner 在同一受管进程组内原地 `exec` 原生 Codex / Claude Code TUI，并把终端
-字节镜像回该 Worker Pane。纯 Origin Run 不创建 tmux Runtime。
+让 Runner 在同一受管进程组内原地 `exec` 原生 Codex / Claude Code TUI 或 OpenCode
+Direct-interactive CLI，并把终端字节镜像回该 Worker Pane。纯 Origin Run 不创建
+tmux Runtime。
 
 这样可以同时获得：
 
@@ -283,7 +284,8 @@ Role 不是模型，也不是 Harness。
 
 - `codex`
 - `claude-code`
-- 后续支持 `pi`、`opencode` 等。
+- `opencode`
+- 后续可支持 `pi` 等。
 
 External Binding 通过 Harness Adapter 管理 CLI 子进程；当前入口 Harness 由 Origin Executor 使用，不进入外部 Adapter 生命周期。
 
@@ -865,13 +867,16 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
   `interactive`；Schema 1–3 的既有配置规范化为 `headless`，升级不得改变历史 Run
   的启动方式。
 
-`harness_options.model` 与 `reasoning_effort` 对 Codex、Claude Code 都可为字符串或
-`null`；`fast_mode` 的 Schema 对 Codex 接受布尔值或 `null`，Claude Code 必须为
-`null`。显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
+`harness_options.model` 与 `reasoning_effort` 对 Codex、Claude Code 可为字符串或
+`null`；OpenCode Model 必须是非空 `provider/model`，Reasoning Effort 可为
+Provider-specific Variant 字符串或 `null`。`fast_mode` 的 Schema 对 Codex 接受布尔值
+或 `null`，Claude Code 与 OpenCode 必须为 `null`。显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
 Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用的值。Codex 只读取 `model`、
 `model_reasoning_effort`、`service_tier` 和 `features.fast_mode`；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
-`model` / `effortLevel`。Model 或 Reasoning Effort 没有用户值时保持 `null`，由
+`model` / `effortLevel`。OpenCode 在目标 Workspace 通过 `debug config --pure` 只解析
+有效 Model；缺失或不是完整 `provider/model` 时要求显式 `--role-model`，不以隔离环境
+重新猜测 Last-used Model。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
 Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
 冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
 CLI 新建 Schema 4 Codex Role 时则把 Fast
@@ -900,11 +905,11 @@ Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_s
 `redaction=none, raw_retention=keep` 读取；Schema 1/2 External Role 的
 Harness Options 继续按未冻结的历史语义读取，不就地改写 `team.json`。
 
-外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex 与 Claude Code 当前都提供 `default | trusted-workspace | full-access`：
+外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex、Claude Code 与 OpenCode 当前都提供 `default | trusted-workspace | full-access`：
 
-- `default` 保持 Workspace 受限沙箱；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止未声明的 Unsandboxed Fallback；
-- `trusted-workspace` 保留相同文件系统边界；Codex 跳过 Harness 交互审批并开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱；
-- `full-access` 跳过审批并关闭 Harness 宿主沙箱；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions`、`sandbox.enabled=false` 与 `skipDangerousModePermissionPrompt=true`。最后一项复用 Agent-Team 已在 Kickoff 前取得的本 Run 确认，避免 Claude 再弹出危险模式确认。
+- `default` 保持 Workspace 受限边界；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止未声明的 Unsandboxed Fallback，OpenCode 开放内置 Worktree File/Search/LSP/Todo 工具但 Deny Arbitrary Bash、External Directory、Web、Task、Skill、Question 与未显式工具；
+- `trusted-workspace` 保留相同文件系统边界；Codex 开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱，OpenCode 只额外开放内置 WebFetch/WebSearch，仍不开放 Arbitrary Bash；
+- `full-access` 跳过审批并关闭 Harness 宿主边界；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions`、`sandbox.enabled=false` 与 `skipDangerousModePermissionPrompt=true`，OpenCode 使用 `permission.*=allow` 与 Host Bash。Claude 的最后一项设置复用 Agent-Team 已在 Kickoff 前取得的本 Run 确认，避免危险模式二次确认。
 
 新 External Role 的 Role Spec 省略 Profile 时，Bootstrap 默认选择 `full-access`；这里的
 “默认”是 Agent-Team 的选择规则，不改变名为 `default` 的受限 Profile 的 Adapter
@@ -919,6 +924,8 @@ Kickoff 前失败，调用方可在不重新询问用户的情况下，基于同
 
 Claude 的 OS 沙箱只约束 Bash 及其子进程，内置 Edit/Write 仍由 Permission Mode 控制。因此任何声称保留工作区边界的 Claude Profile 都不得使用裸 `bypassPermissions`；当前 `default` 与 `trusted-workspace` 都使用 `acceptEdits`，只有明确的 `full-access` 可以绕过内置文件工具的路径审批。
 
+OpenCode 1.x 不提供围绕 Bash 的 OS Sandbox；`external_directory` 约束内置文件工具，不能把任意 Shell Command 的参数可靠限制在 Workspace。因此 OpenCode 的两个受限 Profile 必须把 Bash Catch-all 设为 `deny`，只按当前稳定绝对 CLI 路径放行 `agent-team handoff|complete|block`。需要运行测试、构建或其他任意命令的 OpenCode Role 必须选择经过本 Run 一次确认的 `full-access`，不能把 `trusted-workspace` 描述成“命令可用但仍受限于 Workspace”。
+
 这里的 Workspace 边界允许受控的运行时例外，但不允许任意宿主写入：Codex 保留
 `/tmp` 与 `$TMPDIR` Scratch Root；Claude 只额外允许
 `<CLAUDE_CODE_TMPDIR>/claude-<uid>` 作为 Bash 内部临时目录。Claude 两个 Workspace
@@ -927,7 +934,8 @@ Profile 的 `agent-team handoff|complete|block` 三类精确命令是显式 Sand
 Source Path 和不可变 Outbox。Codex 的 Formal Action 以只读方式打开用户状态目录中的
 既有 Workspace 操作锁；Profile 同时把 `sandbox_workspace_write.writable_roots` 显式
 冻结为空数组，防止 Project Config 增加额外路径，因此不把共享 `workspace-locks/` 或
-`workspaces/` 目录加入 Harness 通用可写根。以上例外都不等价于 `full-access`。
+`workspaces/` 目录加入 Harness 通用可写根。OpenCode Formal Action 同样通过 Bash
+精确 Pattern 例外，但其余 Bash 保持 Deny。以上例外都不等价于 `full-access`。
 
 每个 Profile 必须显式设置 Agent-Team 能控制的所有权限相关参数，不能把可变的用户
 默认配置当作 Profile 的一部分。Claude 排除 User/Project/Local Setting Sources；
@@ -940,11 +948,15 @@ Admin-enforced Requirements 可以约束允许的 Sandbox、Approval、Permissio
 强制重新启用具有宿主副作用的 Managed Hook 或配置 Log Path。Claude 的
 Enterprise Managed Settings 优先级高于命令行且不能由
 `--setting-sources ""` 排除；数组型权限设置还会合并。因此上述 Claude Workspace
-边界只描述 Agent-Team 提供的 Mapping。两个 Harness 的 Workspace Profile 都以管理员
-策略没有增加宿主可写路径、Sandbox Exclusion 或宿主执行 Hook 为前提。两类管理员策略
+边界只描述 Agent-Team 提供的 Mapping。OpenCode 通过每个 Run/Role 私有
+`XDG_CONFIG_HOME`、`OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure` 和
+`OPENCODE_CONFIG_CONTENT` 排除可变 User/Project Permission、MCP、Agent 和 External
+Plugin；认证与 Session Data 仍来自本机 Data Store，Managed Config 的优先级仍高于
+Inline Config。三个 Harness 的 Workspace Profile 都以管理员策略没有增加宿主可写路径、
+Sandbox Exclusion、宿主执行 Hook 或更高优先级工具权限为前提。这些管理员策略
 都不进入 `launch_profile_sha256`，`doctor` 也不能证明
 其云端或最终有效内容；需要把这条边界作为安全保证时，操作者必须核验相应管理员配置，
-并在 Claude `/status`、`/permissions` 核验有效来源，或使用专用的非托管主机 / VM。
+并在 Claude `/status`、`/permissions` 或 OpenCode 有效配置中核验来源，或使用专用的非托管主机 / VM。
 
 Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交 `full-access`，并在
 每个新 Run 启动前完成上述一次性确认；不能把旧 Run 的确认静默复用于另一个 Run。
@@ -954,7 +966,7 @@ Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交
 `full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言
 职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
-`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。它只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements 或 Claude Enterprise Managed Settings。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
+`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。OpenCode Adapter 还把规范化 Inline Config 与隔离环境合同加入第二层长度前缀摘要，因为其权限边界不只存在于 argv。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
 Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `workspace` 为工作目录。需要修改多个根目录时必须拆成多个 Run 或等待后续版本，不能只锁其中一个目录。
 
@@ -1242,14 +1254,14 @@ Runner 退出且管道到达 EOF 后拒绝重复 Key、未知字段、未知错�
 
 Supervisor 留在 Runner 进程组之外。Headless Mode 持久化 Harness 原始
 stdout/stderr；Interactive Mode 持久化 PTY Terminal Chunk，并把相同原始字节写回
-自身 stdout，使 tmux Pane 实时显示原生 TUI。可用的 Worker stdin 是 TTY 时，
+自身 stdout，使 tmux Pane 实时显示原生 Harness 交互终端。可用的 Worker stdin 是 TTY 时，
 Supervisor 保存其 Termios 与文件状态标志，临时切换到 Raw / Non-blocking Mode，
 逐字节转发到 Harness PTY，并在退出或取消时恢复原状态；因此 Enter、方向键和
 Ctrl 组合不会被行缓冲、Echo 或 CR→LF 改写。Supervisor 同时监听 Journal、
 Deadline、可用的结构化 Permission Evidence、正式 Outbox，以及 Kickoff Hash、
 当前 Event / `input.md` / `process/prompt.md` Hash、Runner / 启动许可、State Root 和
-Workspace Owner 的固定完整性守卫。Interactive TUI 在模型一轮结束后通常继续等待
-输入；当唯一 Session Ref 与正式 Outbox 都已验证时，Supervisor 设置 Completion
+Workspace Owner 的固定完整性守卫。Interactive Harness 可能在模型一轮结束后继续等待
+输入，也可能像 OpenCode Direct-interactive Mode 一样正常退出；当唯一 Session Ref 与正式 Outbox 都已验证时，Supervisor 设置 Completion
 Evidence 并进入停止流程。完整性失败时只终止已验证的 Runner 进程组并记录技术
 结果，不追加 Event。主 Harness 退出或停止条件成立后，Supervisor 对 Runner PGID
 发送温和终止，超时后发送强制终止。因为 Supervisor 不属于该 PGID，`killpg` 不会
@@ -1466,15 +1478,15 @@ agent-team-at-20260725-7f3a
     └── agent-team _worker --role architect
 ```
 
-Origin 绑定角色默认不创建 Window，因为其会话已经由用户当前 Codex/Claude Code 承载。
+Origin 绑定角色默认不创建 Window，因为其会话已经由用户当前 Codex/Claude Code/OpenCode 承载。
 
 `agent-team watch` 按需从用户当前终端运行，不占用常驻 Window。Workspace Ownership 也不依赖 tmux 进程，其持久化规则见 22.4。
 
 ## 15.2 Worker Pane 与受管交互式 Harness
 
 Pane 中的长期主进程仍是 Worker，而不是一份脱离生命周期管理、永久存活的 Harness
-TUI。每个 Interactive Turn 的原生 TUI 由短生命周期 Supervisor 的 PTY 承载并镜像
-到同一 Pane。这样保留可视化，同时规避以下风险：
+Terminal。每个 Interactive Turn 的原生 Harness 终端由短生命周期 Supervisor 的 PTY
+承载并镜像到同一 Pane。这样保留可视化，同时规避以下风险：
 
 - TUI 可能处于输入框、工具执行、权限提示、选择器等不同状态；
 - `send-keys` 无法理解这些语义；
@@ -1493,7 +1505,7 @@ tmux Pane
       ├── Supervisor 在组外启动独立进程组的 harness-runner
       ├── Runner 自写身份、等待许可并原地 exec Harness
       ├── Headless: Supervisor 通过 PIPE 持久化 Harness 原始日志
-      ├── Interactive: Supervisor 通过 PTY 镜像原生 TUI 并持久化 Terminal Chunk
+      ├── Interactive: Supervisor 通过 PTY 镜像原生 Harness 终端并持久化 Terminal Chunk
       ├── Worker 与 Supervisor 同时监听 Journal 和 Deadline
       ├── Supervisor 从组外清空 Runner 进程组
       ├── Worker 分类 Normal / Cancel / Deadline / Crash 并收口 Turn
@@ -1503,7 +1515,7 @@ tmux Pane
 Interactive Supervisor 可以继承 Worker 的 tmux stdin 并转发真实终端输入到 Slave
 PTY；转发期间必须使用 Raw Mode 并在结束时恢复原 Termios 和文件状态标志。公开
 `agent-team attach` 固定使用 tmux Read-only Client；操作者只有显式使用可写 tmux
-Client 时才可手工控制原生 TUI。自动控制不得使用 `send-keys`、不得生成模拟键盘
+Client 时才可手工控制原生 Harness 终端。自动控制不得使用 `send-keys`、不得生成模拟键盘
 输入，也不得把 Pane 输入作为正式动作。Headless
 Supervisor / Runner 不继承该 stdin，继续使用 PIPE / DEVNULL 边界。
 
@@ -2008,11 +2020,11 @@ v0.1 实现：
 
 - `claude-code`
 - `codex`
+- `opencode`
 
 扩展接口预留：
 
 - `pi`
-- `opencode`
 - 任意 CLI Harness
 
 ## 17.3 Claude Code Adapter
@@ -2141,7 +2153,74 @@ argv。Probe 只声明并冻结这份映射，不动态执行它；实际参数�
 Session 快照同时记录 `effective_launch_profile` 与 Hash，恢复时不得仅凭 Profile 名称
 假定旧 Session 的实际权限映射。
 
-## 17.5 Origin Executor
+## 17.5 OpenCode Adapter
+
+新 Run 默认使用原生 `opencode run --interactive --dir <workspace>` Direct-interactive
+Terminal；显式 Headless Role 使用 `opencode run --format json`。选择前者是因为受支持的
+OpenCode 1.18.x 全屏 `opencode <workspace> --session <ref> --prompt <text>` 会恢复历史
+Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --interactive --session`
+会把新 Prompt 提交到同一个 Session，并保留受管 PTY 终端输出：
+
+- Headless Prompt 从 stdin 传入，不出现在进程 argv；Start 从每条 JSON Event 的
+  `sessionID` 取得 Session Ref，Resume 使用 `--session <ref>`；Interactive Start 与
+  Resume 都把短的不可变 `prompt.md` 指针作为 `run` Message，Resume 同时使用同一个
+  `--session`；
+- Headless 的 `step_start`、`text`、`tool_use`、`step_finish` 与 `error` 被解析成
+  Execution/Completion/Permission/Session Evidence 和 Normalized Trace；
+  `step_finish.reason=tool-calls` 只是中间 Tool Round，只有终止 Reason 才产生
+  `adapter_completed=true`；未知事件保留为 Harness Event；
+- `tool_use` 的 completed/error State 同时归一化为 Tool Call 与 Tool Result；仅
+  Harness 明确标记为 `reasoning_summary` 的内容进入 Reasoning Summary，普通
+  `reasoning` 正文只记录 Redacted Diagnostic；
+- Interactive Fresh Session Ref 由 `opencode session list --format json` 发现，并按
+  规范化 Workspace 的 `directory` 精确过滤；Resume 的预期 Ref 由 LaunchSpec 固定。
+  `Error: Session not found` 只有在 stderr 精确结构出现且执行尚未开始时才进入
+  Session-unavailable 降级合同；
+- 每个 Run/Role 在固定账号状态目录下拥有私有 `XDG_CONFIG_HOME` 和 Ownership Marker。
+  Adapter 不复制用户配置或凭据，使用 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure`、
+  `OPENCODE_DISABLE_AUTOUPDATE=1` 与规范化 `OPENCODE_CONFIG_CONTENT` 创建唯一 Primary
+  Agent；这隔离 User/Project Config、Instruction、Agent、MCP 与 External Plugin，
+  OpenCode 的账号 Data/Auth 和 Session Store 仍保持机器本地可用；
+- Profile 的根 Permission 与该 Primary Agent Permission 都显式冻结，避免内建 Agent
+  Default 重新放宽规则。受限 Profile 只允许 Worktree 内 Read/Edit/Glob/Grep/List/LSP/
+  Todo 和精确 Formal Action Bash Pattern；`trusted-workspace` 额外允许 WebFetch/
+  WebSearch；`full-access` 允许 Host Tools/Bash，但显式 Deny Agent-Team 管理命令 Pattern；
+- OpenCode `--auto` 只自动批准未显式 Deny 的 Ask，不覆盖 Deny；三种 Profile 都使用
+  `--pure` 关闭 External Plugin。Managed OpenCode Config 的优先级高于 Inline Config，
+  仍属于本规范不能摘要或覆盖的管理员边界；
+- Model 必须在 `init` 冻结为 `provider/model`。显式值优先；省略时 Adapter 在目标
+  Workspace 执行只读 `opencode debug config --pure`，只抽取 Model，不复制其他配置。
+  缺失或不完整 ID Fail Closed。Reasoning Effort 作为 Provider-specific Variant 冻结：
+  两种 Mode 都使用 `--variant`，Interactive 还把同一值写入隔离 Primary Agent；
+  Fast Mode 不支持；
+- `opencode providers list --pure` 没有稳定的机器可读认证 Schema；Adapter 只在命令
+  成功且输出包含 Credential/Environment 计数时报告 True/False，否则报告 Unknown，
+  真实请求仍以 Harness 结果 Fail Closed；
+- OpenCode 会在私有 Config Home 安装自己的 Plugin SDK 依赖并生成内部 Symlink。
+  只有 Runner Group 已证明 Quiescent 后，Adapter 才递归收紧 File/Directory 权限；
+  只允许解析后仍位于该 Home 内的 Symlink，任何逃逸或 Special Entry 都进入
+  Integrity Failure。
+
+概念命令：
+
+```bash
+OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+OPENCODE_CONFIG_CONTENT='<frozen-config>' \
+opencode run --pure --auto --agent agent-team-runtime \
+  --format json --dir <workspace> --model <provider/model> [--variant <variant>]
+
+opencode run --interactive --pure --auto --agent agent-team-runtime \
+  --dir <workspace> --model <provider/model> [--variant <variant>] \
+  [--session <ref>] '<immutable-prompt-pointer>'
+```
+
+后续增加：
+
+```bash
+--session <session-id>
+```
+
+## 17.6 Origin Executor
 
 Origin Executor 不是 Harness Adapter，不执行 Capability Probe，不创建 Worker Runtime，也没有 Launch Profile。
 
@@ -2865,7 +2944,7 @@ agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-sto
 ```
 
 `<role-spec>` 固定为 `<role-id>=origin` 或
-`<role-id>=<codex|claude-code>:<resume|fresh>[:<profile>]`；Profile 必须来自 13.1 的
+`<role-id>=<codex|claude-code|opencode>:<resume|fresh>[:<profile>]`；Profile 必须来自 13.1 的
 Adapter 闭集，省略时选择 `full-access`。`--role` 以及四类 role-scoped 选项都可重复。
 `init` 的默认值是当前目录、
 `origin_harness=codex`、`max_turns=20`、`max_wall_time_seconds=7200`、
@@ -2962,7 +3041,11 @@ agent-team/
 │   └── validation/
 ├── src/agent_team/
 ├── skills/
-│   └── codex/agent-team/
+│   ├── codex/agent-team/
+│   │   ├── SKILL.md
+│   │   ├── agents/openai.yaml
+│   │   └── references/
+│   └── opencode/agent-team/
 │       ├── SKILL.md
 │       ├── agents/openai.yaml
 │       └── references/
@@ -2996,6 +3079,16 @@ Turn Prompt 同时显式要求读取 Plugin 内的 `references/coordination.md`�
 
 - Plugin 提供稳定规则；
 - Turn Prompt 提供本次 Run 路径、角色和当前 Input Event；Resume Payload 不得被旧 Handoff 遮蔽。
+
+### 24.3 OpenCode
+
+`agent-team install` 把完整 Skill Tree 安装到
+`~/.config/opencode/skills/agent-team`。这既支持 OpenCode 作为 Origin 通过原生
+`skill` Tool 加载 Bootstrap/Origin Loop，也为用户直接查看协议规则提供稳定位置。
+External OpenCode Turn 的完整 Turn Prompt 自含权威路径和 Formal Action，因此运行时
+不会依赖 Skill Tool；受限 Profile 反而明确 Deny Skill，避免可变的同名 User/Project
+Skill 覆盖当前 Turn 合同。Codex、Claude 与 OpenCode 的 Coordination/Protocol
+Reference 必须保持逐字节一致。
 
 ---
 
@@ -3796,10 +3889,11 @@ sequenceDiagram
 1. 在 Origin Turn 持续存活时，用户只输入一次自然语言团队请求即可自动闭环；
 2. 系统生成可读的 `REQUEST.md` 和 `PROTOCOL.md`；
 3. 支持至少两个动态角色；
-4. 支持 Origin Binding，以及 `claude-code`、`codex` 两类 External Binding；
+4. 支持 Origin Binding，以及 `claude-code`、`codex`、`opencode` 三类 External Binding；
 5. 存在 External Binding 时自动创建 tmux Session；纯 Origin Run 不依赖 tmux；
    新建 External Role 默认使用 Interactive Mode；Runner 的 stdin/stdout/stderr
-   都是受管 TTY，原生 Codex / Claude Code TUI 可通过只读 Attach 实时查看；显式
+   都是受管 TTY，原生 Codex / Claude Code TUI 与 OpenCode Direct-interactive Terminal
+   可通过只读 Attach 实时查看；显式
    可写 tmux Client 的按键经 Raw Relay 原样到达 TUI 并在结束后恢复 TTY；Claude
    Interactive Role 在 Kickoff 前要求用户已确认 Workspace Trust；显式 Headless
    Role 保留旧 JSON/Stream 路径，Schema 1–3 Run 不被升级为 Interactive；
@@ -3828,11 +3922,12 @@ sequenceDiagram
     Evidence；
 26. Trace Policy 支持 Standard/None Redaction、每 Turn Byte Limit 及
     Redacted/Keep/Delete Raw Retention，并明确隐私边界。
-27. Codex 与 Claude Code 都提供 `default`、`trusted-workspace`、`full-access`，每个
+27. Codex、Claude Code 与 OpenCode 都提供 `default`、`trusted-workspace`、`full-access`，每个
     Profile 的 Start/Resume 权限等价且拥有不同 Hash；
 28. Bootstrap 调用方在用户未明确选择受限 Profile 时使用 `full-access`；每个新 Run
     首次 Kickoff 前只确认一次，Kickoff 后不重复确认且改变 Profile 必须新建 Run；
-    Claude 映射复用该确认跳过危险模式二次提示。
+    Claude 映射复用该确认跳过危险模式二次提示；OpenCode 受限 Profile 不允许把
+    Arbitrary Bash 误报成 Workspace-contained。
 
 ### 30.2 可靠性验收
 
@@ -4640,6 +4735,9 @@ Origin Codex 不只转发 Completion 文件，而应输出：
 - Claude Code Adapter 默认使用原生 TUI，显式 Headless Role 使用 Stream JSON；
   Interactive 启动前要求用户已在 Claude 中确认 Workspace Trust，两者都保持显式
   Session Start/Resume、Plugin 与 Sandbox/Permission Profile；
+- OpenCode Adapter 默认使用 `run --interactive`，显式 Headless Role 使用 JSON Event
+  Stream；两者都使用同一私有 Config Home、显式 Session Start/Resume 与冻结 Permission
+  Profile；
 - tmux 承载可 Detach Worker，并在 Interactive Turn 显示 Supervisor PTY 镜像；
   可写 Client 输入通过可恢复的 Raw Relay 到达 Harness；`wait-for` 通知、只读
   `capture-pane` 与 Attach 都不是工作流协议；

@@ -13,6 +13,7 @@ from agent_team.adapters.base import (
 )
 from agent_team.adapters.claude_code import ClaudeCodeAdapter
 from agent_team.adapters.codex import CodexAdapter
+from agent_team.adapters.opencode import OpenCodeAdapter
 from agent_team.bootstrap import parse_role_spec
 from agent_team.errors import AgentTeamError, InvalidArgument
 
@@ -38,7 +39,10 @@ def test_launch_spec_reads_legacy_headless_schema() -> None:
     assert parsed.to_json() == legacy
 
 
-@pytest.mark.parametrize("adapter", [CodexAdapter(), ClaudeCodeAdapter()])
+@pytest.mark.parametrize(
+    "adapter",
+    [CodexAdapter(), ClaudeCodeAdapter(), OpenCodeAdapter()],
+)
 def test_interactive_terminal_json_is_only_diagnostic(
     adapter: HarnessAdapter,
 ) -> None:
@@ -231,6 +235,8 @@ def test_claude_exposes_explicit_elevated_profiles(
         ("codex", "full-access"),
         ("claude-code", "trusted-workspace"),
         ("claude-code", "full-access"),
+        ("opencode", "trusted-workspace"),
+        ("opencode", "full-access"),
     ],
 )
 def test_role_spec_accepts_explicit_elevated_profiles(
@@ -325,7 +331,7 @@ def test_role_spec_freezes_explicit_harness_options(
     assert role.fast_mode is True
 
 
-@pytest.mark.parametrize("adapter_id", ["codex", "claude-code"])
+@pytest.mark.parametrize("adapter_id", ["codex", "claude-code", "opencode"])
 def test_role_spec_defaults_external_roles_to_full_access(
     monkeypatch: pytest.MonkeyPatch,
     adapter_id: str,

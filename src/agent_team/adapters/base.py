@@ -369,8 +369,14 @@ class HarnessAdapter(abc.ABC):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
-        """Resolve explicit values over isolated user defaults for a new Run."""
+        """Resolve explicit values over isolated user defaults for a new Run.
+
+        ``workspace`` lets Harnesses with project-scoped configuration resolve
+        the default that applies to the exact Run worktree. Adapters whose
+        defaults are account-scoped may ignore it.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod

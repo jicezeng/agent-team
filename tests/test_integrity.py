@@ -356,6 +356,64 @@ def test_team_rejects_fast_mode_for_claude_code(workspace: Path) -> None:
         parse_team(value)
 
 
+def test_team_accepts_frozen_opencode_model_and_variant(workspace: Path) -> None:
+    team = make_team(
+        run_id="at-test-opencode-options",
+        workspace=workspace,
+        origin_harness="opencode",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "opencode",
+                "resume",
+                "default",
+                "0" * 64,
+                "deepseek/deepseek-v4-pro",
+                "provider-deep",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    assert team.roles["developer"].adapter == "opencode"
+    assert team.roles["developer"].model == "deepseek/deepseek-v4-pro"
+    assert team.roles["developer"].reasoning_effort == "provider-deep"
+
+
+@pytest.mark.parametrize("model", [None, "unqualified", "/model", "provider/"])
+def test_team_rejects_unqualified_opencode_model(
+    workspace: Path,
+    model: str | None,
+) -> None:
+    value = make_team(
+        run_id="at-test-opencode-model",
+        workspace=workspace,
+        origin_harness="opencode",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["roles"]["developer"]["adapter"] = "opencode"
+    value["roles"]["developer"]["harness_options"]["model"] = model
+    value["roles"]["developer"]["harness_options"]["fast_mode"] = None
+
+    with pytest.raises(IntegrityError, match="provider/model"):
+        parse_team(value)
+
+
 @pytest.mark.parametrize(
     ("max_turns", "max_wall_time_seconds"),
     [

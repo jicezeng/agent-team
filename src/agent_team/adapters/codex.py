@@ -587,6 +587,7 @@ class CodexAdapter(HarnessAdapter):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
         explicit = HarnessLaunchOptions(
             model=model,

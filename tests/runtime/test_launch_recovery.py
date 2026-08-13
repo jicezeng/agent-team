@@ -184,21 +184,24 @@ def test_supervisor_spawn_failure_is_a_finalized_start_failure(
     assert persisted["group_quiescent"] is True
 
 
+@pytest.mark.parametrize("launch_mode", ["headless", "interactive"])
 def test_supervisor_exit_before_identity_snapshot_is_start_failure(
     workspace: Path,
     request_protocol: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
+    launch_mode: str,
 ) -> None:
     run_dir, runtime = _external_run(
         workspace,
         request_protocol,
         monkeypatch,
-        run_id="at-worker-supervisor-pre-snapshot-exit",
+        run_id=f"at-worker-supervisor-pre-snapshot-exit-{launch_mode}",
+        launch_mode=launch_mode,
     )
 
     class _LaunchingAdapter:
         def prepare_launch(self, _context: Any) -> LaunchSpec:
-            return _launch_spec(run_dir, runtime)
+            return _launch_spec(run_dir, runtime, launch_mode=launch_mode)
 
     class _ExitedSupervisor:
         def poll(self) -> int:

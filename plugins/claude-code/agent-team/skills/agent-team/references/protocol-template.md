@@ -86,11 +86,11 @@ versus Origin cooperative deadline behavior, and manual cancellation. By
 default, record `full-access`, its Adapter-specific trust boundary, and the
 user's one-time confirmation for this new Run. If the user explicitly selects
 the restricted `default` or `trusted-workspace`, record that choice instead.
-`trusted-workspace` must retain the
-Workspace write boundary; on a managed host this requires compatible
+`trusted-workspace` must retain the Workspace write boundary; on a managed host this requires compatible
 administrator policy because that policy is outside the frozen Profile Hash
 and Doctor's proof. For Codex, also record that non-managed hooks are disabled
 while trusted Workspace project configuration and extensions remain inside the
-Workspace trust decision. `full-access` has no Harness host sandbox or
+Workspace trust decision. For OpenCode, record that arbitrary Bash is denied
+in restricted Profiles because it has no OS shell sandbox. `full-access` has no Harness host sandbox or
 per-command approval prompts; the confirmation is not repeated inside the same
 immutable Run.

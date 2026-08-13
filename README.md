@@ -4,7 +4,7 @@
 
 Agent-Team is an event-driven local runtime for temporary coding-agent teams.
 Describe a task and collaboration rules in natural language; Agent-Team creates
-the roles and topology for that Run, coordinates Codex and Claude Code, and
+the roles and topology for that Run, coordinates Codex, Claude Code, and OpenCode, and
 preserves resumable Sessions and auditable handoffs until Completion or Block.
 
 ## The task defines the team
@@ -41,14 +41,14 @@ deterministic while leaving the business topology flexible.
 
 ```mermaid
 flowchart TB
-    Task[Natural-language task] --> Integration[Codex Skill / Claude Code plugin]
+    Task[Natural-language task] --> Integration[Codex / OpenCode Skill / Claude Code plugin]
     Integration --> Inputs[Immutable REQUEST.md + PROTOCOL.md]
     Inputs --> Journal[(Append-only Event Journal)]
     Journal --> Worker[Role Worker]
-    Worker --> Harness[Codex / Claude Code Session]
+    Worker --> Harness[Codex / Claude Code / OpenCode Session]
     Harness --> Action[Formal role action]
     Action --> Journal
-    Worker -. native TUI / diagnostics .-> Tmux[tmux window]
+    Worker -. native interactive terminal / diagnostics .-> Tmux[tmux window]
     Tmux -. read-only visibility .-> User[User]
 ```
 
@@ -80,7 +80,7 @@ integrity, and fail-closed recovery.
 ## Requirements
 
 - macOS or Linux, Python 3.11+, `uv`, Git, and tmux
-- Codex CLI and/or Claude Code CLI, already installed and authenticated
+- An authenticated Codex, Claude Code, and/or OpenCode CLI
 - One normal Git worktree root per Run
 
 ## Install
@@ -100,20 +100,19 @@ Then verify the target worktree and installed Harnesses:
 agent-team doctor --workspace /path/to/worktree --json
 ```
 
-Agent-Team installs its bundled Codex skill and Claude Code plugin, but it does
-not install or authenticate either Harness CLI. Wheel, development, upgrade,
-and integration-location instructions are in the
-[user guide](docs/user-guide.md#installation-and-upgrades).
+Agent-Team installs its bundled Skills/plugin, not the Harness CLIs. Wheel,
+upgrade, and integration paths are in the [user guide](docs/user-guide.md#installation-and-upgrades).
 
 ## Quick start
 
-The recommended entry point is the installed `$agent-team` Codex skill. Open
-Codex in the Git worktree the team should modify:
+The recommended entry point is the installed `agent-team` Skill in Codex or
+OpenCode. Open a supported Harness in the Git worktree the team should modify:
 
 ```bash
 cd /path/to/worktree
 agent-team doctor --workspace "$PWD" --json
 codex
+# or: opencode
 ```
 
 Then describe the team and task:
@@ -142,14 +141,18 @@ passes `--confirm-full-access` only after that confirmation. Choose the
 restricted `default` or `trusted-workspace` Profile explicitly when host
 containment is required.
 
-| Profile | Filesystem | Command network |
+| Profile | Host boundary | Extra capability |
 | --- | --- | --- |
-| `default` | Workspace-contained | Disabled |
-| `trusted-workspace` | Workspace-contained | Enabled |
-| `full-access` | Unrestricted host access | Enabled |
+| `default` | Workspace-contained | Codex command network disabled; OpenCode arbitrary Bash denied |
+| `trusted-workspace` | Workspace-contained | Codex command network or OpenCode built-in web tools enabled |
+| `full-access` | Unrestricted host access | Host shell and network enabled |
 
-Agent-Team freezes its requested mapping in `launch_profile_sha256` and sets
-Codex `features.hooks=false`, but Managed Harness policy can still change or
+OpenCode has no OS Bash sandbox, so its restricted Profiles permit workspace
+file tools and formal Agent-Team commands but deny arbitrary Bash.
+
+Agent-Team freezes its requested mapping in `launch_profile_sha256`, isolates
+OpenCode project config and external plugins, and sets Codex
+`features.hooks=false`, but Managed Harness policy can still change or
 reject the effective configuration. Inspect `doctor` output and administrator
 policy when a permission boundary matters.
 

@@ -185,8 +185,14 @@ def _external_run(
     return run_dir, runtime
 
 
-def _launch_spec(run_dir: Path, runtime: dict[str, Any]) -> LaunchSpec:
+def _launch_spec(
+    run_dir: Path,
+    runtime: dict[str, Any],
+    *,
+    launch_mode: str = "headless",
+) -> LaunchSpec:
     turn_id = runtime["turn_id"]
+    turn_dir = run_dir / "turns" / turn_id
     return LaunchSpec(
         adapter_id="codex",
         argv=("/bin/true",),
@@ -203,6 +209,12 @@ def _launch_spec(run_dir: Path, runtime: dict[str, Any]) -> LaunchSpec:
         launch_profile=PROFILE,
         launch_profile_sha256=PROFILE_HASH,
         starts_new_session=True,
+        launch_mode=launch_mode,
+        prompt_file=(
+            str(turn_dir / "process" / "prompt.md")
+            if launch_mode == "interactive"
+            else None
+        ),
     )
 
 

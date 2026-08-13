@@ -18,12 +18,15 @@ CLAIM_GUIDES = (
     "agent-team_technical_design_v0.1.md",
     "skills/codex/agent-team/SKILL.md",
     "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
+    "skills/opencode/agent-team/SKILL.md",
 )
 PROFILE_GUIDES = (
     "skills/codex/agent-team/SKILL.md",
     "skills/codex/agent-team/references/protocol-template.md",
     "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
     "plugins/claude-code/agent-team/skills/agent-team/references/protocol-template.md",
+    "skills/opencode/agent-team/SKILL.md",
+    "skills/opencode/agent-team/references/protocol-template.md",
 )
 
 

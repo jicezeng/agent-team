@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from agent_team.bootstrap import start_run
-from agent_team.cli import _role_flags, _role_value_options, build_parser, main
+from agent_team.cli import (
+    _permission_report,
+    _resume_help_supported,
+    _role_flags,
+    _role_value_options,
+    build_parser,
+    main,
+)
 from agent_team.management import cancel_run
 from agent_team.observation import _journal_tail, corrupted_observation, diagnose
 from agent_team.origin import origin_context, wait_origin
@@ -71,6 +78,56 @@ def test_start_parser_accepts_one_time_full_access_confirmation() -> None:
     )
 
     assert args.confirm_full_access is True
+
+
+@pytest.mark.parametrize(
+    ("adapter_id", "help_text"),
+    [
+        ("codex", "Resume a previous session"),
+        ("claude-code", "  --resume  Resume a session by ID"),
+        ("opencode", "  -s, --session  session id to continue"),
+    ],
+)
+def test_doctor_recognizes_adapter_specific_resume_flags(
+    adapter_id: str,
+    help_text: str,
+) -> None:
+    assert _resume_help_supported(adapter_id, help_text)
+
+
+def test_permission_report_accepts_only_contained_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    root.mkdir(mode=0o700)
+    target = root / "package" / "tool"
+    target.parent.mkdir(mode=0o700)
+    target.write_text("tool\n", encoding="utf-8")
+    target.chmod(0o600)
+    internal = root / "bin" / "tool"
+    internal.parent.mkdir(mode=0o700)
+    internal.symlink_to(Path("../package/tool"))
+
+    accepted = _permission_report(root, recursive=True)
+
+    assert accepted["private"] is True
+    assert accepted["invalid_count"] == 0
+
+    outside = tmp_path / "outside"
+    outside.write_text("outside\n", encoding="utf-8")
+    outside.chmod(0o600)
+    (root / "escaping").symlink_to(outside)
+
+    rejected = _permission_report(root, recursive=True)
+
+    assert rejected["private"] is False
+    assert rejected["invalid_paths"] == [str(root / "escaping")]
+
+    linked_root = tmp_path / "linked-state"
+    linked_root.symlink_to(root)
+
+    root_rejected = _permission_report(linked_root, recursive=True)
+
+    assert root_rejected["private"] is False
+    assert root_rejected["invalid_paths"] == [str(linked_root)]
 
 
 def test_status_resolves_active_owner_without_run_id_and_is_read_only(

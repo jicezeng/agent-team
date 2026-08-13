@@ -15,7 +15,6 @@ from .util import (
     require_schema_version,
 )
 
-
 ROLE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 RUN_ID_RE = re.compile(r"^at-[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
 TEAM_REQUIRED = {
@@ -40,6 +39,7 @@ CODEX_REASONING_EFFORTS = frozenset(
 CLAUDE_REASONING_EFFORTS = frozenset(
     {"auto", "low", "medium", "high", "xhigh", "max"}
 )
+EXTERNAL_ADAPTER_IDS = ("codex", "claude-code", "opencode")
 ROLE_LAUNCH_MODES = frozenset({"headless", "interactive"})
 DEFAULT_EXTERNAL_LAUNCH_PROFILE = "full-access"
 
@@ -156,10 +156,39 @@ def valid_model_id(value: object) -> bool:
     )
 
 
+def valid_opencode_model_id(value: object) -> bool:
+    """Validate OpenCode's provider/model selector without guessing providers."""
+
+    if not valid_model_id(value) or not isinstance(value, str):
+        return False
+    provider, separator, model = value.partition("/")
+    return bool(
+        separator
+        and provider
+        and model
+        and "#" not in provider
+        and "#" not in model
+    )
+
+
+def valid_opencode_variant(value: object) -> bool:
+    """Accept provider-specific OpenCode variants as an opaque CLI value."""
+
+    return bool(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and not value.startswith("-")
+        and "#" not in value
+        and len(value) <= 256
+        and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+    )
+
+
 def generate_run_id() -> str:
     import datetime as dt
 
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
     return f"at-{stamp}-{secrets.token_hex(3)}"
 
 
@@ -249,10 +278,7 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
             launch_mode = (
                 role_value["launch_mode"] if schema_version >= 4 else "headless"
             )
-            if not isinstance(adapter, str) or adapter not in {
-                "codex",
-                "claude-code",
-            }:
+            if not isinstance(adapter, str) or adapter not in EXTERNAL_ADAPTER_IDS:
                 raise IntegrityError(f"unsupported adapter for {role_id}: {adapter!r}")
             if not isinstance(policy, str) or policy not in {"resume", "fresh"}:
                 raise IntegrityError(
@@ -290,15 +316,17 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 fast_mode = options["fast_mode"]
                 if model is not None and not valid_model_id(model):
                     raise IntegrityError(f"invalid model for {role_id}")
-                efforts = (
-                    CODEX_REASONING_EFFORTS
-                    if adapter == "codex"
-                    else CLAUDE_REASONING_EFFORTS
-                )
-                if reasoning_effort is not None and (
-                    not isinstance(reasoning_effort, str)
-                    or reasoning_effort not in efforts
-                ):
+                if adapter == "opencode" and not valid_opencode_model_id(model):
+                    raise IntegrityError(
+                        f"opencode model for {role_id} must use provider/model"
+                    )
+                if adapter == "codex":
+                    valid_effort = reasoning_effort in CODEX_REASONING_EFFORTS
+                elif adapter == "claude-code":
+                    valid_effort = reasoning_effort in CLAUDE_REASONING_EFFORTS
+                else:
+                    valid_effort = valid_opencode_variant(reasoning_effort)
+                if reasoning_effort is not None and not valid_effort:
                     raise IntegrityError(
                         f"invalid reasoning effort for {role_id}"
                     )

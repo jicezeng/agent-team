@@ -12,24 +12,35 @@ def test_install_replaces_exact_integration_trees_with_private_modes(
 ) -> None:
     codex_source = tmp_path / "source-codex"
     plugin_source = tmp_path / "source-plugin"
+    opencode_source = tmp_path / "source-opencode"
     codex_source.mkdir()
     plugin_source.mkdir()
+    opencode_source.mkdir()
     (codex_source / "SKILL.md").write_text("codex skill\n", encoding="utf-8")
     (plugin_source / "skills").mkdir()
     (plugin_source / "skills" / "SKILL.md").write_text(
         "claude plugin\n",
         encoding="utf-8",
     )
+    (opencode_source / "SKILL.md").write_text(
+        "opencode skill\n",
+        encoding="utf-8",
+    )
     codex_target = tmp_path / "installed" / "codex"
     plugin_target = tmp_path / "installed" / "plugin"
+    opencode_target = tmp_path / "installed" / "opencode"
     codex_target.mkdir(parents=True)
     plugin_target.mkdir()
+    opencode_target.mkdir()
     (codex_target / "stale.txt").write_text("stale\n", encoding="utf-8")
     (plugin_target / "stale.txt").write_text("stale\n", encoding="utf-8")
+    (opencode_target / "stale.txt").write_text("stale\n", encoding="utf-8")
     monkeypatch.setattr(cli, "codex_skill_source", lambda: codex_source)
     monkeypatch.setattr(cli, "claude_plugin_source", lambda: plugin_source)
     monkeypatch.setattr(cli, "installed_codex_skill", lambda: codex_target)
     monkeypatch.setattr(cli, "installed_claude_plugin", lambda: plugin_target)
+    monkeypatch.setattr(cli, "opencode_skill_source", lambda: opencode_source)
+    monkeypatch.setattr(cli, "installed_opencode_skill", lambda: opencode_target)
 
     result = cli._install_skill()
 
@@ -44,7 +55,12 @@ def test_install_replaces_exact_integration_trees_with_private_modes(
         for path in plugin_target.rglob("*")
         if path.is_file()
     ) == ["skills/SKILL.md"]
-    for root in (codex_target, plugin_target):
+    assert sorted(
+        path.relative_to(opencode_target).as_posix()
+        for path in opencode_target.rglob("*")
+        if path.is_file()
+    ) == ["SKILL.md"]
+    for root in (codex_target, plugin_target, opencode_target):
         for path in [root, *root.rglob("*")]:
             expected = 0o700 if path.is_dir() else 0o600
             assert stat.S_IMODE(path.stat().st_mode) == expected

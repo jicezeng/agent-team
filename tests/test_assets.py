@@ -4,7 +4,6 @@ from pathlib import Path
 
 from agent_team import assets
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -54,6 +53,7 @@ def test_shared_integration_references_are_byte_identical() -> None:
         / "skills"
         / "agent-team"
     )
+    opencode_root = REPOSITORY_ROOT / "skills" / "opencode" / "agent-team"
 
     for relative in (
         "references/coordination.md",
@@ -61,6 +61,9 @@ def test_shared_integration_references_are_byte_identical() -> None:
     ):
         assert (codex_root / relative).read_bytes() == (
             claude_root / relative
+        ).read_bytes()
+        assert (codex_root / relative).read_bytes() == (
+            opencode_root / relative
         ).read_bytes()
 
 

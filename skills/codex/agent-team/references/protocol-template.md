@@ -82,11 +82,15 @@ List every inference explicitly.
 
 Record positive max-turn and wall-time bounds, the single Git worktree, chosen
 explicit Launch Profiles, no-concurrent-manual-edit premise, External hard
-versus Origin cooperative deadline behavior, and manual cancellation. For
-`trusted-workspace` or `full-access`, record the user's explicit selection and
-the Adapter-specific trust boundary. `trusted-workspace` must retain the
+versus Origin cooperative deadline behavior, and manual cancellation. By
+default, record `full-access`, its Adapter-specific trust boundary, and the
+user's one-time confirmation for this new Run. If the user explicitly selects
+the restricted `default` or `trusted-workspace`, record that choice instead.
+`trusted-workspace` must retain the
 Workspace write boundary; on a managed host this requires compatible
 administrator policy because that policy is outside the frozen Profile Hash
 and Doctor's proof. For Codex, also record that non-managed hooks are disabled
 while trusted Workspace project configuration and extensions remain inside the
-Workspace trust decision. `full-access` has no Harness host sandbox.
+Workspace trust decision. `full-access` has no Harness host sandbox or
+per-command approval prompts; the confirmation is not repeated inside the same
+immutable Run.

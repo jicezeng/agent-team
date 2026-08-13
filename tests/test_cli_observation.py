@@ -65,6 +65,14 @@ def test_init_parser_accepts_role_scoped_harness_options() -> None:
     ) == {"developer": "headless"}
 
 
+def test_start_parser_accepts_one_time_full_access_confirmation() -> None:
+    args = build_parser().parse_args(
+        ["start", "at-example", "--confirm-full-access"]
+    )
+
+    assert args.confirm_full_access is True
+
+
 def test_status_resolves_active_owner_without_run_id_and_is_read_only(
     workspace: Path,
     request_protocol: tuple[Path, Path],

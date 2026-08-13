@@ -102,8 +102,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "UNKNOWN_LAUNCH_PROFILE",
                 f"claude-code profile {profile!r} is not supported",
             )
+        settings_payload: dict[str, object] = {"sandbox": sandbox}
+        if profile == "full-access":
+            # Agent-Team has already obtained and immutably recorded the
+            # Run-scoped YOLO confirmation before this mapping can launch.
+            # Reuse that decision so Claude does not ask for a second
+            # dangerous-mode confirmation. Workspace Trust is an independent
+            # Claude prerequisite and remains fail-closed for interactive Runs.
+            settings_payload["skipDangerousModePermissionPrompt"] = True
         settings = json.dumps(
-            {"sandbox": sandbox},
+            settings_payload,
             ensure_ascii=False,
             separators=(",", ":"),
         )

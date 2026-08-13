@@ -237,6 +237,37 @@ def test_product_docs_disclose_managed_harness_policy_boundary(
     assert "doctor" in content
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "README.md",
+        "agent-team_prd_v0.1.md",
+        "agent-team_technical_design_v0.1.md",
+    ),
+)
+def test_product_docs_define_full_access_default_and_start_confirmation(
+    relative_path: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert "full-access" in content
+    assert "--confirm-full-access" in content
+    assert "一次" in content or "once" in content
+
+
+@pytest.mark.parametrize("relative_path", PROFILE_GUIDES)
+def test_profile_guides_require_one_confirmation_for_default_full_access(
+    relative_path: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert "defaults to `full-access`" in content or re.search(
+        r"By\s+default",
+        content,
+    )
+    assert "--confirm-full-access" in content or "one-time confirmation" in content
+
+
 @pytest.mark.parametrize("relative_path", PROFILE_GUIDES)
 def test_profile_guides_disclose_administrator_policy_boundary(
     relative_path: str,

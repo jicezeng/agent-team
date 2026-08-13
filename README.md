@@ -166,6 +166,14 @@ be shown to the user. Keep the originating Codex session open while the Run is
 active. Use `status`, `watch`, or `attach` from another terminal if you want to
 observe it.
 
+New External roles default to `full-access` (YOLO): no Harness host sandbox,
+unrestricted command network, and no per-command approval prompts. Immediately
+before creating and starting each new Run, the skill shows this boundary and
+asks for one explicit user confirmation. That confirmation covers every
+full-access External role in that immutable Run; it is not repeated for later
+Turns, Handoffs, Resumes, or Recovery. Select the restricted `default` or
+`trusted-workspace` Profile explicitly when host containment is preferred.
+
 ## Manual CLI bootstrap
 
 To operate without the Codex skill, first create two readable files outside
@@ -182,8 +190,8 @@ agent-team init \
   --workspace /path/to/worktree \
   --request /path/to/REQUEST.md \
   --protocol /path/to/PROTOCOL.md \
-  --role developer=claude-code:resume:default \
-  --role reviewer=codex:resume:default \
+  --role developer=claude-code:resume \
+  --role reviewer=codex:resume \
   --initial-role developer \
   --origin-harness codex \
   --max-turns 12 \
@@ -194,7 +202,9 @@ agent-team init \
   --raw-retention redacted \
   --run-id at-example
 
-agent-team start at-example --workspace /path/to/worktree
+agent-team start at-example \
+  --workspace /path/to/worktree \
+  --confirm-full-access
 agent-team wait-origin \
   --run at-example \
   --workspace /path/to/worktree \
@@ -205,12 +215,13 @@ A role specification is one of:
 
 ```text
 ROLE=origin
-ROLE=codex:<resume|fresh>:<profile>
-ROLE=claude-code:<resume|fresh>:<profile>
+ROLE=codex:<resume|fresh>[:<profile>]
+ROLE=claude-code:<resume|fresh>[:<profile>]
 ```
 
 Role IDs match `[a-z][a-z0-9_-]{0,31}`. `resume` preserves a validated harness
 session across that role's Turns; `fresh` creates a new session every Turn.
+Omitting `<profile>` selects `full-access`.
 Model and speed choices are role-scoped, optional `init` arguments:
 
 ```text
@@ -269,19 +280,39 @@ interactive roles instead receive a private per-Run/Role `CODEX_HOME` whose
 immutable config contains only the exact current-workspace trust entry; user
 MCP, Hook, Plugin, and permission configuration is not copied.
 
+Workspace Trust is Claude's independent, one-time prerequisite for an
+interactive worktree, not an Agent-Team permission confirmation. Once the
+Run-scoped YOLO confirmation has been obtained, Claude `full-access` launches
+also set `skipDangerousModePermissionPrompt=true`, so Claude does not ask for a
+second dangerous-mode confirmation. Enterprise policy may still disable
+`bypassPermissions`, in which case the launch fails closed.
+
 Each adapter exposes the same explicit Profile names:
 
 | Profile | Codex mapping | Claude Code mapping |
 | --- | --- | --- |
 | `default` | Workspace write plus Harness scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox plus Claude's internal scratch path, no fallback |
 | `trusted-workspace` | The same filesystem boundary, command network enabled, no approval prompts | `acceptEdits`, the same OS workspace sandbox and no fallback |
-| `full-access` | `danger-full-access` with no approval prompts | `bypassPermissions` with the Claude sandbox disabled |
+| `full-access` | `danger-full-access` with no approval prompts | `bypassPermissions`, dangerous-mode prompt skipped, Claude sandbox disabled |
 
-`default` remains the normal choice. `trusted-workspace` and `full-access` are
-never inferred from a role name or task text such as “run all tests”; the user
-must explicitly select the exact Profile. `full-access` removes the Harness's
-host filesystem and command-network boundary and should run only on a machine
-or VM whose contents and credentials may be exposed to the Agent.
+For a new External role, omitting `:PROFILE` from
+`ROLE=ADAPTER:POLICY[:PROFILE]` selects `full-access`; this is Agent-Team's
+YOLO default. The Profile removes the Harness host-filesystem boundary, opens
+command network access, and disables per-command approval prompts. Before the
+first Kickoff of any Run containing such a role, `start` requires
+`--confirm-full-access`. The Coordination Skill must first obtain one explicit
+user confirmation for that new Run. The immutable Kickoff Payload records the
+confirmation, and it is not requested again during the Run. Passing the CLI
+flag is an assertion that this user confirmation has already happened; the CLI
+does not manufacture consent or prompt on stdin.
+
+The legacy-named `default` Profile remains the most restrictive option and
+must now be selected explicitly, for example
+`developer=codex:resume:default`. `trusted-workspace` is likewise opt-in.
+`full-access` should run only on a machine or VM whose files, credentials, and
+network may be exposed to the Agent. An explicit three-part role spec remains
+supported, so `:full-access` may be written when clarity is more important than
+brevity.
 
 Claude Code deliberately maps both workspace-contained Profiles to
 `acceptEdits`: its OS sandbox constrains Bash and child processes, not the
@@ -343,6 +374,8 @@ in `full-access` mode.
 Examples:
 
 ```text
+--role developer=claude-code:resume
+--role reviewer=codex:resume
 --role developer=claude-code:resume:trusted-workspace
 --role reviewer=codex:resume:full-access
 --role-model developer=opus

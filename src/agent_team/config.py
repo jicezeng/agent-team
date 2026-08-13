@@ -41,6 +41,7 @@ CLAUDE_REASONING_EFFORTS = frozenset(
     {"auto", "low", "medium", "high", "xhigh", "max"}
 )
 ROLE_LAUNCH_MODES = frozenset({"headless", "interactive"})
+DEFAULT_EXTERNAL_LAUNCH_PROFILE = "full-access"
 
 
 @dataclass(frozen=True, slots=True)

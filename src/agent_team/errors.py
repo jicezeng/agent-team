@@ -32,6 +32,19 @@ class InvalidArgument(AgentTeamError):
         super().__init__("INVALID_ARGUMENT", message, 2)
 
 
+class FullAccessConfirmationRequired(AgentTeamError):
+    def __init__(self, roles: tuple[str, ...]) -> None:
+        rendered = ", ".join(roles)
+        super().__init__(
+            "FULL_ACCESS_CONFIRMATION_REQUIRED",
+            "this UNSTARTED Run grants full host filesystem and network "
+            f"access without per-command approvals to: {rendered}; after "
+            "the user confirms this once for the new Run, retry start with "
+            "--confirm-full-access",
+            2,
+        )
+
+
 class RunNotFound(AgentTeamError):
     def __init__(self, message: str = "run not found") -> None:
         super().__init__("RUN_NOT_FOUND", message, 3)

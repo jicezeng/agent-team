@@ -824,7 +824,7 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
       "adapter": "claude-code",
       "session_policy": "resume",
       "launch_mode": "interactive",
-      "launch_profile": "default",
+      "launch_profile": "full-access",
       "launch_profile_sha256": "...",
       "harness_options": {
         "model": null,
@@ -904,7 +904,18 @@ Harness Options 继续按未冻结的历史语义读取，不就地改写 `team.
 
 - `default` 保持 Workspace 受限沙箱；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止未声明的 Unsandboxed Fallback；
 - `trusted-workspace` 保留相同文件系统边界；Codex 跳过 Harness 交互审批并开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱；
-- `full-access` 跳过审批并关闭 Harness 宿主沙箱；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions` 与 `sandbox.enabled=false`。
+- `full-access` 跳过审批并关闭 Harness 宿主沙箱；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions`、`sandbox.enabled=false` 与 `skipDangerousModePermissionPrompt=true`。最后一项复用 Agent-Team 已在 Kickoff 前取得的本 Run 确认，避免 Claude 再弹出危险模式确认。
+
+新 External Role 的 Role Spec 省略 Profile 时，Bootstrap 默认选择 `full-access`；这里的
+“默认”是 Agent-Team 的选择规则，不改变名为 `default` 的受限 Profile 的 Adapter
+语义。任何使用 `full-access` 的新 Run 在首次 Kickoff 前都必须由用户确认一次 Host
+Filesystem、Network、凭据暴露和无逐命令审批边界。CLI 以
+`start --confirm-full-access` 接收“上游已取得本 Run 用户确认”的显式断言，并在任何
+Adapter 私有状态准备、Ownership、Event 或 Worker 副作用之前拒绝缺少该断言的
+UNSTARTED Run。成功 Kickoff 的不可变 Payload 记录确认及全部 Full-access Role；同一
+Run 后续 Turn、Handoff、Resume、Recover 或重复 Start 不再次确认。若首次 Start 在
+Kickoff 前失败，调用方可在不重新询问用户的情况下，基于同一份确认和同一不可变 Run
+重传该 Flag。
 
 Claude 的 OS 沙箱只约束 Bash 及其子进程，内置 Edit/Write 仍由 Permission Mode 控制。因此任何声称保留工作区边界的 Claude Profile 都不得使用裸 `bypassPermissions`；当前 `default` 与 `trusted-workspace` 都使用 `acceptEdits`，只有明确的 `full-access` 可以绕过内置文件工具的路径审批。
 
@@ -935,11 +946,13 @@ Enterprise Managed Settings 优先级高于命令行且不能由
 其云端或最终有效内容；需要把这条边界作为安全保证时，操作者必须核验相应管理员配置，
 并在 Claude `/status`、`/permissions` 核验有效来源，或使用专用的非托管主机 / VM。
 
-Skill 或其他 Bootstrap 调用方在用户未明确选择提升权限时必须提交 `default`，只有用户
-明确指定准确名称时才可提交后两者，并必须把 Adapter 实际采用的信任边界写入协议。
-不得根据 Role ID、测试命令、`PROTOCOL.md` 中的 `read-only` 或本机交互 Session 状态
-自动映射。`full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或
-VM；自然语言职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
+Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交 `full-access`，并在
+每个新 Run 启动前完成上述一次性确认；不能把旧 Run 的确认静默复用于另一个 Run。
+用户明确选择 `default` 或 `trusted-workspace` 时按其准确名称提交，且无需 YOLO 确认。
+所有选择都必须把 Adapter 实际采用的信任边界写入协议，不得根据 Role ID、测试命令、
+`PROTOCOL.md` 中的 `read-only` 或本机交互 Session 状态改变已经选择的 Mapping。
+`full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言
+职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
 `launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。它只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements 或 Claude Enterprise Managed Settings。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
@@ -1046,7 +1059,7 @@ Worker 在启动 Harness 前冻结 `workspace-facts-before.json`，并原子创�
   "phase": "starting",
   "outcome": null,
   "session_generation": 3,
-  "launch_profile": "default",
+  "launch_profile": "full-access",
   "launch_profile_sha256": "...",
   "launch_nonce": null,
   "supervisor_pid": null,
@@ -1201,7 +1214,7 @@ Worker 读回并用操作系统验证 Supervisor 与 Runner 身份后，在同�
   "runner_pid": 23457,
   "runner_pgid": 23457,
   "runner_start_id": "os-process-start-id",
-  "launch_profile": "default",
+  "launch_profile": "full-access",
   "launch_profile_sha256": "...",
   "authorized_at": "2026-07-25T21:44:02-07:00"
 }
@@ -1376,7 +1389,7 @@ Claim 用于阻止两个正常 Origin Session 意外并发，不是对拥有 Run
   "generation": 3,
   "status": "available",
   "session_ref": "550e8400-e29b-41d4-a716-446655440000",
-  "effective_launch_profile": "default",
+  "effective_launch_profile": "full-access",
   "effective_launch_profile_sha256": "...",
   "created_turn_id": "turn-0001",
   "updated_turn_id": "turn-0004",
@@ -2009,7 +2022,8 @@ v0.1 实现：
   `launch_profile` 映射；
 - `default` 使用 `acceptEdits` 和强制可用的 Workspace Sandbox；
 - `trusted-workspace` 同样使用 `acceptEdits`，保留相同 Sandbox 并禁止 Unsandboxed Fallback，不允许内置 Edit/Write 绕过 Workspace 边界；
-- `full-access` 使用 `bypassPermissions` 并显式关闭 Claude Sandbox；三种模式都继续加载
+- `full-access` 使用 `bypassPermissions`、显式关闭 Claude Sandbox，并设置
+  `skipDangerousModePermissionPrompt=true` 复用本 Run 已记录的 YOLO 确认；三种模式都继续加载
   Agent-Team Plugin，以 `--setting-sources ""` 忽略 User/Project/Local Setting Sources，
   但不会也不能绕过 Enterprise Managed Settings，并直接 Deny Agent-Team 管理命令
   Pattern；
@@ -2027,7 +2041,9 @@ v0.1 实现：
   `HARNESS_WORKSPACE_TRUST_REQUIRED` 保持 UNSTARTED，并提示用户在普通终端运行一次
   `cd <workspace> && claude` 完成确认。Agent-Team 不直接改写该用户状态、不用
   `send-keys` 接受提示；每个 Interactive Turn 启动前再次检查，撤销或损坏时
-  Fail Closed。显式 Headless Role 不需要 TUI Trust 预检。
+  Fail Closed。它是独立的一次性工作区前提，不是第二次 Run 权限确认；上述
+  `skipDangerousModePermissionPrompt` 只消除 Claude 的危险模式二次提示。显式 Headless
+  Role 不需要 TUI Trust 预检。
 - 用户状态查找顺序与当前 Claude Code CLI 一致：设置 `CLAUDE_CONFIG_DIR` 时先读取
   `<dir>/.config.json`，不存在才回退 `<dir>/.claude.json`；未设置时先读取
   `~/.claude/.config.json`，不存在才回退 `~/.claude.json`。两者并存时不得让旧文件
@@ -2075,7 +2091,8 @@ Profile Changed fail-closed。
 - Stage 1 已要求 Git Worktree 根目录，因此 Adapter 不传 `--skip-git-repo-check`；
 - `default` 使用 `workspace-write`、`approval_policy=never` 且关闭命令网络；
 - `trusted-workspace` 保持 `workspace-write` 和 `approval_policy=never`，但开放命令网络；
-- `full-access` 使用 `danger-full-access` 与 `approval_policy=never`，只有用户明确选择时启用；
+- `full-access` 使用 `danger-full-access` 与 `approval_policy=never`，是省略 Profile 时
+  的默认选择，但首次 Kickoff 受一次性用户确认门禁保护；
 - 三种 Profile 都显式设置 `features.hooks=false`；Codex 的 Hook 来源采用合并语义，
   不能仅依赖高优先级配置覆盖 Project Hook。Admin Requirements 仍可强制启用
   Managed Hook，属于前述外部管理边界；
@@ -2829,7 +2846,7 @@ agent-team init \
   [--raw-retention <redacted|keep|delete>] \
   [--require-rationale-evidence] \
   [--run-id <run-id>]
-agent-team start <run-id> [--workspace <path>]
+agent-team start <run-id> [--workspace <path>] [--confirm-full-access]
 agent-team status [<run-id>] [--workspace <path>] [--json]
 agent-team watch [<run-id>] [--workspace <path>] [--jsonl]
 agent-team diagnose [<run-id>] [--workspace <path>] [--role <role-id>] [--json]
@@ -2842,8 +2859,9 @@ agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-sto
 ```
 
 `<role-spec>` 固定为 `<role-id>=origin` 或
-`<role-id>=<codex|claude-code>:<resume|fresh>:<profile>`；Profile 必须来自 13.1 的
-Adapter 闭集。`--role` 以及四类 role-scoped 选项都可重复。`init` 的默认值是当前目录、
+`<role-id>=<codex|claude-code>:<resume|fresh>[:<profile>]`；Profile 必须来自 13.1 的
+Adapter 闭集，省略时选择 `full-access`。`--role` 以及四类 role-scoped 选项都可重复。
+`init` 的默认值是当前目录、
 `origin_harness=codex`、`max_turns=20`、`max_wall_time_seconds=7200`、
 `audit_mode=standard`、`trace_redaction=standard`、
 `max_trace_bytes=67108864` 和 `raw_retention=redacted`；未提供 `--run-id` 时由 CLI
@@ -2861,7 +2879,7 @@ Run ID 没有最终 Run Directory 且未被当前有效 Owner 引用时同样是
 由 27.1 的同一派生对象渲染；Transcript/Tail 按 27.5/27.6 校验 Trace Manifest
 与 Runtime Anchor 后读取审计派生物。
 
-`init` 只校验并原子提交尚未运行的 Run Store，包括在固定 Workspace 操作锁下建立或验证 `.agent-team/root.json`、拒绝任何可配置状态目录、Git 跟踪该保留目录、非 Git Worktree 根目录、Sparse Checkout、Gitlink、per-role CWD，并按各 External Role 的 Session Policy 验证实际需要的 Launch Profile 路径。固定 Owner 已存在时不允许新建 State Root 或 Run；State Root 可以在其他预检失败后保留，但最终 Run 目录只能由 22.3 的整目录提交产生。`start` 先完成无需 Ownership 的预检，再从固定状态目录获取 Workspace Ownership；随后完成 Snapshot 可行性检查，成功才把 `REQUEST.md` / `PROTOCOL.md` / `team.json` Hash 写入唯一 Kickoff Event 并创建外部 Role Worker。重复 `start` 不得创建第二个 Kickoff：UNSTARTED 的同 Run 继续启动事务；已有 Kickoff 时执行与 `recover` 相同的状态收口，只有 Owner 仍完整属于本 Run 的 Running / Blocked Run 才补建缺失 Worker；Owner 丢失直接进入 `CORRUPTED`，Completed / Cancelled 只做身份验证、确定性技术收口和满足 22.4 条件后的安全 Owner 释放。
+`init` 只校验并原子提交尚未运行的 Run Store，包括在固定 Workspace 操作锁下建立或验证 `.agent-team/root.json`、拒绝任何可配置状态目录、Git 跟踪该保留目录、非 Git Worktree 根目录、Sparse Checkout、Gitlink、per-role CWD，并按各 External Role 的 Session Policy 验证实际需要的 Launch Profile 路径。固定 Owner 已存在时不允许新建 State Root 或 Run；State Root 可以在其他预检失败后保留，但最终 Run 目录只能由 22.3 的整目录提交产生。`start` 先只读解析 Journal；UNSTARTED Run 含 `full-access` External Role 且缺少 `--confirm-full-access` 时返回 `FULL_ACCESS_CONFIRMATION_REQUIRED` / Exit `2`，不执行 Adapter 预检或产生 Ownership、Event、Worker 副作用。确认门禁通过后才完成无需 Ownership 的预检，再从固定状态目录获取 Workspace Ownership；随后完成 Snapshot 可行性检查，成功才把 `REQUEST.md` / `PROTOCOL.md` / `team.json` Hash 与一次性确认说明写入唯一 Kickoff Event/Payload 并创建外部 Role Worker。重复 `start` 不得创建第二个 Kickoff：UNSTARTED 的同 Run 继续启动事务；已有 Kickoff 时执行与 `recover` 相同的状态收口，且不再要求确认。只有 Owner 仍完整属于本 Run 的 Running / Blocked Run 才补建缺失 Worker；Owner 丢失直接进入 `CORRUPTED`，Completed / Cancelled 只做身份验证、确定性技术收口和满足 22.4 条件后的安全 Owner 释放。
 
 `recover` 拒绝 UNSTARTED Run；对已有 Kickoff 的 Running / Blocked Run 只重建 tmux / Worker 并收口可确定恢复的 Turn Runtime，绝不提交 Resume Event，也不能让 Blocked Run 回到 Running。Completed / Cancelled 不创建 Worker 或 Event，只清理身份已验证的受管执行、补完确定性 Runtime 收口，并在安全条件满足时释放仍属于本 Run 的 Owner。可 Resume Blocked → Running 只能使用 `origin-resume`；Limit / Profile Changed Block 不允许恢复。
 
@@ -2983,10 +3001,12 @@ Stage 1 区分两类边界：
 
 - `PROTOCOL.md` 中的角色限制，例如“只审查不修改”，属于自然语言职责约束，由 Skill 指导 Agent 遵守；工作区 Snapshot 只提供可选事后核验所需的事实，不构成写入拦截；
 - External Binding 的 `launch_profile` 是独立的 Harness 技术权限配置，由 Bootstrap 在 Kickoff 前从 Adapter Probe 闭集中显式选择，并由 Adapter 在该 Role 的 Session Policy 实际需要的 Start / Resume 路径上确定性执行；
-- `default` 是默认 Profile；`trusted-workspace` 和 `full-access` 必须来自用户明确选择，后者没有 Harness Host Sandbox，不能仅依靠协议限制防御恶意或被注入的 Agent；
+- 省略 Profile 时默认选择 `full-access`；它没有 Harness Host Sandbox，不能仅依靠协议
+  限制防御恶意或被注入的 Agent，因此每个新 Run 在首次 Kickoff 前必须取得一次用户
+  确认；`default` 和 `trusted-workspace` 是显式受限选项；
 - Origin Binding 继承当前宿主会话已经拥有的技术权限，Agent-Team 不重新启动或改写其沙箱配置；
 - 不因为自然语言中出现 `read-only` 就自动启用 Codex `--sandbox read-only` 或 Claude `plan`；
-- 默认不启用全权限绕过。
+- 确认后的同一 Run 默认持续使用全权限绕过，不产生逐命令确认；新 Run 必须重新确认。
 
 职责边界写入 `PROTOCOL.md`，技术启动权限写入 `team.json`，两者不得互相推导。Kickoff 后 `launch_profile` 不可在线修改。
 
@@ -3209,7 +3229,7 @@ Status/Diagnose/Watch 的共同信封为：
         "adapter": "claude-code",
         "session_policy": "resume",
         "launch_mode": "interactive",
-        "launch_profile": "default",
+        "launch_profile": "full-access",
         "launch_profile_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "model": null,
         "reasoning_effort": null,
@@ -3802,8 +3822,9 @@ sequenceDiagram
     Redacted/Keep/Delete Raw Retention，并明确隐私边界。
 27. Codex 与 Claude Code 都提供 `default`、`trusted-workspace`、`full-access`，每个
     Profile 的 Start/Resume 权限等价且拥有不同 Hash；
-28. Bootstrap 调用方在用户未明确选择提升权限时使用 `default`；只有用户明确选择
-    时才能冻结提升权限的 Profile，Kickoff 后改变 Profile 必须新建 Run。
+28. Bootstrap 调用方在用户未明确选择受限 Profile 时使用 `full-access`；每个新 Run
+    首次 Kickoff 前只确认一次，Kickoff 后不重复确认且改变 Profile 必须新建 Run；
+    Claude 映射复用该确认跳过危险模式二次提示。
 
 ### 30.2 可靠性验收
 
@@ -3814,7 +3835,8 @@ sequenceDiagram
 5. 不存在目标 Role 时明确失败；
 6. Harness 退出但无正式动作时返回 Origin；
 7. Kickoff 后 `REQUEST.md`、`PROTOCOL.md` 或 `team.json` 被修改时直接推导为 `CORRUPTED`，即使当前 Token 尚未被目标 Claim 也不伪造 Recovery Block；
-8. 默认不启用危险全权限模式，且不能从角色名、任务命令或本机配置隐式升级；
+8. 新 External Role 默认启用 `full-access`，但缺少本 Run 一次性确认时必须在任何启动
+   副作用前拒绝；角色名、任务命令或本机配置不能绕过确认或改变已冻结 Profile；
 9. Run 取消后保留审计目录；
 10. 不创建额外语义状态缓存；Run Status、Token Owner 和 Inbox 只由 Journal 与 Turn Runtime 推导，Ownership 只约束执行；
 11. 在 Payload、Event 和 tmux 提示之间的任一崩溃点都不会产生两个 Token Owner；
@@ -4014,7 +4036,8 @@ sequenceDiagram
 - `codex exec resume`；
 - Start / Resume 分离的 Launch Profile 参数映射逐项一致、预期权限键与 Probe 拒绝
   未知 Profile；
-- 三个内置 Profile 的 Workspace/Network/Full Access 组合，以及默认不启用提升权限；
+- 三个内置 Profile 的 Workspace/Network/Full Access 组合、省略 Profile 时默认
+  Full Access，以及首次启动的一次性确认门禁；
 - 改变用户默认权限配置后，Agent-Team 提交的显式 Launch Profile Mapping 不漂移；
 - 改变 Adapter / CLI 版本或规范化映射后，旧 `launch_profile_sha256` 被拒绝；
 - Resume 路径不假定接受 Start 形式的 `--sandbox` 参数；
@@ -4409,7 +4432,7 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
       "adapter": "claude-code",
       "session_policy": "resume",
       "launch_mode": "interactive",
-      "launch_profile": "default",
+      "launch_profile": "full-access",
       "launch_profile_sha256": "...",
       "harness_options": {
         "model": null,

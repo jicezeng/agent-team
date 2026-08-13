@@ -100,7 +100,15 @@ v0.1 不承诺：
   TUI，只有用户明确要求时才选择 `headless`；旧 Schema 1–3 Run 固定按
   `headless` 读取；
 - Codex 与 Claude Code 都提供 `default`、`trusted-workspace` 和 `full-access`
-  三个显式 Launch Profile；后两者只能由用户主动选择；
+  三个显式 Launch Profile；新 External Role 省略 Profile 时默认冻结为
+  `full-access`（YOLO），`default` 与 `trusted-workspace` 作为显式受限选项；
+- 任一 External Role 使用 `full-access` 时，新 Run 的首次 `start` 必须在 Adapter
+  预检、Ownership、Kickoff 和 Worker 创建前校验一次用户确认；Skill 先向用户披露
+  Host Filesystem、Network 与凭据风险，再传 `--confirm-full-access`。确认写入不可变
+  Kickoff Payload；同一 Run 的后续 Turn、Handoff、Resume、Recover 与重复 Start 不再
+  询问；Claude `full-access` 映射复用该确认设置
+  `skipDangerousModePermissionPrompt=true`，不再弹出危险模式二次确认；Interactive
+  Workspace Trust 是 Claude 独立的一次性工作区前提，缺失时仍在 Kickoff 前拒绝；
 - Launch Profile 不继承 Codex 或 Claude 的用户级可变权限配置；Claude 额外排除
   User/Project/Local Setting Sources；Codex Headless 忽略 User Config 与
   User/Project Rules，Interactive 使用私有 Home，两种模式都冻结权限键并设置
@@ -181,7 +189,8 @@ v0.1 不承诺：
 
 1. 用户在目标 Git Worktree 打开 Origin Agent，并描述团队和任务；
 2. Bootstrap Skill 保存 Request、生成 Protocol、选择 Binding/Profile/Policy；
-3. `init` 与 `start` 建立 Run、Ownership、Kickoff 和所需 External Worker；
+3. 若默认或显式选择了 `full-access`，用户在新 Run 启动前确认一次 YOLO 边界；随后
+   `init` 与带确认参数的 `start` 建立 Run、Ownership、Kickoff 和所需 External Worker；
 4. 当前 Token Role 领取冻结 Input；默认在可只读 Attach 的原生 TUI 中执行任务，
    并提交唯一正式动作；
 5. Handoff 目标领取下一 Turn；同一 Role 按 Session Policy Resume 或 Fresh；

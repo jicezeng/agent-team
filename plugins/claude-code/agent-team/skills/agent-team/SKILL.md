@@ -46,9 +46,19 @@ existing Run:
 4. Record every inference under `Assumptions made during bootstrap`. Keep
    business conditions in natural-language `PROTOCOL.md`; do not invent a
    workflow DSL or machine-parse reviewer verdicts.
-5. Choose each External Launch Profile explicitly from `agent-team doctor`
-   output. Use `default` unless the user explicitly selects
-   `trusted-workspace` or `full-access`. `trusted-workspace` may expand only
+5. Choose each External Launch Profile from `agent-team doctor` output. A new
+   External role defaults to `full-access` (YOLO) unless the user explicitly
+   selects the restricted `default` or `trusted-workspace` Profile. Before
+   initializing and starting every new Run that contains a `full-access` role,
+   disclose once that its agents can access the host filesystem, credentials,
+   and network without per-command approvals, and obtain one explicit user
+   confirmation for that Run. An explicit confirmation in the same user
+   request counts; a prior Run's confirmation does not. After confirmation,
+   record the choice and boundary in `PROTOCOL.md`, pass
+   `--confirm-full-access` to the first Start attempt, and do not ask again for
+   later Turns, Handoffs, Resumes, Recovery, or a retry of the same immutable
+   UNSTARTED Run. If the user declines, do not create or start the Run.
+   `trusted-workspace` may expand only
    capabilities its Adapter can expose without losing the Workspace boundary;
    Claude Code keeps `acceptEdits` and the same OS sandbox for this Profile.
    `full-access` removes the host sandbox and is appropriate only on a
@@ -78,7 +88,10 @@ existing Run:
    exited. Never edit Claude's user trust state or accept the prompt with
    `send-keys`. `HARNESS_WORKSPACE_TRUST_REQUIRED` occurs before Kickoff, so
    after that one-time confirmation retry the same UNSTARTED Run; headless
-   Claude roles do not require this preflight.
+   Claude roles do not require this preflight. This is Claude's independent
+   worktree prerequisite, not another Run permission decision. For
+   `full-access`, the Adapter reuses the confirmation from step 5 to suppress
+   Claude's separate dangerous-mode prompt.
 7. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
@@ -99,8 +112,12 @@ agent-team init \
   --max-trace-bytes 67108864 \
   --raw-retention redacted \
   --require-rationale-evidence
-agent-team start <run-id>
+agent-team start <run-id> --confirm-full-access
 ```
+
+Omit `--confirm-full-access` when every External role explicitly uses a
+restricted Profile. The flag asserts that the user confirmation required in
+step 5 has already occurred; never pass it speculatively.
 
 9. Save the returned Run ID and immediately call
    `agent-team wait-origin --run <run-id> --timeout 90`.

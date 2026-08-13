@@ -8,8 +8,18 @@ from typing import Any
 
 from .adapters import get_adapter
 from .adapters.base import HarnessLaunchOptions
-from .config import Role, Team, load_team
-from .errors import AgentTeamError, IntegrityError, InvalidArgument
+from .config import (
+    DEFAULT_EXTERNAL_LAUNCH_PROFILE,
+    Role,
+    Team,
+    load_team,
+)
+from .errors import (
+    AgentTeamError,
+    FullAccessConfirmationRequired,
+    IntegrityError,
+    InvalidArgument,
+)
 from .gitfacts import capture_workspace_facts
 from .journal import commit_event, scan_journal
 from .processes import current_identity
@@ -78,7 +88,8 @@ def parse_role_spec(
 ) -> tuple[str, Role]:
     if "=" not in spec:
         raise InvalidArgument(
-            f"role must be ROLE=origin or ROLE=ADAPTER:POLICY:PROFILE: {spec!r}"
+            "role must be ROLE=origin or "
+            f"ROLE=ADAPTER:POLICY[:PROFILE]: {spec!r}"
         )
     role_id, binding = spec.split("=", 1)
     from .config import validate_role_id
@@ -96,11 +107,13 @@ def parse_role_spec(
             )
         return role_id, Role(role_id, "origin")
     parts = binding.split(":")
-    if len(parts) != 3:
+    if len(parts) not in {2, 3}:
         raise InvalidArgument(
-            f"external role must be ROLE=ADAPTER:POLICY:PROFILE: {spec!r}"
+            "external role must be ROLE=ADAPTER:POLICY[:PROFILE]: "
+            f"{spec!r}"
         )
-    adapter_id, session_policy, profile = parts
+    adapter_id, session_policy = parts[:2]
+    profile = parts[2] if len(parts) == 3 else DEFAULT_EXTERNAL_LAUNCH_PROFILE
     if adapter_id not in {"codex", "claude-code"}:
         raise InvalidArgument(f"unsupported adapter: {adapter_id}")
     if session_policy not in {"resume", "fresh"}:
@@ -261,8 +274,31 @@ def _preflight_start(run_dir: Path) -> Team:
     return team
 
 
-def start_run(run_dir: Path) -> dict[str, Any]:
+def _full_access_roles(team: Team) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            role.role_id
+            for role in team.roles.values()
+            if role.binding == "external"
+            and role.launch_profile == "full-access"
+        )
+    )
+
+
+def start_run(
+    run_dir: Path,
+    *,
+    confirm_full_access: bool = False,
+) -> dict[str, Any]:
     try:
+        initial_projection = scan_journal(run_dir)
+        full_access_roles = _full_access_roles(initial_projection.team)
+        if (
+            initial_projection.status == "UNSTARTED"
+            and full_access_roles
+            and not confirm_full_access
+        ):
+            raise FullAccessConfirmationRequired(full_access_roles)
         team = _preflight_start(run_dir)
         initial_projection = scan_journal(run_dir)
     except IntegrityError:
@@ -322,9 +358,19 @@ def start_run(run_dir: Path) -> dict[str, Any]:
                 request = read_regular(run_dir / "REQUEST.md")
                 protocol = read_regular(run_dir / "PROTOCOL.md")
                 team_bytes = read_regular(run_dir / "team.json")
+                full_access_confirmation = (
+                    "Full-access confirmation: the user confirmed once "
+                    "before this Run started that External roles "
+                    f"`{'`, `'.join(full_access_roles)}` may access the "
+                    "host filesystem and network without per-command "
+                    "approvals.\n\n"
+                    if full_access_roles
+                    else ""
+                )
                 kickoff = (
                     "# Agent-Team Kickoff\n\n"
                     f"Initial role: `{team.initial_role}`.\n\n"
+                    f"{full_access_confirmation}"
                     "Read REQUEST.md and PROTOCOL.md, then execute the initial role.\n"
                 ).encode("utf-8")
                 started_event = commit_event(

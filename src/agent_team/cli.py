@@ -767,6 +767,14 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start")
     start.add_argument("run_id")
     start.add_argument("--workspace")
+    start.add_argument(
+        "--confirm-full-access",
+        action="store_true",
+        help=(
+            "confirm once that this new Run's full-access External roles may "
+            "use the host filesystem and network without per-command approvals"
+        ),
+    )
 
     for name in ("status", "watch", "diagnose"):
         command = sub.add_parser(name)
@@ -965,7 +973,12 @@ def dispatch(args: argparse.Namespace) -> int:
         )
         return 0
     if command == "start":
-        _json(start_run(_run_dir(args.run_id, args.workspace)))
+        _json(
+            start_run(
+                _run_dir(args.run_id, args.workspace),
+                confirm_full_access=args.confirm_full_access,
+            )
+        )
         return 0
     if command == "status":
         run_dir, corruption = _observation_run_dir(args.run_id, args.workspace)

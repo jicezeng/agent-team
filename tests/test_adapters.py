@@ -1249,7 +1249,11 @@ def test_claude_exposes_explicit_elevated_profiles(
     assert settings("default")["sandbox"]["enabled"] is True
     assert settings("default")["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings("trusted-workspace") == settings("default")
-    assert settings("full-access") == {"sandbox": {"enabled": False}}
+    assert settings("full-access") == {
+        "sandbox": {"enabled": False},
+        "skipDangerousModePermissionPrompt": True,
+    }
+    assert "skipDangerousModePermissionPrompt" not in settings("default")
 
 
 @pytest.mark.parametrize(
@@ -1326,10 +1330,11 @@ def test_role_spec_freezes_explicit_harness_options(
 
         def profile_fingerprint(
             self,
-            _profile: str,
+            profile: str,
             _policy: str,
             launch_mode: str,
         ) -> str:
+            assert profile == "default"
             assert launch_mode == "interactive"
             return "a" * 64
 
@@ -1346,9 +1351,49 @@ def test_role_spec_freezes_explicit_harness_options(
     )
 
     assert role_id == "reviewer"
+    assert role.launch_profile == "default"
     assert role.model == "gpt-explicit"
     assert role.reasoning_effort == "high"
     assert role.fast_mode is True
+
+
+@pytest.mark.parametrize("adapter_id", ["codex", "claude-code"])
+def test_role_spec_defaults_external_roles_to_full_access(
+    monkeypatch: pytest.MonkeyPatch,
+    adapter_id: str,
+) -> None:
+    class StubAdapter:
+        @staticmethod
+        def assert_launch_mode(selected_mode: str) -> None:
+            assert selected_mode == "interactive"
+
+        @staticmethod
+        def resolve_launch_options(**_values) -> HarnessLaunchOptions:
+            return HarnessLaunchOptions(
+                fast_mode=False if adapter_id == "codex" else None
+            )
+
+        @staticmethod
+        def profile_fingerprint(
+            profile: str,
+            policy: str,
+            launch_mode: str,
+        ) -> str:
+            assert profile == "full-access"
+            assert policy == "resume"
+            assert launch_mode == "interactive"
+            return "f" * 64
+
+    monkeypatch.setattr(
+        "agent_team.bootstrap.get_adapter",
+        lambda selected: StubAdapter(),
+    )
+
+    role_id, role = parse_role_spec(f"developer={adapter_id}:resume")
+
+    assert role_id == "developer"
+    assert role.launch_profile == "full-access"
+    assert role.launch_profile_sha256 == "f" * 64
 
 
 @pytest.mark.parametrize("profile", ["trusted-workspace", "full-access"])

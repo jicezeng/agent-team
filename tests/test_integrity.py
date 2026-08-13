@@ -11,6 +11,7 @@ from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
     Role,
+    Team,
     make_team,
     parse_team,
 )
@@ -45,6 +46,96 @@ def _run(
         max_wall_time_seconds=300,
     )
     return initialize_run(team=team, request_path=request, protocol_path=protocol)
+
+
+def test_full_access_requires_one_confirmation_before_first_kickoff(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_team import bootstrap
+
+    request, protocol = request_protocol
+    team = make_team(
+        run_id="at-test-full-access-confirmation",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "full-access",
+                "f" * 64,
+                fast_mode=False,
+                launch_mode="interactive",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+    monkeypatch.setattr(bootstrap, "_assert_external_capability", lambda _role: None)
+    run_dir = initialize_run(
+        team=team,
+        request_path=request,
+        protocol_path=protocol,
+    )
+    preflight_called = False
+
+    def unexpected_preflight(_run_dir: Path) -> Team:
+        nonlocal preflight_called
+        preflight_called = True
+        return team
+
+    monkeypatch.setattr(bootstrap, "_preflight_start", unexpected_preflight)
+
+    with pytest.raises(AgentTeamError) as rejected:
+        start_run(run_dir)
+
+    assert rejected.value.code == "FULL_ACCESS_CONFIRMATION_REQUIRED"
+    assert rejected.value.exit_code == 2
+    assert scan_journal(run_dir).status == "UNSTARTED"
+    assert read_owner(workspace) is None
+    assert list((run_dir / "events").iterdir()) == []
+    assert preflight_called is False
+
+    monkeypatch.setattr(bootstrap, "_preflight_start", lambda _run_dir: team)
+    monkeypatch.setattr(
+        bootstrap,
+        "ensure_workers",
+        lambda _run_dir, _team: {
+            "session": "test-session",
+            "created": [],
+            "existing": [],
+        },
+    )
+    monkeypatch.setattr(bootstrap, "signal_change", lambda *_args: None)
+
+    started = start_run(run_dir, confirm_full_access=True)
+
+    assert started["status"] == "RUNNING"
+    kickoff = started["kickoff_event"]
+    payload = (run_dir / kickoff["payload_path"]).read_text(encoding="utf-8")
+    assert "Full-access confirmation" in payload
+    assert "`developer`" in payload
+
+    from agent_team import management
+
+    monkeypatch.setattr(
+        management,
+        "recover_run",
+        lambda _run_dir: {
+            "status": "RUNNING",
+            "tmux": None,
+            "actions": [],
+            "owner_released": False,
+        },
+    )
+    repeated = start_run(run_dir)
+    assert repeated["status"] == "RUNNING"
+    assert repeated["kickoff_event"] is None
 
 
 @pytest.mark.parametrize("filename", ["REQUEST.md", "PROTOCOL.md", "team.json"])

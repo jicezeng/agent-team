@@ -655,9 +655,9 @@ uv run python -m compileall -q src tests
 uv build
 ```
 
-The real two-Codex and mixed Claude Code/Codex validation materials are in
-[`docs/validation`](docs/validation). The observability implementation's
-mixed-Harness evidence is summarized in
+The real two-Codex and mixed Claude Code/Codex validation materials are listed
+in the [`validation evidence index`](docs/validation/README.md). The
+observability implementation's mixed-Harness evidence is summarized in
 [`observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md).
 The current native-TUI Codex PTY, action-termination, same-session Resume, and
 mixed Interactive Claude Code/Codex evidence is summarized separately in

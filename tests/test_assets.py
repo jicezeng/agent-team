@@ -5,6 +5,9 @@ from pathlib import Path
 from agent_team import assets
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
 def test_effective_cli_prefers_current_interpreter_sibling_over_path(
     tmp_path: Path,
     monkeypatch,
@@ -39,3 +42,46 @@ def test_effective_cli_falls_back_to_path_without_interpreter_sibling(
     monkeypatch.setattr(assets.shutil, "which", lambda _name: str(path_cli))
 
     assert assets.effective_agent_team_cli() == path_cli.resolve()
+
+
+def test_shared_integration_references_are_byte_identical() -> None:
+    codex_root = REPOSITORY_ROOT / "skills" / "codex" / "agent-team"
+    claude_root = (
+        REPOSITORY_ROOT
+        / "plugins"
+        / "claude-code"
+        / "agent-team"
+        / "skills"
+        / "agent-team"
+    )
+
+    for relative in (
+        "references/coordination.md",
+        "references/protocol-template.md",
+    ):
+        assert (codex_root / relative).read_bytes() == (
+            claude_root / relative
+        ).read_bytes()
+
+
+def test_harness_skill_variants_have_only_the_intended_shell_wording() -> None:
+    codex_skill = (
+        REPOSITORY_ROOT / "skills" / "codex" / "agent-team" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    claude_skill = (
+        REPOSITORY_ROOT
+        / "plugins"
+        / "claude-code"
+        / "agent-team"
+        / "skills"
+        / "agent-team"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert codex_skill.count("shell invocation") == 1
+    assert "Bash invocation" not in codex_skill
+    assert claude_skill == codex_skill.replace(
+        "shell invocation",
+        "Bash invocation",
+        1,
+    )

@@ -14,8 +14,8 @@ from agent_team.state import state_paths
 from agent_team.turns import iter_runtimes
 from agent_team.util import atomic_json, atomic_write, canonical_json_bytes, rfc3339
 
-from test_origin_flow import make_origin_run
-from test_worker_lifecycle import _external_run
+from tests.test_origin_flow import make_origin_run
+from tests.runtime._support import _external_run
 
 
 def _tree_mtimes(root: Path) -> dict[str, int]:

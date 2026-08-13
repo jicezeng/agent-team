@@ -44,4 +44,5 @@ testpaths = ["tests"]
 dev = [
   "pytest>=8.3",
   "pytest-timeout>=2.3",
+  "ruff>=0.16.3",
 ]

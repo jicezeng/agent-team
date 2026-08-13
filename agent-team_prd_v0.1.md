@@ -11,7 +11,7 @@
 
 - [技术设计文档](agent-team_technical_design_v0.1.md)定义实现合同、数据结构、状态转换和恢复不变量；
 - [README](README.md)提供安装和使用说明；
-- [`docs/validation`](docs/validation)保存真实运行的验证材料与结果。
+- [`docs/validation/README.md`](docs/validation/README.md)索引真实运行的验证材料与结果。
 
 发生冲突时，产品范围以本文为准，运行时行为以技术设计和当前测试共同约束；README
 不得扩展二者未承诺的能力。

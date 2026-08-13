@@ -392,15 +392,7 @@ def test_interactive_completion_preserves_signal_exit_as_action() -> None:
     assert not adapter.classify_result(result, evidence).is_normal_completion
 
 
-def test_codex_start_and_resume_freeze_equivalent_permissions(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    state_dir = tmp_path / "fixed state"
-    monkeypatch.setattr(
-        "agent_team.adapters.codex.fixed_state_dir",
-        lambda: state_dir,
-    )
+def test_codex_start_and_resume_freeze_equivalent_permissions() -> None:
     adapter = CodexAdapter()
 
     mappings = adapter.profile_mappings()["default"]
@@ -411,17 +403,9 @@ def test_codex_start_and_resume_freeze_equivalent_permissions(
     assert "--ignore-rules" in mappings["start"]
     assert 'sandbox_mode="workspace-write"' in rendered
     assert 'approval_policy="never"' in rendered
+    assert "features.hooks=false" in mappings["start"]
     assert "sandbox_workspace_write.network_access=false" in rendered
-    roots_option = next(
-        item
-        for item in mappings["start"]
-        if item.startswith("sandbox_workspace_write.writable_roots=")
-    )
-    roots = json.loads(roots_option.split("=", 1)[1])
-    assert roots == [
-        str(state_dir / "workspace-locks"),
-        str(state_dir / "workspaces"),
-    ]
+    assert "sandbox_workspace_write.writable_roots=[]" in mappings["start"]
 
 
 def test_codex_exposes_explicit_elevated_profiles(
@@ -446,6 +430,10 @@ def test_codex_exposes_explicit_elevated_profiles(
         and "--ignore-rules" in mapping["start"]
         for mapping in mappings.values()
     )
+    assert all(
+        "features.hooks=false" in mapping["start"]
+        for mapping in mappings.values()
+    )
     default = " ".join(mappings["default"]["start"])
     trusted = " ".join(mappings["trusted-workspace"]["start"])
     full = " ".join(mappings["full-access"]["start"])
@@ -453,6 +441,10 @@ def test_codex_exposes_explicit_elevated_profiles(
     assert "sandbox_workspace_write.network_access=false" in default
     assert 'sandbox_mode="workspace-write"' in trusted
     assert "sandbox_workspace_write.network_access=true" in trusted
+    assert (
+        "sandbox_workspace_write.writable_roots=[]"
+        in mappings["trusted-workspace"]["start"]
+    )
     assert 'sandbox_mode="danger-full-access"' in full
     assert 'approval_policy="never"' in full
     assert "sandbox_workspace_write." not in full
@@ -742,6 +734,8 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     assert "exec" not in launch.argv
     assert "--ignore-user-config" not in launch.argv
     assert "--ignore-rules" not in launch.argv
+    assert "features.hooks=false" in launch.argv
+    assert "sandbox_workspace_write.writable_roots=[]" in launch.argv
     assert "--no-alt-screen" in launch.argv
     assert launch.prompt_file == str(turn_dir / "process" / "prompt.md")
     assert launch.expected_session_ref is None
@@ -757,6 +751,8 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
         )
     )
     assert resumed.argv[1] == "resume"
+    assert "features.hooks=false" in resumed.argv
+    assert "sandbox_workspace_write.writable_roots=[]" in resumed.argv
     assert resumed.expected_session_ref == "019fa804-8bc9-7bc3-a8e9-baf8cee27430"
 
     generated = isolated_home / "plugins" / "cache"

@@ -868,11 +868,13 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 `harness_options.model` 与 `reasoning_effort` 对 Codex、Claude Code 都可为字符串或
 `null`；`fast_mode` 的 Schema 对 Codex 接受布尔值或 `null`，Claude Code 必须为
 `null`。显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
-Harness 默认值独立解析并冻结。Codex 只读取 `model`、
+Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用的值。Codex 只读取 `model`、
 `model_reasoning_effort`、`service_tier` 和 `features.fast_mode`；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
 `model` / `effortLevel`。Model 或 Reasoning Effort 没有用户值时保持 `null`，由
-Harness 使用账户或模型默认值。当前公共 CLI 新建 Schema 4 Codex Role 时则把 Fast
+Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
+冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
+CLI 新建 Schema 4 Codex Role 时则把 Fast
 Mode 冻结为有效布尔值：用户配置的 `service_tier="fast"` 且
 `features.fast_mode` 未显式关闭时为 `true`，其他情况为 `false`；`null` 只保留为
 Schema 兼容值，表示不增加 Fast Mode 启动覆盖。不得为了继承这些选择而加载用户
@@ -900,15 +902,46 @@ Harness Options 继续按未冻结的历史语义读取，不就地改写 `team.
 
 外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex 与 Claude Code 当前都提供 `default | trusted-workspace | full-access`：
 
-- `default` 保持工作区沙箱；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止 Unsandboxed Fallback；
-- `trusted-workspace` 保留工作区边界；Codex 跳过 Harness 交互审批并开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱；
+- `default` 保持 Workspace 受限沙箱；Codex 禁止命令网络，Claude 使用 `acceptEdits` 且禁止未声明的 Unsandboxed Fallback；
+- `trusted-workspace` 保留相同文件系统边界；Codex 跳过 Harness 交互审批并开放沙箱内命令网络，Claude 使用 `acceptEdits` 和与 `default` 相同的强制 OS 沙箱；
 - `full-access` 跳过审批并关闭 Harness 宿主沙箱；Codex 使用 `danger-full-access`，Claude 使用 `bypassPermissions` 与 `sandbox.enabled=false`。
 
 Claude 的 OS 沙箱只约束 Bash 及其子进程，内置 Edit/Write 仍由 Permission Mode 控制。因此任何声称保留工作区边界的 Claude Profile 都不得使用裸 `bypassPermissions`；当前 `default` 与 `trusted-workspace` 都使用 `acceptEdits`，只有明确的 `full-access` 可以绕过内置文件工具的路径审批。
 
-每个 Profile 必须显式设置所有权限相关参数，不能把可变的用户默认配置当作 Profile 的一部分；三个 Profile 都忽略本机 User/Project Permission Settings。Skill 或其他 Bootstrap 调用方在用户未明确选择提升权限时必须提交 `default`，只有用户明确指定准确名称时才可提交后两者，并必须把 Adapter 实际采用的信任边界写入协议。不得根据 Role ID、测试命令、`PROTOCOL.md` 中的 `read-only` 或本机交互 Session 状态自动映射。`full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
+这里的 Workspace 边界允许受控的运行时例外，但不允许任意宿主写入：Codex 保留
+`/tmp` 与 `$TMPDIR` Scratch Root；Claude 只额外允许
+`<CLAUDE_CODE_TMPDIR>/claude-<uid>` 作为 Bash 内部临时目录。Claude 两个 Workspace
+Profile 的 `agent-team handoff|complete|block` 三类精确命令是显式 Sandbox Exclusion，
+而非失败后自动降级；Agent-Team 仍校验固定 CLI、当前 Turn 环境与 Runtime、Run 内
+Source Path 和不可变 Outbox。Codex 的 Formal Action 以只读方式打开用户状态目录中的
+既有 Workspace 操作锁；Profile 同时把 `sandbox_workspace_write.writable_roots` 显式
+冻结为空数组，防止 Project Config 增加额外路径，因此不把共享 `workspace-locks/` 或
+`workspaces/` 目录加入 Harness 通用可写根。以上例外都不等价于 `full-access`。
 
-`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
+每个 Profile 必须显式设置 Agent-Team 能控制的所有权限相关参数，不能把可变的用户
+默认配置当作 Profile 的一部分。Claude 排除 User/Project/Local Setting Sources；
+Codex Headless 忽略 User Config 与 User/Project Rules，Interactive 使用私有 Home，
+两种模式都冻结权限键并设置 `features.hooks=false`，从而关闭 User、Project、Session
+与 Plugin 的非受管 Hook。受信任 Workspace 内其余 Project Config、Instruction 与
+Extension 仍属于 Workspace Trust Boundary，不能误报成 Profile 已消除的输入。Codex 的
+Admin-enforced Requirements 可以约束允许的 Sandbox、Approval、Permission Profile
+和 Feature，并拒绝不兼容的启动选择；它们不是用户配置，不能被 Profile 绕过，也可以
+强制重新启用具有宿主副作用的 Managed Hook 或配置 Log Path。Claude 的
+Enterprise Managed Settings 优先级高于命令行且不能由
+`--setting-sources ""` 排除；数组型权限设置还会合并。因此上述 Claude Workspace
+边界只描述 Agent-Team 提供的 Mapping。两个 Harness 的 Workspace Profile 都以管理员
+策略没有增加宿主可写路径、Sandbox Exclusion 或宿主执行 Hook 为前提。两类管理员策略
+都不进入 `launch_profile_sha256`，`doctor` 也不能证明
+其云端或最终有效内容；需要把这条边界作为安全保证时，操作者必须核验相应管理员配置，
+并在 Claude `/status`、`/permissions` 核验有效来源，或使用专用的非托管主机 / VM。
+
+Skill 或其他 Bootstrap 调用方在用户未明确选择提升权限时必须提交 `default`，只有用户
+明确指定准确名称时才可提交后两者，并必须把 Adapter 实际采用的信任边界写入协议。
+不得根据 Role ID、测试命令、`PROTOCOL.md` 中的 `read-only` 或本机交互 Session 状态
+自动映射。`full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或
+VM；自然语言职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
+
+`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。它只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements 或 Claude Enterprise Managed Settings。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
 Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `workspace` 为工作目录。需要修改多个根目录时必须拆成多个 Run 或等待后续版本，不能只锁其中一个目录。
 
@@ -991,9 +1024,11 @@ Limit、Profile Changed、Recovery 和 Start Failure 不再使用新的 Event �
 
 此时禁止追加 Event、启动 Harness、重建 Worker 或自动获取 / 释放 Ownership。Runtime 可以依据完整的 PID / PGID / Start ID 做执行安全清理，但不能把清理结果写成新的业务 Event。确认无活进程后，用户才可显式 Unlock；若 Owner 在发现故障前已经按终态规则安全释放，则只报告审计损坏，不重新获取 Owner。
 
-状态读取先扫描不可变 Journal 以判断合法终态与 Owner 是否本应存在，再执行其余完整性校验；任何 `CORRUPTED` 条件都优先于 `RUNNING | BLOCKED | COMPLETED | CANCELLED` 的正常展示。这样同一损坏 Run 不会因调用的是 `status`、`claim` 还是 `recover` 而得到不同状态。
+状态读取先扫描不可变 Journal 以判断合法终态与 Owner 是否本应存在，再执行其余完整性校验；任何 `CORRUPTED` 条件都优先于 `RUNNING | BLOCKED | COMPLETED | CANCELLED` 的正常展示。这样同一损坏 Run 不会因调用的是 `status`、Turn 领取路径还是 `recover` 而得到不同状态。
 
-Stage 1 的 Run 有较小 `max_turns` 和 Wall Time 上限，`status`、`claim` 和 `recover` 直接按文件名顺序扫描并校验 `events/`，再读取必要的 Turn Runtime。不维护第二份语义状态缓存，避免缓存更新和恢复协议。
+Stage 1 的 Run 有较小 `max_turns` 和 Wall Time 上限，`status`、Worker/Origin 的 Turn
+领取路径和 `recover` 都直接按文件名顺序扫描并校验 `events/`，再读取必要的 Turn
+Runtime。不维护第二份语义状态缓存，避免缓存更新和恢复协议。
 
 ## 13.3 Worker 与 Turn Runtime
 
@@ -1209,7 +1244,13 @@ Evidence 并进入停止流程。完整性失败时只终止已验证的 Runner 
 Supervisor 才写入 `group_quiescent=true` 的最终快照并退出。该字段只证明受管 PGID
 已清空，不证明系统中不存在曾由 Harness 创建、后来主动脱离该进程组的进程。
 
-Stage 1 的 Coordination 合同禁止角色启动通过 `setsid`、`setpgid`、双重 Fork 等方式逃离 Runner 进程组的后台 daemon。Adapter Probe 只能拒绝“CLI 启动器自身会立即脱离进程组”的实现，并通过集成测试验证主进程和普通子进程的受管行为；它不能证明模型以后执行的任意工具命令都不会逃逸。运行时观察到可确认的逃逸证据时提交 Recovery Block 并保留 Ownership；未被观察到的逃逸进程属于 Stage 1 明确接受的本机协作前提。Stage 1 不把 `group_quiescent` 描述为容器级隔离或完整后代进程证明。
+Stage 1 的 Coordination 合同禁止角色启动通过 `setsid`、`setpgid`、双重 Fork 等方式
+逃离 Runner 进程组的后台 daemon。内置 Adapter 对当前支持的 CLI 声明主启动器应留在
+受管进程组，`init` 拒绝 Capability Report 明确标记为不满足该条件的 Adapter；这是
+版本兼容声明和集成测试边界，不是每次 `doctor` 都会启动真实模型进程的动态证明。
+Supervisor 只验证并清理实际记录的 Runner PGID；未留下 Agent-Team 可验证身份的逃逸
+进程属于 Stage 1 明确接受的本机协作前提。Stage 1 不把
+`group_quiescent` 描述为容器级隔离或完整后代进程证明。
 
 `worker_start_id`、`supervisor_start_id` 与 `runner_start_id` 都是操作系统可验证的进程创建标识，不是 Runtime 自己生成的当前时间。存在 External Binding 且当前平台无法提供稳定 Start ID 时，`start` 直接拒绝启动；纯 Origin Run 不需要伪造该能力。终止时优先向 PID / Start ID 匹配的 Supervisor 发请求，由它清理 Runner 进程组；Supervisor 不响应时，只有 Runner PID、PGID 与 Start ID 全部匹配才可直接 `killpg`。若 Runner Leader 已退出、Supervisor 也无法验证而 PGID 仍疑似有成员，则身份未知，不发送信号。PID 存在但 Start ID 不同表示 PID 已复用，禁止向新进程发送信号。
 
@@ -1584,7 +1625,10 @@ Raw 仍存在，则从原始输入重新计算并要求与 Receipt 逐字节一�
 Observability Policy、Capture/截断/脱敏/事件计数、Tool 与 Usage 汇总，以及
 `input.md`、LaunchSpec、Capture、保留的 Raw/Stderr、Outbox/Formal Payload、
 Harness Final Message 和 `trace.jsonl` 中实际存在项的相对路径、Byte Size 与
-SHA-256。`trace.jsonl` 必须被 Manifest 覆盖；Manifest Hash 按 13.3 写入
+SHA-256。为兼容已经提交的 Manifest Schema 1，Interactive `process/prompt.md` 不新增
+独立 Artifact Kind；已锚定的 LaunchSpec 同时包含其绝对路径和完整 Prompt，Validator
+必须据此逐字节校验保留文件，因此同样能检出后续缺失或篡改。`trace.jsonl` 必须被
+Manifest 覆盖；Manifest Hash 按 13.3 写入
 Runtime。Observation、Transcript 与 Recovery 都重新校验 Runtime Anchor、
 Manifest 身份、Policy、Artifact Hash/Size、Trace Sequence、Raw Ref 和 Summary。
 Validator 必须把固定 Artifact Path 集合与磁盘中实际存在项精确对账，拒绝未列入
@@ -1933,6 +1977,12 @@ Interactive 加入显式 Mode Frame。权限相关键必须由命令行参数或
 两种 Mode 的完成证据；仅看到进程消失、Pane 最终文本或任意退出码不能令
 `ExitInfo.is_normal_completion` 为真。
 
+Probe 是只读的声明与身份探测：它读取可执行真实路径、版本、可判定的认证状态和
+Adapter 提供的确定映射；Fingerprint 只校验映射结构，并在 Resume Policy 下要求
+Start/Resume 参数列表逐项相同。Probe 不启动真实模型，也不动态证明 CLI 已接受参数、
+管理员最终策略或有效权限语义。受支持 CLI 版本的参数兼容与预期语义由集成验证维护；
+真实启动仍以 Harness 的实际结果 Fail Closed，不能把 Probe 成功升级成运行时权限证明。
+
 ## 17.2 Stage 1 External Adapter 范围
 
 v0.1 实现：
@@ -1955,12 +2005,19 @@ v0.1 实现：
 - 后续使用 `--resume` 恢复；
 - `--output-format stream-json` 获取事件流；
 - 不使用 `--no-session-persistence`；
-- Start 与 Resume 都使用 `team.json` 中已经过 Probe 校验的同一 `launch_profile` 语义；
+- Start 与 Resume 都使用 `team.json` 中已冻结、且启动前重新核对 Fingerprint 的同一
+  `launch_profile` 映射；
 - `default` 使用 `acceptEdits` 和强制可用的 Workspace Sandbox；
 - `trusted-workspace` 同样使用 `acceptEdits`，保留相同 Sandbox 并禁止 Unsandboxed Fallback，不允许内置 Edit/Write 绕过 Workspace 边界；
-- `full-access` 使用 `bypassPermissions` 并显式关闭 Claude Sandbox；三种模式都继续加载 Agent-Team Plugin、忽略本机 Setting Sources，并直接 Deny Agent-Team 管理命令 Pattern；
-- 冻结的 `model` 通过 `--model` 同时应用于 Start / Resume，冻结的 Reasoning Effort 通过 `CLAUDE_CODE_EFFORT_LEVEL` 应用于受支持版本；
-- Prompt 以 argv 或 stdin 传入，不通过 Shell 字符串拼接。
+- `full-access` 使用 `bypassPermissions` 并显式关闭 Claude Sandbox；三种模式都继续加载
+  Agent-Team Plugin，以 `--setting-sources ""` 忽略 User/Project/Local Setting Sources，
+  但不会也不能绕过 Enterprise Managed Settings，并直接 Deny Agent-Team 管理命令
+  Pattern；
+- 冻结的请求 `model` 通过 `--model` 同时传给 Start / Resume，冻结的 Reasoning Effort
+  通过 `CLAUDE_CODE_EFFORT_LEVEL` 传给受支持版本；Enterprise Managed Settings 对
+  Model 的更高优先级仍按前述边界生效；
+- Headless Prompt 通过 stdin 传入；Interactive 只把引用不可变 Prompt 文件的短
+  Bootstrap Prompt 作为最后一个 argv 参数传入，不通过 Shell 字符串拼接。
 - Interactive Start/Resume 去掉 `-p` 与 Stream JSON 参数，保持同一 Profile、Plugin、
   Setting-Source 和 Session UUID 语义，由 Runner 把引用不可变 Prompt 文件的短
   Bootstrap Prompt 作为位置参数传入；Headless 才从 stdin 读取完整 Prompt。
@@ -1982,8 +2039,7 @@ v0.1 实现：
 claude -p \
   --session-id <uuid> \
   --output-format stream-json \
-  --verbose \
-  "<turn-prompt>"
+  --verbose < turn-prompt.md
 ```
 
 后续：
@@ -1992,8 +2048,7 @@ claude -p \
 claude -p \
   --resume <uuid> \
   --output-format stream-json \
-  --verbose \
-  "<turn-prompt>"
+  --verbose < turn-prompt.md
 ```
 
 适配器必须以运行时能力探测结果为准，分别维护 Start / Resume 的 Profile 参数映射，不能把 CLI 参数顺序暴露为 Agent-Team 的公共协议。
@@ -2021,12 +2076,16 @@ Profile Changed fail-closed。
 - `default` 使用 `workspace-write`、`approval_policy=never` 且关闭命令网络；
 - `trusted-workspace` 保持 `workspace-write` 和 `approval_policy=never`，但开放命令网络；
 - `full-access` 使用 `danger-full-access` 与 `approval_policy=never`，只有用户明确选择时启用；
+- 三种 Profile 都显式设置 `features.hooks=false`；Codex 的 Hook 来源采用合并语义，
+  不能仅依赖高优先级配置覆盖 Project Hook。Admin Requirements 仍可强制启用
+  Managed Hook，属于前述外部管理边界；
 - Headless 的三种 Profile 使用 `--ignore-user-config` 和 `--ignore-rules`。Interactive
   CLI 不接受这两个 Exec-only 参数，因此 Agent-Team 在固定状态目录创建每个
   Run/Role 独立的 `CODEX_HOME`：只含当前规范化 Workspace `trust_level="trusted"`
   的不可变最小配置、私有认证副本和独立 Session Store；该 Trust 条目只消除原生
   TUI 的确认页，不复制用户 Permission、MCP、Hook 或 Plugin。启动前在该 Home 内
-  再次验证认证；Workspace 自身受信任后可生效的项目级配置仍属于 Workspace 内容；
+  再次验证认证；Workspace 自身受信任后可生效的其余项目级配置、Instruction 与
+  Extension 仍属于 Workspace 内容，需要由操作者纳入 Workspace 信任判断；
 - Codex 可能无视受管 Umask，为内建缓存显式创建 0755/0644 条目，并在 `tmp/`
   创建指向 CLI 的进程期 Wrapper Symlink。只有对应 Runner PGID 已证明 Quiescent 后，
   Adapter 才删除该 Home 的临时 Wrapper 目录、保留 Session Store，并递归清除持久
@@ -2052,7 +2111,12 @@ codex exec --json --sandbox workspace-write - < turn-prompt.md
 codex exec resume <session-id> --json <resume-profile-args> - < turn-prompt.md
 ```
 
-当前 Codex CLI 的 Resume 子命令不保证接受 Start 路径的 `--sandbox` 形式；Adapter 必须使用该版本 Probe 证明可用的配置覆盖或等价机制，不能简单复用 Start argv。实际参数顺序留在 Adapter 内部，集成测试验证 Start 与 Resume 的有效技术权限一致。Session 快照同时记录 `effective_launch_profile` 与 Hash，恢复时不得仅凭 Profile 名称假定旧 Session 的实际权限映射。
+当前 Codex CLI 的 Resume 子命令不保证接受 Start 路径的 `--sandbox` 形式；Adapter
+必须为受支持版本使用 Start/Resume 都接受的配置覆盖或等价机制，不能简单复用 Start
+argv。Probe 只声明并冻结这份映射，不动态执行它；实际参数顺序留在 Adapter 内部，
+受支持版本的集成验证维护参数兼容与预期权限语义，真实启动失败时 Fail Closed。
+Session 快照同时记录 `effective_launch_profile` 与 Hash，恢复时不得仅凭 Profile 名称
+假定旧 Session 的实际权限映射。
 
 ## 17.5 Origin Executor
 
@@ -2520,11 +2584,13 @@ Stage 1 没有宿主用户消息的签名能力，也不能机器判断一段自
         │   │   ├── trace.jsonl
         │   │   ├── trace-manifest.json
         │   │   ├── process/
+        │   │   │   ├── prompt.md          # 仅 Interactive Turn
         │   │   │   ├── supervisor.json
         │   │   │   ├── runner.json
         │   │   │   ├── launch.json
         │   │   │   ├── launch-authorized.json
         │   │   │   ├── capture.json
+        │   │   │   ├── exec-error.json    # 仅 Runner 启动错误
         │   │   │   ├── trace-finalization.json  # 仅收口事务未提交时存在
         │   │   │   ├── stream.jsonl
         │   │   │   └── stderr.log
@@ -2590,7 +2656,8 @@ Stage 1 使用：
 `events/<seq>-<event-id>.json` 的出现是唯一提交点：
 
 - 未被 Event 引用的临时 Payload、Handoff 或 Completion 文件属于孤立文件，不影响 Token；
-- 启动、`status`、`claim` 和 `recover` 都直接校验 Event 序号、`prev_event_id` 与 Payload Hash；
+- `start`、观察命令、Worker/Origin 的 Turn 领取路径和 `recover` 都直接校验 Event
+  序号、`prev_event_id` 与 Payload Hash；
 - Stage 1 面向短 Run，并受 Turn / Wall Time 上限约束，因此不维护额外 Tail 指针、Run 状态文件或流式索引；
 - 若后续扫描成本成为真实问题，Stage 2 直接迁移到 SQLite，而不是先增加文件缓存协议。
 
@@ -2601,7 +2668,9 @@ Event 是唯一语义提交点，但恢复判断还依赖完整的技术快照�
 - `turns/<turn-id>/runtime.json`；
 - `turns/<turn-id>/process/supervisor.json`；
 - 首次创建后不可变的 `turns/<turn-id>/process/runner.json`；
+- 首次创建后不可变的 `turns/<turn-id>/process/launch.json`；
 - 首次创建后不可变的 `turns/<turn-id>/process/launch-authorized.json`；
+- Interactive Turn 首次创建后不可变的 `turns/<turn-id>/process/prompt.md`；
 - 首次创建后不可变的 `turns/<turn-id>/input.md`；
 - 首次创建后不可变的 `turns/<turn-id>/workspace-facts-before.json`；
 - 首次创建后不可变的 `turns/<turn-id>/workspace-facts-after.json`；
@@ -2637,7 +2706,10 @@ JSON 字段回填。
 - 启动许可存在且 `supervisor.json` 已明确记录 `group_quiescent=true` 时，按该最终快照分类并收口；
 - 启动许可存在但 Supervisor / Runner 身份、最终结果或 Runner 进程组清空状态无法确认时，写入最小 `recovery_required` Runtime 并禁止新 Harness；
 - Turn Runtime、Outbox 或 Workspace Facts 损坏：只有在 Journal、唯一 Turn 目录和未损坏字段能唯一确定 `turn_id`、`role_id` 与输入 Event 时才允许提交 Recovery Block；进程组已证明清空则直接 Finalize，仍不确定才写入最小 `recovery_required` Runtime，否则推导为 `CORRUPTED`；
-- `input.md` 缺失时不得启动 Harness；若尚未启动，可从仍通过 Hash 校验的 Event Payload 完成首次创建，若已经启动则按 Recovery Block 处理；已存在但 Hash 不一致表示不可变快照被改写，直接推导为 `CORRUPTED`；
+- `input.md`、Runtime 与适用的 Before Facts 在临时目录中完整写入后，才以整目录
+  `rename` 提交 Turn；未提交的临时目录可以丢弃并从当前 Event 重新 Claim。最终 Turn
+  目录一旦出现，`input.md` 缺失或 Hash 不一致都表示已提交不可变快照损坏，直接推导为
+  `CORRUPTED`，不得从 Event Payload 重新生成，也不得降级为 Recovery Block；
 - Outbox Payload、Before Facts 或 After Facts 缺失、Hash 不匹配时不得交付 Outbox，也不能从原始 `--file`、当前 Workspace、Pane 文本或 Harness 最终回复重新生成；
 - Worker Runtime 损坏不改变 Journal 状态，但在无法证明旧 Worker 已退出时禁止重建 Worker、发送信号或释放 Ownership；
 - Session 文件不存在只在“首次 Session Ref 尚未产生”的既定状态下合法；已存在的 Session 文件若无法通过固定 Schema 校验，直接推导为 `CORRUPTED`，不覆盖原文件、不猜测 Generation，也不降级为 Fresh。只有 Adapter 对一份有效 Session 快照给出结构化 unavailable 结论时，才按 17.6 等待用户明确 Resume 后降级。
@@ -2709,9 +2781,9 @@ Ownership 只阻止另一个 Agent-Team Run，不声称能阻止用户、IDE 或
 ## 23.1 安装与诊断
 
 ```bash
+agent-team --version
 agent-team install
-agent-team doctor
-agent-team doctor --json
+agent-team doctor [--workspace <path>] [--json]
 ```
 
 `doctor` 检查：
@@ -2722,7 +2794,10 @@ agent-team doctor --json
 - Claude Code CLI；
 - 当前认证状态的可用性；
 - Session Resume 能力；
-- Adapter 对各 Role 实际 Session Policy 所需的 Launch Profile 路径，以及 CLI 主进程能否留在受管进程组；该检查不声称证明 Agent 后续启动的任意进程；
+- Adapter 对所有内置 Launch Mode / Profile 的 Start / Resume Mapping；Workspace
+  存在 Owner 时还重新验证其活跃 Run 中各 External Role 的冻结 Profile Hash；
+- Adapter 对 CLI 主启动器进程组兼容性的 Capability 声明；该声明不是通过启动真实
+  模型进程完成的动态证明，也不声称覆盖 Agent 后续启动的任意进程；
 - 操作系统进程 Start ID 查询能力；
 - Git，以及规范化 Workspace 是否恰好为一个有效 Worktree 根目录；
 - `.agent-team/` 是否被跟踪、是否被用户 ignore，以及目录 / 文件权限；
@@ -2735,18 +2810,46 @@ agent-team doctor --json
 ## 23.2 Run 管理
 
 ```bash
-agent-team init [options]
-agent-team start <run-id>
-agent-team status [<run-id>] [--json]
-agent-team watch [<run-id>] [--jsonl]
-agent-team diagnose [<run-id>] [--role <role-id>] [--json]
-agent-team transcript [<run-id>] [--role <role-id>] [--turn <turn-id>] [--json]
-agent-team tail [<run-id>] [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
-agent-team attach <run-id> [--role <role-id>]
-agent-team cancel <run-id>
-agent-team recover <run-id>
+agent-team init \
+  [--workspace <path>] \
+  --request <path> \
+  --protocol <path> \
+  --role <role-spec> [--role <role-spec> ...] \
+  [--role-model <role-id>=<model>] \
+  [--role-reasoning-effort <role-id>=<effort>] \
+  [--role-fast <role-id>] \
+  [--role-launch-mode <role-id>=<interactive|headless>] \
+  --initial-role <role-id> \
+  [--origin-harness <harness>] \
+  [--max-turns <count>] \
+  [--max-wall-time-seconds <seconds>] \
+  [--audit-mode <standard|full>] \
+  [--trace-redaction <standard|none>] \
+  [--max-trace-bytes <bytes>] \
+  [--raw-retention <redacted|keep|delete>] \
+  [--require-rationale-evidence] \
+  [--run-id <run-id>]
+agent-team start <run-id> [--workspace <path>]
+agent-team status [<run-id>] [--workspace <path>] [--json]
+agent-team watch [<run-id>] [--workspace <path>] [--jsonl]
+agent-team diagnose [<run-id>] [--workspace <path>] [--role <role-id>] [--json]
+agent-team transcript [<run-id>] [--workspace <path>] [--role <role-id>] [--turn <turn-id>] [--json]
+agent-team tail [<run-id>] [--workspace <path>] [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
+agent-team attach <run-id> [--workspace <path>] [--role <role-id>]
+agent-team cancel <run-id> [--workspace <path>]
+agent-team recover <run-id> [--workspace <path>]
 agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-stopped]
 ```
+
+`<role-spec>` 固定为 `<role-id>=origin` 或
+`<role-id>=<codex|claude-code>:<resume|fresh>:<profile>`；Profile 必须来自 13.1 的
+Adapter 闭集。`--role` 以及四类 role-scoped 选项都可重复。`init` 的默认值是当前目录、
+`origin_harness=codex`、`max_turns=20`、`max_wall_time_seconds=7200`、
+`audit_mode=standard`、`trace_redaction=standard`、
+`max_trace_bytes=67108864` 和 `raw_retention=redacted`；未提供 `--run-id` 时由 CLI
+生成。Full Audit 总是启用 13.1 的 rationale/evidence Payload 合同；Standard Audit
+只在显式传入 `--require-rationale-evidence` 时启用。Model、Reasoning Effort、Fast
+Mode 与 Launch Mode 的继承和冻结规则见 13.1。
 
 `status`、`watch`、`diagnose`、`transcript` 和 `tail` 省略 Run ID 时，只从当前
 Workspace 的固定 Owner 解析活跃 Run；Owner 不存在就返回 `RUN_NOT_FOUND` /
@@ -2780,32 +2883,43 @@ AGENT_TEAM_RUN_ID
 AGENT_TEAM_ROLE_ID
 AGENT_TEAM_TURN_ID
 AGENT_TEAM_RUN_DIR
+AGENT_TEAM_TURN_DIR
+AGENT_TEAM_CLI
 ```
+
+`AGENT_TEAM_CLI` 必须是已经冻结进 LaunchSpec 的绝对入口路径；External Role 不从
+自身继承的 `PATH` 重新发现另一份安装。其余五项必须与 Team、Runtime 和当前 Turn
+目录完全一致。
 
 ## 23.4 Origin 命令
 
 ```bash
-agent-team wait-origin --run <run-id> --timeout 90 [--claim=<origin-claim-id>]
-agent-team origin-context --run <run-id> --event <event-id> [--claim=<origin-claim-id>]
+agent-team wait-origin --run <run-id> [--workspace <path>] [--timeout <seconds>] [--claim=<origin-claim-id>]
+agent-team origin-context --run <run-id> [--workspace <path>] --event <event-id> [--claim=<origin-claim-id>]
 agent-team origin-handoff \
   --run <run-id> \
+  [--workspace <path>] \
   --turn <turn-id> \
   --claim=<origin-claim-id> \
   --from-role <role-id> \
   --to <role-id> \
   --file <path> \
-  --wait-timeout 90
-agent-team origin-complete --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
-agent-team origin-block --run <run-id> --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
+  [--wait-timeout <seconds>]
+agent-team origin-complete --run <run-id> [--workspace <path>] --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
+agent-team origin-block --run <run-id> [--workspace <path>] --turn <turn-id> --claim=<origin-claim-id> --from-role <role-id> --file <path>
 agent-team origin-resume \
   --run <run-id> \
+  [--workspace <path>] \
   --claim=<origin-claim-id> \
   --to <role-id> \
   --file <path> \
-  --wait-timeout 90
+  [--wait-timeout <seconds>]
 ```
 
 Origin 写命令显式携带 Run、Claim，以及业务动作所需的 Turn 和动态 Role，因为 Origin 不是 Worker 子进程，不依赖 Worker 注入的环境变量。CLI 必须验证 Claim 对应当前 Journal Tail 的活跃业务或管理 Turn。读取活跃 Origin Turn 的 `origin-context` 同样要求匹配 Claim；读取 Completed / Cancelled / Corrupted 的终态材料不要求 Claim。Stage 1 不提供 Claim Takeover 命令；Claim 丢失时只能只读诊断、取消旧 Run 并在安全释放 Ownership 后新建 Run。`origin-resume` 只能在用户已对当前 Block 给出新指令后调用，其 Payload 必须记录 Block Event、用户指令摘要和目标角色。`origin-handoff` 与 `origin-resume` 成功提交后必须在同一进程内进入等待；它们不能先返回“提交成功”再要求 Agent 发起第二个命令。Bootstrap Skill 可以封装这些命令，使用户无需直接使用。
+
+`wait-origin --timeout`、`origin-handoff --wait-timeout` 与
+`origin-resume --wait-timeout` 的默认值都是 90 秒。
 
 ---
 
@@ -3184,7 +3298,14 @@ Status/Diagnose/Watch 的共同信封为：
 }
 ```
 
-`result=ok` 只表示报告成功构造，不表示 Run 健康；Blocked、Cancelled 或可确定的 Corrupted 都使用成功信封，并在 `data` 中表达。命令无法构造报告时使用 `result=error`，同时返回固定 `error.code`、人类可读 `message` 和已有的 `evidence_paths`。观察接口的错误码闭集为 `INVALID_ARGUMENT | RUN_NOT_FOUND | OBSERVATION_IO_ERROR | OBSERVATION_INTERNAL_ERROR`；完整性故障只要仍能构造确定报告，就属于 `data.health=corrupted` 而不是接口错误。
+`result=ok` 只表示报告成功构造，不表示 Run 健康；`status`、`diagnose` 和 `watch` 对
+Blocked、Cancelled 或可确定的 Corrupted 都使用成功信封，并在 `data` 中表达。命令
+无法构造报告时使用 `result=error`，同时返回固定 `error.code`、人类可读 `message` 和
+已有的 `evidence_paths`。五个观察命令的通用接口错误码闭集为
+`INVALID_ARGUMENT | RUN_NOT_FOUND | OBSERVATION_IO_ERROR | OBSERVATION_INTERNAL_ERROR`；
+`transcript` / `tail` 还可在选中审计视图无法通过不可变 LaunchSpec、Manifest 或 Artifact
+校验时返回 `TEAM_CORRUPTED`。可构造核心状态投影的完整性故障仍属于
+`data.health=corrupted`，不是接口错误。
 
 Run 范围内的 `evidence_paths` 一律是相对 Run Directory 的已校验普通文件路径；PID / PGID / Start ID 等操作系统观测放在结构化 `details` 中，不伪造成文件路径。错误信封不同时返回可能被误当作完整 Snapshot 的 `data`。
 Corrupted Snapshot 也不得在固定 `details` 中临时增加错误文本字段；具体故障文本由
@@ -3195,7 +3316,12 @@ Corrupted Snapshot 也不得在固定 `details` 中临时增加错误文本字�
 
 为保证结构化输出稳定，Role 按 `role_id`、诊断项按本节声明顺序、证据路径按字节序输出；JSON Object Key 顺序没有语义。
 
-观察命令的进程退出码固定为：`0` 表示已输出完整报告，`2` 表示参数错误，`3` 表示目标 Run 不存在，`4` 表示 I/O 或内部错误导致报告无法构造，`130` 只表示 `watch` 被用户中断。一旦识别出 `--json` 或 `--jsonl`，参数错误也必须输出上述错误信封，Usage 只写 stderr。Skill 必须读取信封和状态字段决定下一步，不能把“非 RUNNING”简单等同于命令失败。
+观察命令的进程退出码固定为：`0` 表示已输出完整报告或审计事件，`1` 只表示
+`transcript` / `tail` 的 `TEAM_CORRUPTED` 审计重建失败，`2` 表示参数错误，`3` 表示
+目标 Run 不存在，`4` 表示 I/O 或内部错误导致报告无法构造，`130` 表示观察命令被
+用户中断（通常是长驻的 `watch`）。一旦识别出 `--json` 或 `--jsonl`，参数错误及上述
+审计失败也必须输出错误信封，Usage 只写 stderr。Skill 必须读取信封和状态字段决定下一步，不能把“非
+RUNNING”简单等同于命令失败。
 
 ## 27.2 `agent-team status`
 
@@ -3465,7 +3591,10 @@ src/agent_team/
 8. 不可变 Event 文件的原子 `rename` 是唯一状态转换提交点；
 9. Event 类型、允许的前置状态和 Token 结果必须按 13.2 的闭集转换表校验；
 10. Run Status、Token Owner 和 Inbox 必须直接从 Event Journal 与 Turn Runtime 推导；
-11. State Root、Worker、Turn Runtime、Supervisor、Runner、Input、Before / After Facts、Outbox Payload、Outbox、Session 和 Owner 快照必须整文件原子替换；已存在但 Schema 损坏的 Session 快照直接推导为 `CORRUPTED`；
+11. State Root、Worker、Turn Runtime、LaunchSpec、Interactive Prompt、Supervisor、
+    Runner、Launch Authorization、Capture、Exec Error、Input、Before / After Facts、
+    Outbox Payload、Outbox、Session 和 Owner 快照必须按 22.3 的对应单写者与锁规则整
+    文件原子提交；已存在但 Schema 损坏的 Session 快照直接推导为 `CORRUPTED`；
 12. Event 先提交，再发送 Best-effort tmux 提示；Worker 即使没有提示也必须定时扫描；
 13. Worker 与 Supervisor 必须监听 Journal、Deadline 和固定完整性守卫；Supervisor 必须留在 Runner 进程组之外并持续管理已记录 PGID，完整性失败只做进程安全清理而不追加 Event；
 14. 只有 Adapter 明确正常完成、Supervisor 证明已记录 Runner PGID 清空且冻结的 Before / After Facts Hash 匹配时才允许正式交付 Outbox；`group_quiescent` 不得解释为完整后代进程证明；
@@ -3479,7 +3608,13 @@ src/agent_team/
 22. Outbox Candidate 创建时必须复制并哈希 Payload，之后不得重新读取原始文件；
 23. 所有 Role 必须使用唯一受持久化 Ownership 保护的 Git Worktree 根目录；`.agent-team/` 必须具有绑定当前账号固定状态目录的有效 State Root 且不能被 Git 跟踪，Sparse Checkout 和 Gitlink 在 `init` 与每次边界 Snapshot 都拒绝；Git 可见 Snapshot 必须按 13.4 把 tracked 删除或文件变目录编码为 `missing`，并排除 ignored 路径、Run Store 与 Git 内部元数据；`init` 不修改 Git ignore 元数据；
 24. 终止、恢复和 Unlock 不得仅凭 PID 操作，必须校验 PGID 与操作系统 Start ID；
-25. External Adapter 必须用显式高优先级覆盖严格执行 `team.json` 中经 Probe 验证的 Launch Profile 与 Hash，不能依赖可变用户默认值、接受同名映射漂移或从 Role 语义推断权限；Fresh Role 只校验 Start，Resume Role 校验 Start / Resume 的等价技术权限；Probe 只验证 CLI 启动器及普通子进程的受管行为，不承诺完整进程 containment；
+25. External Adapter 必须用显式高优先级覆盖严格执行 `team.json` 中由 Probe 声明并
+    冻结的 Agent-Team Launch Profile Mapping 与 Hash，不能依赖可变用户默认值、接受
+    同名映射漂移或从 Role 语义推断权限；Codex Admin Requirements 与 Claude
+    Enterprise Managed Settings 明确位于该 Hash 和 `doctor` 证明范围之外；Fresh Role
+    要求 Start 映射存在，Resume Role 要求 Start / Resume 参数逐项相同；Probe 只返回
+    当前 Adapter 的启动器进程组兼容性声明，主进程和普通
+    子进程行为由集成测试覆盖，不把该字段描述为动态 containment 证明；
 26. Adapter 只管理自身的 Profile Mapping、可序列化 LaunchSpec、Mode 私有状态，解析
     Headless 结构化输出或发现 Interactive Session Ref，并判定持久化 Result；它不拥有
     Worker、PID、Journal、Runtime 或 Ownership。Supervisor 必须先提交符合状态不变量的
@@ -3490,7 +3625,9 @@ src/agent_team/
 29. Handoff Event 的提交不得依赖目标 Worker、tmux Window 或 Origin Turn 在线；
 30. 已知异常退出且 Runner 进程组已清空时直接 Finalize；只有进程身份或清空状态不确定时使用 `recovery_required`；
 31. 所有 Block 都必须返回用户；对可 Resume Block，只有新的明确用户指令可以授权 `origin-resume`；
-32. `session_policy=resume` 的同一 External Launch Profile 必须在 Start 与 Resume 路径上具有经过 Probe 和集成测试验证的等价技术权限；Fresh-only Role 不增加无用的 Resume 要求；
+32. `session_policy=resume` 的同一 External Launch Profile 必须由 Probe 提供逐项相同的
+    Start / Resume 映射，并由受支持 CLI 版本的集成验证维护预期技术权限语义；
+    Fresh-only Role 不增加无用的 Resume 要求；
 33. Stage 1 每个业务 Turn 只允许一次 External 启动；任何 Start Failure 都 Block，不在同一 Turn 自动重试；
 34. Kickoff、Handoff、Resume Payload 都必须冻结成下一业务 Turn 的 `input.md`；Resume 指令只可解除原 Block，改变不可变输入必须新建 Run；
 35. 多个 Role 绑定同一 Origin Session 时必须明确共享宿主上下文；需要独立验证时使用不同 External Session。
@@ -3693,7 +3830,10 @@ sequenceDiagram
 21. Outbox 创建后修改原始 `--file` 不会改变最终交付的 Payload；
 22. PID 被复用时不会向无关进程发送信号，Start ID 无法查询时不会自动释放 Ownership；
 23. 非 Git Worktree 根目录、Git 已跟踪或无法验证的 `.agent-team/`、Sparse Checkout、Gitlink 或 `team.json` 包含 per-role CWD 时在 `init` 阶段拒绝；运行中开始跟踪 `.agent-team/`、启用 Sparse Checkout、加入 Gitlink 或破坏 State Root 时在下一边界进入 `CORRUPTED`；`init` 不修改 `.gitignore`、`.git/info/exclude` 或其他 Git 元数据；
-24. External Adapter Launch Profile 来自 Probe 闭集并冻结可执行版本与权限映射 Hash；Fresh Role 验证 Start，Resume Role 验证 Start / Resume 等价技术权限，且都不依赖同名 Profile 漂移、动态 Role 名称或自然语言 `read-only` 推断；
+24. External Adapter Launch Profile 来自 Probe 闭集并冻结可执行版本与权限映射 Hash；
+    Fresh Role 要求有效 Start 映射，Resume Role 要求 Start / Resume 参数逐项相同；
+    有效权限语义不被误报成 Probe 的动态证明，且都不依赖同名 Profile 漂移、动态 Role
+    名称或自然语言 `read-only` 推断；
 25. Stage 1 不提供删除审计目录的 `clean` 命令；
 26. Handoff 判断不能覆盖宿主高优先级指令或对当前工作区的直接检查结果；
 27. Origin Binding 不执行 Capability Probe，也不创建 Worker / Session Runtime 或伪 Launch Profile；
@@ -3705,7 +3845,10 @@ sequenceDiagram
 33. 目标 Worker 或 Origin Turn 不在线时仍可提交合法 Handoff，恢复后只能领取同一个 Event；
 34. 已知异常退出且 Runner 进程组已清空时直接 Finalize 并 Block，不设置 `recovery_required`；
 35. 任何 Block 都先返回用户，没有新的明确用户指令就不能 Resume；
-36. 主 Harness 退出后仍有普通后台子进程时，组外 Supervisor 会先清空已记录 Runner 进程组；CLI 启动器自身会立即脱离时 Probe 拒绝，运行时观察到明确逃逸证据时不交付 Outbox，同时文档明确未观测逃逸超出 Stage 1 保证；
+36. 主 Harness 退出后仍有普通后台子进程时，组外 Supervisor 会先清空已记录 Runner
+    进程组；`init` 拒绝 Capability Report 已声明主启动器不留在受管组的 Adapter，
+    同时明确该声明不是动态进程证明，未留下 Agent-Team 可验证身份的逃逸进程超出
+    Stage 1 保证；
 37. tracked 文件删除以及 tracked 文件被目录替换都使用稳定的 `missing` 记录参与 Fingerprint；目录下的新文件独立记录，Sparse Checkout 和 Gitlink 不会被误判为删除；Facts 明确标记 `snapshot_scope=git_visible`，不声称覆盖 ignored 文件；
 38. Kickoff、Handoff 和 Resume 都冻结为 `input.md`，Resume 指令在限定范围内具有明确优先级，改变不可变输入时拒绝继续旧 Run；
 39. Owner 临时文件崩溃不产生 Ownership，最终 Owner 文件不存在或完整存在，不会出现已提交空目录；
@@ -3724,7 +3867,10 @@ sequenceDiagram
 52. Worker 日志记录具有稳定关联字段；stdout / stderr / terminal 的有效 UTF-8 和
     任意非 UTF-8 字节都能从 `stream.jsonl` 无损恢复，并保持各来源内部字节顺序与
     Supervisor 记录的观察顺序；Terminal 内容不生成工作流 Evidence。
-53. 结构化观察模式的 stdout 只含一个 JSON 或逐行 JSONL；可确定的 Blocked / Cancelled / Corrupted 报告使用成功信封，接口失败才使用固定错误码和非零退出码。
+53. 结构化观察模式的 stdout 只含一个 JSON 或逐行 JSONL；Status / Diagnose / Watch
+    的可确定 Blocked / Cancelled / Corrupted 报告使用成功信封；Transcript / Tail
+    无法验证所选审计链时使用 `TEAM_CORRUPTED` / Exit `1`，其他接口失败使用通用固定
+    错误码和非零退出码。
 54. Trace Manifest Hash 在 Runtime 中只允许从 `null` 设置一次；Manifest 或任一
     Retained Artifact 后续被改写时，Status、Diagnose、Transcript 和 Recovery 都
     检出完整性故障；
@@ -3832,8 +3978,13 @@ sequenceDiagram
 - 启动期和执行期的结构化 `permission_required` 都映射为唯一 Permission Block；已有 Cancel / Limit 时不追加；
 - Session Ref、Generation、`effective_launch_profile` 及其 SHA-256 持久化；
 - Origin / External Binding 的互斥字段校验，Origin 不执行 Probe 或创建 Worker Runtime；多个 Origin Role 共享宿主上下文，独立验证要求不能错误映射到共享 Origin；
-- External Adapter Probe 的 Launch Profile 闭集、可执行版本与规范化映射 Hash、权限相关键显式覆盖、用户默认值扰动，Fresh Role 的 Start 映射，以及 Resume Role 的 Start / Resume 确定性映射与权限等价；
-- Supervisor 位于 Runner 进程组之外；主 Harness 退出后普通后台子进程的宽限、`killpg` 终止与 `group_quiescent` 判定，Probe 拒绝自身立即脱离的 CLI 启动器，并验证 `group_quiescent` 只表示已记录 PGID 清空；
+- External Adapter Probe 的 Launch Profile 闭集、可执行版本与规范化映射 Hash、
+  Agent-Team 可控权限键的显式覆盖、用户默认值扰动，Fresh Role 的 Start 映射，以及
+  Resume Role 的 Start / Resume 确定性映射与权限等价；Codex Admin Requirements 与
+  Claude Enterprise Managed Settings 明确不被误报为 Probe 或 Hash 已覆盖；
+- Supervisor 位于 Runner 进程组之外；主 Harness 退出后普通后台子进程的宽限、
+  `killpg` 终止与 `group_quiescent` 判定，Capability Report 为 `false` 的 Adapter 在
+  `init` 被拒绝，并验证 `group_quiescent` 只表示已记录 PGID 清空；
 - 已知异常退出直接 Finalize，只有活进程、未知身份或未清空进程组进入 `recovery_required`；
 - Kickoff 后 Request / Protocol / Team 配置不可变，任一 Hash 不匹配在有无活跃 Turn 时都直接 `CORRUPTED`；
 - 第 `max_turns` 个 Turn 的 Complete / Block 与 Handoff 边界、Wall Time Claim 竞态和 Limit Block 禁止 Resume；
@@ -3850,9 +4001,9 @@ sequenceDiagram
 - Agent Message、Tool Call/Result、Usage、Fallback 和 Explicit Reasoning Summary 的
   Normalization；私有 `thinking` 与通用 `reasoning` 只生成无正文 Diagnostic；
 - 进程取消；
-- Start / Resume Launch Profile 参数映射及有效权限等价；
+- Start / Resume Launch Profile 参数映射逐项一致，并验证 Adapter 预期权限键；
 - 三个内置 Profile 的 Sandbox/Permission 组合、用户显式选择和 Full Access 风险边界；
-- 改变用户默认权限配置后，显式 Launch Profile 的有效权限不漂移；
+- 改变用户默认权限配置后，Agent-Team 提交的显式 Launch Profile Mapping 不漂移；
 - 改变 Adapter / CLI 版本或规范化映射后，旧 `launch_profile_sha256` 被拒绝；
 - 权限不足；
 - Session 不存在时先 Start Failure Block，再由显式 Resume 降级为 Fresh。
@@ -3861,9 +4012,10 @@ sequenceDiagram
 
 - `thread.started` 解析；
 - `codex exec resume`；
-- Start / Resume 分离的 Launch Profile 参数映射、有效权限等价与 Probe 拒绝未知 Profile；
+- Start / Resume 分离的 Launch Profile 参数映射逐项一致、预期权限键与 Probe 拒绝
+  未知 Profile；
 - 三个内置 Profile 的 Workspace/Network/Full Access 组合，以及默认不启用提升权限；
-- 改变用户默认权限配置后，显式 Launch Profile 的有效权限不漂移；
+- 改变用户默认权限配置后，Agent-Team 提交的显式 Launch Profile Mapping 不漂移；
 - 改变 Adapter / CLI 版本或规范化映射后，旧 `launch_profile_sha256` 被拒绝；
 - Resume 路径不假定接受 Start 形式的 `--sandbox` 参数；
 - 权限选择不依赖动态 Role 名称；
@@ -3904,14 +4056,19 @@ sequenceDiagram
 26. 非 Git 目录、Worktree 子目录、被 Git 跟踪或无法验证的 `.agent-team/`、Sparse Checkout、Gitlink 或 `team.json` 包含 per-role CWD 时拒绝启动；tracked 删除和 tracked 文件被目录替换都稳定编码为 `missing`，Run Store 与 ignored 文件变化不触发 Git 可见 Snapshot 偏差，Facts 明确披露范围，`init` 前后 Git ignore 元数据字节不变；
 27. Runtime / Outbox / Facts 损坏但 Turn 身份唯一时产生 Recovery Block，Turn 身份不唯一时进入 `CORRUPTED`；Session 快照损坏无条件进入 `CORRUPTED`，有效 Session 的结构化 unavailable 才允许后续 Fresh 降级；
 28. 分别在 Supervisor 身份提交、Runner 创建、Runner 身份提交、启动许可提交和 Runner `exec` 后注入崩溃，确认无许可时零 Harness、有许可时至多一个 Harness；
-29. 未知 Profile、Profile Hash 漂移、Fresh Role 缺少 Start 映射，或 Resume Role 不能在 Start / Resume 保持等价权限时明确失败；Kickoff 后漂移生成不可 Resume 的 Profile Changed Block，`origin-resume` 拒绝，接受新 Profile 必须创建新 Run；
+29. 未知 Profile、Profile Hash 漂移、Fresh Role 缺少 Start 映射，或 Resume Role 的
+    Start / Resume 参数列表不相同时明确失败；Kickoff 后漂移生成不可 Resume 的
+    Profile Changed Block，`origin-resume` 拒绝，接受新 Profile 必须创建新 Run；
 30. Origin Binding 不接受 External 字段，不执行 Probe，也不产生 `roles/<role>.json` 或 `sessions/<role>.json`；纯 Origin Run 不依赖 tmux；
 31. 分别在 Owner 临时文件、Owner 原子提交、Kickoff 和 Worker 创建后注入崩溃：临时文件不占有 Workspace，Kickoff 前只能用重复 `start` 继续，Kickoff 后可用 `start` / `recover` 收口，且始终只有一个 Kickoff 和每个 External Role 一个 Worker；
 32. 正常退出后、After Facts 提交前崩溃时只产生 Recovery Block；After Facts 已冻结且 Hash 匹配时允许补交 Outbox；
 33. Wall Time 在 Kickoff / Handoff / Resume 后、目标 Claim 前到期时不启动 Harness，并由目标 Turn 立即提交 Limit Block；
 34. 目标 External Worker、tmux Window 或 Origin Turn 不在线时提交 Handoff，重建或继续原 Session 后只领取一次；
 35. Agent Block、结构化权限证据生成的 Permission Block、Start Failure Block 与 Recovery Block 都先展示给用户；没有新用户指令时 Origin 不会自动 Resume；
-36. Harness 主进程退出但普通后台子进程仍存活时，组外 Supervisor 在清空已记录 Runner 进程组前不交付 Outbox；CLI 启动器自身立即脱离进程组的 Fake Adapter 在 Probe 阶段被拒绝，且测试不把 `group_quiescent` 解释为未观测逃逸进程的证明；
+36. Harness 主进程退出但普通后台子进程仍存活时，组外 Supervisor 在清空已记录
+    Runner 进程组前不交付 Outbox；Capability Report 把进程组兼容性标为 `false` 的
+    Fake Adapter 在 `init` 阶段被拒绝，且测试不把 `group_quiescent` 解释为未观测
+    逃逸进程的证明；
 37. Cancel 与 Deadline 分别在启动许可前后触发，确认终止 Event 唯一、对 Runner PGID 的强制终止不会杀死 Supervisor、最终 `group_quiescent=true` 且没有重启 Harness；
 38. Workspace Facts、Session Generation、Effective Launch Profile 及其 SHA-256、Runner Identity 和单文件 Owner Metadata 在崩溃恢复前后通过 Schema 与 Hash 校验；
 39. Handoff 后、目标 Claim 前发生外部业务文件修改时不启动目标 Harness；缺少可信 After 的技术恢复经用户授权后以未知连续性新基线启动；
@@ -4174,10 +4331,11 @@ Stage 1 明确支持 macOS 和 Linux。Windows 可通过 WSL，原生 Windows �
 缓解：
 
 - Coordination Skill 明确禁止角色创建逃逸进程；
-- Probe 拒绝 CLI 启动器自身立即脱离的 Adapter；
+- `init` 拒绝 Capability Report 已把主启动器进程组兼容性标为 `false` 的 Adapter；
 - Supervisor 清理同一 PGID 内的普通后台子进程；
-- 观察到明确逃逸证据时 Recovery Block 并保留 Ownership；
-- Ownership 自动释放和 Unlock 都明确显示这一边界；
+- 不声称 `doctor` 会启动真实模型进程动态证明该声明，也不声称能发现未留下受管身份的
+  逃逸进程；
+- Ownership 自动释放和 Unlock 都明确披露这一边界；
 - 需要强进程 containment 时使用后续 cgroup、容器或宿主级作业对象，不在 Stage 1 伪造保证。
 
 ## 33.7 同一工作区并发修改
@@ -4441,8 +4599,9 @@ Origin Codex 不只转发 Completion 文件，而应输出：
 
 ## 35. 实现与验证依据
 
-运行时只依赖 Adapter Probe 与 `doctor` 在当前机器实际确认的能力，不把设计阶段记录的
-CLI 版本或参数当作永久事实：
+运行时依赖当前 Adapter Probe、冻结的 Profile Fingerprint 和启动边界校验；`doctor`
+展示其中可安全探测的当前机器能力，但不会通过真实模型调用动态证明进程 containment。
+设计阶段记录的 CLI 版本或参数不作为永久事实：
 
 - Codex Adapter 默认使用私有 `CODEX_HOME` 的原生 TUI，显式 Headless Role 使用
   JSONL；私有 Home 仅含精确 Workspace Trust 与认证副本，两者都冻结 Start/Resume
@@ -4455,12 +4614,17 @@ CLI 版本或参数当作永久事实：
   `capture-pane` 与 Attach 都不是工作流协议；
 - `send-keys`、Pane 文本和 tmux 锁均不参与状态转换。
 
-Start/Resume 参数、可执行路径、版本、权限等价性和进程组行为由每台机器的 Probe 重新
-计算并冻结 Hash；发生漂移时拒绝旧 Profile，而不是继续相信本文示例。
+Start/Resume 映射、可执行路径和版本由每台机器的 Probe 重新读取并冻结 Hash；发生
+漂移时拒绝旧 Profile，而不是继续相信本文示例。Probe 只校验映射结构和 Resume 时的
+参数列表一致性，不证明 Harness 最终接受或管理员策略作用后的有效权限；这些语义由
+受支持版本的集成验证和真实启动的 Fail-closed 结果约束。进程组边界则由 Adapter
+Capability 声明、Runner/Supervisor 身份校验和实际 PGID 清理共同约束，不混入 Profile
+Fingerprint，也不宣称动态发现逃逸进程。
 
 实现证据位于 `src/agent_team/` 和 `tests/`。真实 Codex/Codex、Claude Code/Codex
 闭环、Session Resume、Finding 循环、进程收口与 Full Audit Trace 的历史基线证据，
-以及当前 Interactive Codex PTY/Action/Resume 补充验证见
+以及当前 Interactive Codex PTY/Action/Resume、混合 Interactive Claude Code/Codex
+三 Turn 闭环和跨进程 CLI Profile Identity 补充验证见
 [`docs/validation`](docs/validation)；其中当前补充验证的范围与未覆盖项明确记录在
 [`interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md)。
 

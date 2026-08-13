@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import agent_team.trace as trace_module
+from agent_team.adapters.base import LaunchSpec
 from agent_team.config import ObservabilityPolicy
 from agent_team.errors import IntegrityError
 from agent_team.supervisor import StreamRecorder, _base_snapshot
@@ -200,7 +201,16 @@ def test_trace_manifest_normalizes_redacts_hashes_and_detects_tampering(
     )
     atomic_json(
         turn_dir / "process" / "launch.json",
-        {"stdin": "authoritative harness prompt"},
+        LaunchSpec(
+            adapter_id="codex",
+            argv=("/usr/bin/codex", "exec", "-"),
+            cwd=str(tmp_path),
+            env={},
+            stdin="authoritative harness prompt",
+            launch_profile="default",
+            launch_profile_sha256="0" * 64,
+            starts_new_session=True,
+        ).to_json(),
     )
     atomic_json(turn_dir / "outbox.json", {"action": "complete"})
     atomic_write(
@@ -548,6 +558,52 @@ def test_trace_manifest_rejects_omitted_retained_artifact(tmp_path: Path) -> Non
 
     with pytest.raises(IntegrityError, match="artifact set"):
         validate_trace_manifest(turn_dir)
+
+
+def test_trace_manifest_transitively_anchors_interactive_prompt(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "at-trace-interactive-prompt"
+    turn_dir = _turn(run_dir)
+    _capture(run_dir, [("terminal", {"type": "turn.started"})])
+    prompt_path = turn_dir / "process" / "prompt.md"
+    prompt = "# Agent-Team role turn\n\nInspect the implementation.\n"
+    atomic_write(prompt_path, prompt.encode("utf-8"), immutable=True)
+    launch = LaunchSpec(
+        adapter_id="codex",
+        argv=("/usr/bin/codex", "--no-alt-screen"),
+        cwd=str(tmp_path),
+        env={},
+        stdin=prompt,
+        launch_profile="default",
+        launch_profile_sha256="0" * 64,
+        starts_new_session=True,
+        launch_mode="interactive",
+        prompt_file=str(prompt_path),
+    )
+    atomic_json(
+        turn_dir / "process" / "launch.json",
+        launch.to_json(),
+        immutable=True,
+    )
+    manifest, digest = finalize_turn_trace(
+        run_id=run_dir.name,
+        turn_dir=turn_dir,
+        role_id="developer",
+        adapter_id="codex",
+        policy=ObservabilityPolicy(),
+    )
+
+    assert not any(
+        artifact["path"] == "process/prompt.md"
+        for artifact in manifest["artifacts"]
+    )
+    assert validate_trace_manifest(turn_dir, expected_sha256=digest) == manifest
+
+    atomic_write(prompt_path, b"tampered prompt\n")
+
+    with pytest.raises(IntegrityError, match="anchored LaunchSpec"):
+        validate_trace_manifest(turn_dir, expected_sha256=digest)
 
 
 def test_trace_manifest_rejects_raw_artifact_recreated_after_delete(

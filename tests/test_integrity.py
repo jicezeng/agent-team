@@ -23,6 +23,7 @@ from agent_team.state import (
     file_lock,
     read_owner,
     state_paths,
+    workspace_lock,
 )
 from agent_team.turns import validate_outbox, validate_payload_contract
 from agent_team.util import is_uncommitted_atomic_temporary, rfc3339
@@ -485,6 +486,29 @@ def test_workspace_lock_creation_accepts_concurrent_winner(
     )
 
     assert ensure_workspace_lock(workspace) == lock_path
+
+
+def test_workspace_lock_opens_existing_state_lock_read_only(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_team import state
+
+    lock_path = ensure_workspace_lock(workspace)
+    real_open = state.os.open
+    observed_access_modes: list[int] = []
+
+    def tracked_open(path, flags, *args):
+        if Path(path) == lock_path:
+            observed_access_modes.append(flags & os.O_ACCMODE)
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(state.os, "open", tracked_open)
+
+    with workspace_lock(workspace, exclusive=True):
+        pass
+
+    assert observed_access_modes == [os.O_RDONLY]
 
 
 def test_run_staging_directory_uses_atomic_temporary_name(

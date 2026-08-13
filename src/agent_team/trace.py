@@ -780,6 +780,53 @@ def _validate_artifact_files(
             )
 
 
+def _validate_launch_prompt_file(turn_dir: Path, launch: LaunchSpec) -> None:
+    prompt_path = turn_dir / "process" / "prompt.md"
+    if launch.launch_mode != "interactive":
+        if path_entry_exists(prompt_path):
+            raise IntegrityError(
+                "headless trace retained an interactive prompt",
+                f"turns/{turn_dir.name}/process/prompt.md",
+            )
+        return
+    if (
+        launch.prompt_file != str(prompt_path)
+        or not path_entry_exists(prompt_path)
+        or read_regular(prompt_path) != launch.stdin.encode("utf-8")
+    ):
+        raise IntegrityError(
+            "interactive prompt does not match the anchored LaunchSpec",
+            f"turns/{turn_dir.name}/process/prompt.md",
+        )
+
+
+def _validate_interactive_prompt(
+    turn_dir: Path,
+    artifacts: dict[str, dict[str, Any]],
+) -> None:
+    """Anchor the mode-private prompt through the manifest's LaunchSpec.
+
+    Manifest Schema 1 predates Interactive mode, so adding a new required
+    artifact descriptor would make already-finalized v0.1.2 Runs unreadable.
+    The existing ``launch`` artifact already anchors the full prompt text and
+    absolute prompt path; compare the retained file to that immutable value
+    instead.
+    """
+    prompt_path = turn_dir / "process" / "prompt.md"
+    launch_artifact = artifacts.get("launch")
+    if launch_artifact is None:
+        if path_entry_exists(prompt_path):
+            raise IntegrityError(
+                "interactive prompt exists without an anchored LaunchSpec",
+                f"turns/{turn_dir.name}/process/prompt.md",
+            )
+        return
+    launch = LaunchSpec.from_json(
+        read_json(resolve_run_path(turn_dir, launch_artifact["path"]))
+    )
+    _validate_launch_prompt_file(turn_dir, launch)
+
+
 def _validate_manifest_trace_and_capture(
     turn_dir: Path,
     manifest: dict[str, Any],
@@ -923,6 +970,7 @@ def _validate_trace_manifest_value(
     )
     artifacts = _parse_artifact_descriptors(manifest)
     _validate_artifact_files(turn_dir, artifacts)
+    _validate_interactive_prompt(turn_dir, artifacts)
     events, capture_file = _validate_manifest_trace_and_capture(
         turn_dir,
         manifest,
@@ -1483,6 +1531,7 @@ def build_transcript(
         prompt = ""
         if path_entry_exists(launch_path):
             launch = LaunchSpec.from_json(read_json(launch_path))
+            _validate_launch_prompt_file(current_turn_dir, launch)
             prompt = redactor.text(launch.stdin)
         outbox = load_outbox(current_turn_dir)
         formal_output = None

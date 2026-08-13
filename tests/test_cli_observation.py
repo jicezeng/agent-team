@@ -508,3 +508,59 @@ def test_transcript_and_tail_expose_normalized_role_filtered_events(
     assert damaged_launch.value.code == 1
     error = json.loads(capsys.readouterr().out)
     assert error["error"]["code"] == "TEAM_CORRUPTED"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (OSError("read failed"), "OBSERVATION_IO_ERROR"),
+        (RuntimeError("unexpected failure"), "OBSERVATION_INTERNAL_ERROR"),
+    ],
+)
+def test_transcript_structures_interface_failures(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: Exception,
+    expected_code: str,
+) -> None:
+    run_dir = make_origin_run(
+        workspace,
+        request_protocol,
+        run_id="at-test-transcript-interface-error",
+    )
+    monkeypatch.setattr(
+        "agent_team.cli.build_transcript",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        main(
+            [
+                "transcript",
+                run_dir.name,
+                "--workspace",
+                str(workspace),
+                "--json",
+            ]
+        )
+
+    assert exited.value.code == 4
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["command"] == "transcript"
+    assert envelope["result"] == "error"
+    assert envelope["error"]["code"] == expected_code
+
+
+def test_non_observation_argument_is_not_mistaken_for_observation_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure = OSError("attach failed")
+    monkeypatch.setattr(
+        "agent_team.cli.dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(OSError, match="attach failed"):
+        main(["attach", "transcript"])

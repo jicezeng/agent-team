@@ -54,7 +54,15 @@ existing Run:
    `full-access` removes the host sandbox and is appropriate only on a
    controlled machine or VM. Never infer elevated access from a role name, a
    request to run tests, or a natural-language `read-only` restriction, and
-   never treat mutable local Harness settings as the selected Profile.
+   never treat mutable local Harness settings as the selected Profile. Doctor
+   shows the Agent-Team-supplied mapping, not the final effect of
+   administrator-managed Harness policy. On a managed host, use a
+   workspace-contained Claude Profile only after verifying that policy adds no
+   host write roots or sandbox exclusions. Agent-Team disables non-managed
+   Codex hooks, but trusted Workspace project configuration and extensions
+   remain part of that Workspace's trust boundary. Also verify that Codex
+   requirements do not force managed hooks or add log effects; an incompatible
+   requirement can reject the selected Profile and must not be bypassed.
 6. Add `--role-model <role>=<model>`,
    `--role-reasoning-effort <role>=<effort>`, or `--role-fast <role>` only for
    choices the user explicitly made. Do not infer these choices from role names

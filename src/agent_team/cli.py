@@ -79,6 +79,37 @@ from .util import (
 from .worker import run_worker
 
 
+KNOWN_COMMANDS = {
+    "install",
+    "doctor",
+    "init",
+    "start",
+    "status",
+    "watch",
+    "diagnose",
+    "transcript",
+    "tail",
+    "attach",
+    "cancel",
+    "recover",
+    "unlock",
+    "context",
+    "handoff",
+    "complete",
+    "block",
+    "wait-origin",
+    "origin-context",
+    "origin-handoff",
+    "origin-complete",
+    "origin-block",
+    "origin-resume",
+    "_worker",
+    "_turn-supervisor",
+    "_harness-runner",
+}
+OBSERVATION_COMMANDS = {"status", "diagnose", "watch", "transcript", "tail"}
+
+
 def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
@@ -1186,38 +1217,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         args = parser.parse_args(raw)
         code = dispatch(args)
     except AgentTeamError as exc:
-        known_commands = {
-            "install",
-            "doctor",
-            "init",
-            "start",
-            "status",
-            "watch",
-            "diagnose",
-            "transcript",
-            "tail",
-            "attach",
-            "cancel",
-            "recover",
-            "unlock",
-            "context",
-            "handoff",
-            "complete",
-            "block",
-            "wait-origin",
-            "origin-context",
-            "origin-handoff",
-            "origin-complete",
-            "origin-block",
-            "origin-resume",
-            "_worker",
-            "_turn-supervisor",
-            "_harness-runner",
-        }
-        command = next(
-            (item for item in raw if item in known_commands),
-            "agent-team",
-        )
+        command = raw[0] if raw and raw[0] in KNOWN_COMMANDS else "agent-team"
         if structured:
             _json(envelope(command, error=exc))
         else:
@@ -1232,11 +1232,27 @@ def main(argv: Sequence[str] | None = None) -> None:
                 }
             )
         code = exc.exit_code
+    except OSError as exc:
+        command = raw[0] if raw and raw[0] in OBSERVATION_COMMANDS else None
+        if command is None:
+            raise
+        error = ObservationIOError(f"unable to read observation data: {exc}")
+        if structured:
+            _json(envelope(command, error=error))
+        else:
+            _json(
+                {
+                    "result": "error",
+                    "error": {
+                        "code": error.code,
+                        "message": error.message,
+                        "evidence_paths": [],
+                    },
+                }
+            )
+        code = error.exit_code
     except Exception as exc:
-        command = next(
-            (item for item in raw if item in {"status", "diagnose", "watch"}),
-            None,
-        )
+        command = raw[0] if raw and raw[0] in OBSERVATION_COMMANDS else None
         if command is None:
             raise
         error = ObservationInternalError(f"{type(exc).__name__}: {exc}")

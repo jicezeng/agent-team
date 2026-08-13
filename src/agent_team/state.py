@@ -249,8 +249,17 @@ def ensure_workspace_lock(workspace: Path) -> Path:
 
 
 @contextmanager
-def file_lock(path: Path, *, exclusive: bool, create: bool = False) -> Iterator[int]:
-    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+def file_lock(
+    path: Path,
+    *,
+    exclusive: bool,
+    create: bool = False,
+    read_only: bool = False,
+) -> Iterator[int]:
+    if create and read_only:
+        raise ValueError("a read-only lock cannot be created")
+    access = os.O_RDONLY if read_only else os.O_RDWR
+    flags = access | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     if create:
         flags |= os.O_CREAT
     try:
@@ -292,7 +301,11 @@ def workspace_lock(
     if allow_create:
         ensure_state_directories()
         path = ensure_workspace_lock(workspace)
-    with file_lock(path, exclusive=exclusive, create=False):
+    # Existing Run commands only need to acquire the stable operation lock;
+    # they never write its contents.  Opening it read-only lets a sandboxed
+    # Harness perform a formal action without granting write access to the
+    # shared user-state lock directory (and therefore to other Workspaces).
+    with file_lock(path, exclusive=exclusive, create=False, read_only=True):
         yield
 
 

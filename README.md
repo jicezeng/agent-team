@@ -100,9 +100,10 @@ On macOS the fixed state directory is
 `~/Library/Application Support/agent-team`; on Linux it is
 `~/.local/state/agent-team`. The location is derived from the current OS
 account and is not configurable. `doctor` reports tool availability,
-authentication when it can be determined without a model call, profile
-fingerprints, Resume support, integration contents, filesystem capabilities,
-workspace boundaries, state permissions, and any current Workspace owner. An
+authentication when it can be determined without a model call, all supplied
+profile mappings, active-Run fingerprints when a Workspace owner exists,
+Resume support, integration contents, filesystem capabilities, workspace
+boundaries, state permissions, and any current Workspace owner. An
 authentication result may be `unknown` when a harness cannot be checked
 without an interactive or model call; confirm that harness separately before
 using it.
@@ -212,16 +213,22 @@ the `fast` service tier. Codex accepts `minimal`, `low`, `medium`, `high`,
 `high`, `xhigh`, or `max`.
 
 Each omitted field inherits the user's Harness default at `init`. Agent-Team
-reads only the relevant user-level values and freezes the effective result in
+reads only the relevant user-level values and freezes its requested result in
 `team.json`: Codex `model`, `model_reasoning_effort`, and fast service-tier
 settings; Claude Code `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` (when
 set), then user `model` / `effortLevel` settings. If the user has not configured
 a model or reasoning-effort value, the Harness retains its own account/model
 default. Codex Fast Mode is different: a new role freezes the effective value
 as `true` only when the user's `service_tier="fast"` setting is active and the
-feature is not disabled; otherwise it freezes `false`. This selective
-inheritance does not load user permissions, MCP servers, hooks, or other
-mutable Harness settings.
+feature is not disabled; otherwise it freezes `false`. This selective default
+resolution reads no other fields from the Harness user configuration files;
+the exact launch-time source isolation is described below. It does not erase
+configuration stored inside a trusted Workspace: Agent-Team freezes the Codex
+permission keys and disables non-managed Codex hooks, while other project
+configuration and instructions remain part of the Workspace trust boundary.
+As described below,
+non-overridable Claude managed policy can still replace a requested model at
+execution time.
 
 `interactive` is the default launch mode for every new External role. It runs
 native Codex or Claude Code with a real PTY and mirrors the terminal stream to
@@ -252,8 +259,8 @@ Each adapter exposes the same explicit Profile names:
 
 | Profile | Codex mapping | Claude Code mapping |
 | --- | --- | --- |
-| `default` | Workspace write, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, no unsandboxed fallback |
-| `trusted-workspace` | Workspace write, command network enabled, no approval prompts | `acceptEdits`, the same OS workspace sandbox and no unsandboxed fallback |
+| `default` | Workspace write plus Harness scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox plus Claude's internal scratch path, no fallback |
+| `trusted-workspace` | The same filesystem boundary, command network enabled, no approval prompts | `acceptEdits`, the same OS workspace sandbox and no fallback |
 | `full-access` | `danger-full-access` with no approval prompts | `bypassPermissions` with the Claude sandbox disabled |
 
 `default` remains the normal choice. `trusted-workspace` and `full-access` are
@@ -268,16 +275,56 @@ built-in Edit/Write tools. Using `bypassPermissions` for `trusted-workspace`
 would therefore allow host-file writes outside the Workspace. Choose
 `full-access` explicitly when that wider host boundary is intended.
 
-All three Profiles ignore mutable local Codex/Claude permission settings and
-freeze an explicit Start/Resume mapping and hash in `team.json`. Claude's
-separate workspace-trust decision is only preflight state, not permission
-configuration, and is rechecked before every interactive launch. Selective
-model, effort, and Codex fast defaults are snapshotted separately as described
-above; Profiles do not otherwise mean “reuse my current interactive session
-settings.” A protocol restriction such as “review only” remains a
-natural-language role responsibility and is never inferred from the role name.
-Agent-Team's formal-action rules continue to apply, but they are not a
-containment boundary in `full-access` mode.
+“Workspace-contained” is a product boundary, not a claim that the Workspace is
+the only writable inode. Codex retains its standard `/tmp` and `$TMPDIR`
+scratch roots; Claude grants Bash the single
+`<CLAUDE_CODE_TMPDIR>/claude-<uid>` internal scratch path it needs. In Claude's
+workspace-contained Profiles, the three exact formal
+`agent-team handoff|complete|block` capabilities are explicit sandbox
+exclusions, but their CLI arguments, active Turn environment and Runtime,
+source path, and immutable Outbox are validated by Agent-Team. Codex no longer
+grants a Harness generic write access to Agent-Team's shared `workspace-locks/`
+or `workspaces/` directories: it freezes additional `writable_roots` to an
+empty list, and formal actions acquire the existing operation lock read-only.
+None of these narrow runtime exceptions
+grants arbitrary host-file writes; `full-access` remains the only Profile that
+Agent-Team intentionally maps to arbitrary host-file writes.
+
+Administrative Harness policy remains outside this isolation. Agent-Team sets
+Codex `features.hooks=false`, but admin-enforced requirements can constrain
+allowed sandbox, approval, permission profile, or feature choices, reject an
+incompatible launch, force managed hooks back on, or install managed log paths
+with host-side effects. For Claude Code,
+`--setting-sources ""` excludes the user, project, and local sources but cannot
+suppress higher-priority enterprise-managed settings; managed scalars can
+override command-line settings, and managed arrays such as sandbox write roots
+merge into the effective configuration. The boundaries above therefore
+describe Agent-Team's supplied mapping. On a managed machine, `default` and
+`trusted-workspace` retain that product boundary only when administrator policy
+does not add host paths, sandbox exclusions, or host-side execution hooks.
+
+Neither Harness's administrative policy is included in
+`launch_profile_sha256`, and `doctor` cannot prove cloud-delivered or final
+effective policy. Inspect the applicable administrator configuration—and
+Claude Code's `/status` and `/permissions`—or use a dedicated unmanaged host/VM
+when this boundary is a security requirement.
+
+All three Profiles ignore mutable user-level Codex/Claude permission settings
+and freeze an explicit Start/Resume mapping and hash in `team.json`. Claude
+also excludes User, Project, and Local setting sources. Codex Headless ignores
+the user config and user/project Rules; Interactive uses the private Home
+described above. Both Codex modes explicitly freeze their permission keys and
+set `features.hooks=false`. Other trusted Workspace configuration,
+instructions, and extensions remain part of the Workspace's own trust
+boundary and must be vetted when Host containment matters. Claude's separate
+workspace-trust decision is only preflight state, not permission configuration,
+and is rechecked before every interactive launch. Selective model, effort, and
+Codex fast defaults are snapshotted separately as described above; Profiles do
+not otherwise mean “reuse my current interactive session settings.” A protocol
+restriction such as “review only” remains a natural-language role
+responsibility and is never inferred from the role name. Agent-Team's
+formal-action rules continue to apply, but they are not a containment boundary
+in `full-access` mode.
 
 Examples:
 
@@ -293,11 +340,13 @@ Examples:
 --role-launch-mode reviewer=headless
 ```
 
-Run `agent-team doctor --workspace <root> --json` to inspect every mapping
-accepted by the installed Harness versions. Managed Harness policy may still
-disable a bypass mode or model. A Profile and its frozen Harness options are
-immutable after Kickoff; changing them requires cancelling the old Run and
-creating a new one.
+Run `agent-team doctor --workspace <root> --json` to inspect every
+Agent-Team-supplied mapping it will use with the installed Harness versions. Managed
+Harness policy may still reject a Codex choice, add managed Codex side effects,
+narrow or broaden the effective Claude boundary, disable a bypass mode, or
+select a Claude model. A Profile and
+its frozen Harness options are immutable after Kickoff; changing them requires
+cancelling the old Run and creating a new one.
 
 `init` atomically commits an UNSTARTED audit directory but acquires no
 Workspace ownership and starts no process. `start` performs final capability
@@ -374,11 +423,14 @@ agent-team block --file <payload.md>
 ```
 
 The Worker injects `AGENT_TEAM_RUN_ID`, `AGENT_TEAM_ROLE_ID`,
-`AGENT_TEAM_TURN_ID`, and `AGENT_TEAM_RUN_DIR`, so these commands do not accept
-Run or Role arguments. The action copies and hashes its payload before
-acceptance. Ordinary final text, tmux pane content, and log prose never move
-the execution token. A native TUI normally remains open after one response;
-once the Supervisor validates the current Turn's durable Outbox and Session,
+`AGENT_TEAM_TURN_ID`, `AGENT_TEAM_RUN_DIR`, `AGENT_TEAM_TURN_DIR`, and the
+absolute `AGENT_TEAM_CLI`, so these commands do not accept Run or Role
+arguments. The CLI path is frozen into the Turn LaunchSpec instead of being
+rediscovered from the Worker's inherited `PATH`. The action copies and hashes
+its payload before acceptance. Ordinary final text, tmux pane content, and log
+prose never move the execution token. A native TUI normally remains open after
+one response; once the Supervisor validates the current Turn's durable Outbox
+and Session,
 it stops the verified Runner process group and records an `action` termination
 without rewriting the real process exit code.
 
@@ -420,7 +472,7 @@ agent-team transcript [<run-id>] [--workspace <root>] \
   [--role <role-id>] [--turn <turn-id>] [--json]
 agent-team tail [<run-id>] [--workspace <root>] \
   [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
-agent-team attach <run-id> [--role <role-id>]
+agent-team attach <run-id> [--workspace <root>] [--role <role-id>]
 ```
 
 When Run ID is omitted, observation resolves only the current Workspace owner;
@@ -509,8 +561,9 @@ under that fixed state directory. Agent-Team copies only private authentication
 state, creates an isolated config containing only the exact Workspace trust
 entry, and passes the frozen role model, effort, fast, and permission choices
 explicitly; mutable user MCP, Hook, Plugin, and permission settings are not
-imported. Project-level configuration inside the trusted Workspace remains
-part of the Workspace's own security boundary. After an interactive Codex
+imported. Agent-Team disables non-managed Codex hooks, but other project-level
+configuration, instructions, and extensions inside the trusted Workspace
+remain part of the Workspace's own security boundary. After an interactive Codex
 process group is proven quiescent, Agent-Team removes Codex's transient wrapper
 directory and clears group/other permission bits from durable private-Home
 state while preserving the resumable Session Store.

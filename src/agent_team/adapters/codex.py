@@ -54,23 +54,13 @@ class CodexAdapter(HarnessAdapter):
 
     @staticmethod
     def _workspace_permission_mapping(*, network_access: bool) -> list[str]:
-        state_dir = fixed_state_dir()
-        writable_roots = [
-            str(state_dir / "workspace-locks"),
-            str(state_dir / "workspaces"),
-        ]
-        roots_value = json.dumps(
-            writable_roots,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
         return [
             "-c",
             'sandbox_mode="workspace-write"',
             "-c",
             'approval_policy="never"',
             "-c",
-            f"sandbox_workspace_write.writable_roots={roots_value}",
+            "sandbox_workspace_write.writable_roots=[]",
             "-c",
             (
                 "sandbox_workspace_write.network_access=true"
@@ -91,11 +81,20 @@ class CodexAdapter(HarnessAdapter):
         # These two isolation flags are intentionally scoped to `codex exec`
         # and are rejected by the interactive CLI. Interactive Runs instead
         # receive a private CODEX_HOME prepared by `prepare_run_state`.
-        common = (
-            ["--ignore-user-config", "--ignore-rules"]
-            if launch_mode == "headless"
-            else []
-        )
+        common = [
+            *(
+                ["--ignore-user-config", "--ignore-rules"]
+                if launch_mode == "headless"
+                else []
+            ),
+            # Codex merges hooks from every active config layer instead of
+            # replacing lower-precedence hook sources. Freeze the feature off
+            # so a trusted Workspace cannot add an unrecorded host process to
+            # an Agent-Team Profile. Admin requirements can still force
+            # managed hooks; that effective policy is outside this mapping.
+            "-c",
+            "features.hooks=false",
+        ]
         profiles = {
             "default": [
                 *common,

@@ -606,9 +606,10 @@ class HarnessAdapter(abc.ABC):
             session_policy.encode("utf-8"),
             canonical_json_bytes(selected),
         ]
-        # Preserve existing headless fingerprints so completed or blocked
-        # schema-1..3 Runs remain observable after upgrading. Interactive mode
-        # is a new execution contract and therefore receives an explicit frame.
+        # Preserve the historical headless fingerprint framing. Mapping or
+        # executable changes still change the digest and intentionally block
+        # further execution; completed Runs remain observable independently.
+        # Interactive mode is a distinct contract and gets an explicit frame.
         if launch_mode == "interactive":
             components.append(launch_mode.encode("utf-8"))
         framed = b"".join(

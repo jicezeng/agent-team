@@ -1,7 +1,7 @@
 # Agent-Team 产品需求文档
 
 > **版本**：v0.1<br>
-> **最近修订**：2026-08-12<br>
+> **最近修订**：2026-08-13<br>
 > **状态**：已实现并完成本地真实场景验证<br>
 > **目标读者**：产品负责人、使用者、维护者和集成开发者
 
@@ -101,12 +101,28 @@ v0.1 不承诺：
   `headless` 读取；
 - Codex 与 Claude Code 都提供 `default`、`trusted-workspace` 和 `full-access`
   三个显式 Launch Profile；后两者只能由用户主动选择；
-- Launch Profile 不继承本机可变权限配置；Start/Resume 参数及 Hash 在 Kickoff 前
-  冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
+- Launch Profile 不继承 Codex 或 Claude 的用户级可变权限配置；Claude 额外排除
+  User/Project/Local Setting Sources；Codex Headless 忽略 User Config 与
+  User/Project Rules，Interactive 使用私有 Home，两种模式都冻结权限键并设置
+  `features.hooks=false`。受信任 Workspace 内其余 Project Config、Instruction 与
+  Extension 仍属于 Workspace Trust Boundary；Start/Resume 参数及 Hash 在 Kickoff
+  前冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
+- Codex 的管理员 Requirements 与 Claude 的 Enterprise Managed Settings 都不能由
+  Agent-Team 覆盖，不进入 `launch_profile_sha256`，也不能由 `doctor` 证明云端或最终
+  有效内容；Codex Requirements 可以约束并拒绝不兼容的 Sandbox、Approval、Permission
+  Profile 或 Feature 选择，也可以强制重新启用 Managed Hook 或配置具有宿主副作用的
+  Log Path；
+  Claude 托管配置还可以覆盖标量并合并数组。因而 `default` / `trusted-workspace` 的
+  产品写边界以管理员没有增加宿主可写路径、Sandbox Exclusion 或宿主执行 Hook 为前提，
+  只允许 Workspace、Harness 必需的临时目录和经过固定参数校验的
+  Formal Action；Codex 显式冻结空的额外 `writable_roots`，共享 Workspace Lock / Owner
+  目录不作为 Harness 通用可写根；
 - Codex 与 Claude Code External Role 都可显式选择 Model 和 Reasoning Effort，
   Codex 还可显式启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
   默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；新建 Codex Role
   把未启用 Fast Mode 的有效结果明确冻结为 `false`，不留给后续 Harness 默认值漂移；
+  Claude 托管策略仍可能在执行时覆盖冻结的请求 Model，产品不得把请求值误报为已证明
+  的最终有效 Model；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -140,15 +156,17 @@ v0.1 不承诺：
 - Retention 改写或删除必须由可恢复的瞬态 Receipt 保护；任一收口写入点崩溃后可幂等
   继续，Manifest 必须精确覆盖所有受支持的实际保留 Artifact 并验证 Retention 语义；
 - Normalized Trace 支持 Agent Message、Tool Call/Result、File Change、Usage、
-  Error、Session、Turn、Fallback，以及 Harness 明确暴露的 Reasoning Summary；
+  Error、Session、Turn、Diagnostic 与 Harness Event Fallback，以及 Harness 明确暴露的
+  Reasoning Summary；
 - 每个事件保留 stdout/stderr/terminal 原始 Sequence 范围；交互式 TUI 字节作为
   Diagnostic Event 保留，未知结构化记录不得静默丢失；
 - `status`、`diagnose`、`watch` 提供稳定运行状态；`transcript`、`tail` 提供 Role/
   Turn Filter 和机器可读审计输出；
 - Full Audit 要求所有业务 Role 为 External，Origin 只做控制面，Raw 或 Normalized
   Capture 截断必须产生技术 Block；
-- Audited Handoff、Completion 和 Agent Block 必须包含非空 `Decision rationale` 与
-  `Evidence`，但不得声称这是隐藏 Chain of Thought。
+- Full Audit（以及显式启用 rationale/evidence 合同的 Standard Audit）中的 Handoff、
+  Completion 和 Agent Block 必须包含非空 `Decision rationale` 与 `Evidence`，但不得
+  声称这是隐藏 Chain of Thought。
 
 ### 6.6 安装与诊断
 
@@ -195,10 +213,11 @@ v0.1 的发布验收必须同时满足：
 - [`docs/validation/interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md)。
 
 前两份报告是 Headless/Observability 历史基线，保留当时的版本和测试计数；第三份记录
-v0.1.2 验证时点的 Interactive Codex PTY、Action Termination、Session Resume 和
-235 项回归验证。报告中的计数都是证据快照，不随之后新增测试回写。
-当前仓库尚未保存真实 Interactive Claude Code 闭环报告，因此不能用第三份报告替代
-Claude 的历史 Headless 证据或宣称该组合已经完成 Interactive 实机验收。
+v0.1.2 验证时点的 Interactive Codex PTY、Action Termination、Session Resume、
+274 项回归验证，以及 Claude Code → Codex → 同一 Claude Session 恢复的三 Turn
+Interactive 实机闭环。报告中的计数都是证据快照，不随之后新增测试回写。该证据仍不
+包含 Interactive Claude Code/Claude Code 双 Claude 循环，也不替代前两份报告对
+Headless 结构化事件路径的覆盖。
 
 ## 9. 隐私与数据保留
 

@@ -5,9 +5,9 @@ umask 077
 
 AGENT_TEAM_DOWNLOAD_BASE='https://agentteam.zengjice.com:7001/install'
 # Release publishing rewrites these three pins in a staged installer.
-AGENT_TEAM_VERSION='0.1.2'
-AGENT_TEAM_WHEEL='agent_team-0.1.2-py3-none-any.whl'
-AGENT_TEAM_WHEEL_SHA256='938e8f41823ed9cecd5a2348832b0af8f15756eeaf82eed51960f2ccb1802c40'
+AGENT_TEAM_VERSION='0.1.3'
+AGENT_TEAM_WHEEL='agent_team-0.1.3-py3-none-any.whl'
+AGENT_TEAM_WHEEL_SHA256='2ad0f20b13d18f883a6fb6d010b69c3a1855b9ca33fae28fa3214648db0d334e'
 AGENT_TEAM_TEMP_DIR=''
 
 fail() {

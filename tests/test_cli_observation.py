@@ -399,6 +399,57 @@ def test_attach_pure_origin_run_returns_no_tmux_without_probing_tmux(
     assert result["error"]["code"] == "NO_TMUX_RUNTIME"
 
 
+def test_attach_resolves_active_owner_without_run_id(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, _runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-test-attach-owner-resolution",
+    )
+    attached: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "agent_team.cli.attach_tmux",
+        lambda run_id, role_id: attached.append((run_id, role_id)) or 0,
+    )
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit) as stopped:
+        main(["attach", "--role", "developer"])
+
+    assert stopped.value.code == 0
+    assert attached == [(run_dir.name, "developer")]
+
+
+def test_attach_without_run_id_does_not_guess_an_unstarted_run(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    make_origin_run(
+        workspace,
+        request_protocol,
+        run_id="at-test-attach-no-owner",
+    )
+    monkeypatch.setattr(
+        "agent_team.cli.attach_tmux",
+        lambda *_args, **_kwargs: pytest.fail("tmux must not be probed"),
+    )
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit) as stopped:
+        main(["attach"])
+
+    assert stopped.value.code == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"]["code"] == "RUN_NOT_FOUND"
+    assert "provide an explicit run id" in result["error"]["message"]
+
+
 def test_transcript_and_tail_expose_normalized_role_filtered_events(
     workspace: Path,
     request_protocol: tuple[Path, Path],

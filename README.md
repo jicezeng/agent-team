@@ -47,11 +47,11 @@ cd /path/to/agent-team
 uv build --wheel
 ```
 
-Copy `dist/agent_team-0.1.2-py3-none-any.whl` to the target macOS or Linux
+Copy `dist/agent_team-0.1.3-py3-none-any.whl` to the target macOS or Linux
 machine, then run:
 
 ```bash
-uv tool install --force /path/to/agent_team-0.1.2-py3-none-any.whl
+uv tool install --force /path/to/agent_team-0.1.3-py3-none-any.whl
 agent-team install
 agent-team doctor --workspace /path/to/worktree --json
 ```
@@ -519,17 +519,19 @@ agent-team transcript [<run-id>] [--workspace <root>] \
   [--role <role-id>] [--turn <turn-id>] [--json]
 agent-team tail [<run-id>] [--workspace <root>] \
   [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
-agent-team attach <run-id> [--workspace <root>] [--role <role-id>]
+agent-team attach [<run-id>] [--workspace <root>] [--role <role-id>]
 ```
 
-When Run ID is omitted, observation resolves only the current Workspace owner;
-it never guesses the newest audit directory. Structured output is the stable
-control surface. `status`, `diagnose`, and each `watch --jsonl` line share the
-same derived snapshot, including `run_status`, `health`, active Turn, process
-identity, session state, each role's frozen launch mode/profile/model/effort/
-fast configuration, Block policy, evidence paths, and one technical
-`recommended_action`. Use `status --json` to inspect a Run's effective team
-configuration.
+When Run ID is omitted, observation—including `attach`—resolves only the
+current Workspace owner; it never guesses the newest audit directory. Because
+terminal Runs release that owner and no longer have a tmux runtime, automatic
+`attach` resolution is intentionally limited to an active Run. Structured
+output is the stable control surface. `status`, `diagnose`, and each
+`watch --jsonl` line share the same derived snapshot, including `run_status`,
+`health`, active Turn, process identity, session state, each role's frozen
+launch mode/profile/model/effort/fast configuration, Block policy, evidence
+paths, and one technical `recommended_action`. Use `status --json` to inspect
+a Run's effective team configuration.
 
 `transcript` reconstructs every selected Turn's policy-filtered frozen input,
 Harness prompt, normalized event stream, formal output, and per-Turn/run aggregate

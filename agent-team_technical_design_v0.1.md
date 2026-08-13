@@ -1665,14 +1665,20 @@ LaunchSpec、正式 Payload 和 Workspace Artifact 为了权威性保持原始�
 用户可以执行：
 
 ```bash
-agent-team attach <run-id>
+agent-team attach
+agent-team attach --role developer
 agent-team attach <run-id> --role developer
 agent-team diagnose <run-id> --role developer
 agent-team transcript <run-id> --role developer --json
 agent-team tail <run-id> --role developer --follow --jsonl
 ```
 
-`attach` 在 Stage 1 始终使用 tmux 只读 Client；纯 Origin Run 返回 `NO_TMUX_RUNTIME`，但仍可使用 `status` / `diagnose` 读取 Run Store。`capture-pane` 和人类日志只提供线索，不能改变结构化诊断结论。直接操作外部 Harness TUI 不属于正常工作流。
+`attach` 在 Stage 1 始终使用 tmux 只读 Client；省略 Run ID 时与其他只读观察命令
+一样，只从当前 Workspace Owner 解析活跃 Run，不猜测最新审计目录。终态 Run 已释放
+Owner 且没有 tmux Runtime，不能被自动 Attach。纯 Origin Run 返回
+`NO_TMUX_RUNTIME`，但仍可使用 `status` / `diagnose` 读取 Run Store。`capture-pane` 和
+人类日志只提供线索，不能改变结构化诊断结论。直接操作外部 Harness TUI 不属于正常
+工作流。
 
 `transcript` 输出选中 Turn 的 Policy-filtered Frozen Input、Harness Prompt、统一
 Events、Formal Output 与 Turn/Run Usage Summary；`tail` 支持 Role/Turn Filter
@@ -2852,7 +2858,7 @@ agent-team watch [<run-id>] [--workspace <path>] [--jsonl]
 agent-team diagnose [<run-id>] [--workspace <path>] [--role <role-id>] [--json]
 agent-team transcript [<run-id>] [--workspace <path>] [--role <role-id>] [--turn <turn-id>] [--json]
 agent-team tail [<run-id>] [--workspace <path>] [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
-agent-team attach <run-id> [--workspace <path>] [--role <role-id>]
+agent-team attach [<run-id>] [--workspace <path>] [--role <role-id>]
 agent-team cancel <run-id> [--workspace <path>]
 agent-team recover <run-id> [--workspace <path>]
 agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-stopped]

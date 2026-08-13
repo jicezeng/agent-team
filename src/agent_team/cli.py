@@ -805,7 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
     tail.add_argument("--jsonl", action="store_true")
 
     attach = sub.add_parser("attach")
-    attach.add_argument("run_id")
+    attach.add_argument("run_id", nargs="?")
     attach.add_argument("--workspace")
     attach.add_argument("--role")
 
@@ -1036,7 +1036,12 @@ def dispatch(args: argparse.Namespace) -> int:
         except KeyboardInterrupt:
             return 130
     if command == "attach":
-        run_dir = _run_dir(args.run_id, args.workspace)
+        run_dir, corruption = _observation_run_dir(
+            args.run_id,
+            args.workspace,
+        )
+        if corruption is not None:
+            raise IntegrityError(corruption)
         team = load_team(run_dir)
         external_roles = {
             role.role_id
@@ -1053,7 +1058,7 @@ def dispatch(args: argparse.Namespace) -> int:
                 "ROLE_NOT_EXTERNAL",
                 f"{args.role!r} is not an External role in this run",
             )
-        return attach_tmux(args.run_id, args.role)
+        return attach_tmux(team.run_id, args.role)
     if command == "transcript":
         run_dir, corruption = _observation_run_dir(args.run_id, args.workspace)
         if corruption is not None:

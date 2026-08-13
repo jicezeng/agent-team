@@ -166,7 +166,8 @@ and `tail --jsonl --role <role>` only for audit and observation. Never parse
 Pane text, human-readable Status, Harness prose, or logs to decide routing,
 completion, Resume, Unlock, or recovery.
 
-`agent-team attach <run-id> --role <role>` is a read-only live view. An
+`agent-team attach [<run-id>] --role <role>` is a read-only live view. Omit the
+Run ID inside its actively owned Workspace, or provide it explicitly. An
 interactive role shows its native Harness TUI. An operator may explicitly use
 a writable tmux client for manual TUI input, which the Supervisor relays as raw
 terminal bytes, but neither the Pane nor that input is a formal Agent-Team

@@ -17,13 +17,19 @@ workflow users must prebuild in a DSL.
 
 The same runtime can express many classic collaboration patterns:
 
-| Pattern | Example topology |
-| --- | --- |
-| Serial pipeline | Planner → Developer → Tester → Release reviewer |
-| Iterative review | Developer ↔ Reviewer until no findings remain |
-| Adversarial deliberation | Proposer → Critic → Reviser → Judge, with challenge loops |
-| Conditional expert routing | Triage → Security, Performance, or API specialist → Integrator |
-| Independent verification | Implementer → QA → Reviewer, routing failures back to their owner |
+```mermaid
+flowchart LR
+    P[Planner] --> D[Developer] --> T[Tester] --> R[Release reviewer]
+    D2[Developer] --> R2[Reviewer]
+    R2 -- findings --> D2
+    R2 -- clean --> Done((Complete))
+    A[Proposer] --> C[Critic] --> V[Reviser] --> J[Judge]
+    J -- challenge --> A
+    Q[Triage] --> X{Route by task}
+    X --> S[Security]
+    X --> F[Performance]
+    X --> I[API specialist]
+```
 
 Any topology expressible as explicit single-token transitions can use the same
 runtime: edges may be conditional and graphs may contain cycles. Stage 1
@@ -33,26 +39,37 @@ deterministic while leaving the business topology flexible.
 
 ## A small, inspectable core
 
-- **Plugin-native:** a Codex Skill and Claude Code plugin add coordination to
-  the Harnesses users already operate; Agent-Team does not replace their model,
-  native TUI, or Session implementation.
-- **Protocol over workflow code:** `REQUEST.md` preserves the objective and
-  `PROTOCOL.md` carries roles, responsibilities, routing, and exit conditions.
-  A new task can create a new topology without changing runtime code.
-- **A minimal state machine:** one execution token and a small set of formal
-  events—Kickoff, Handoff, Complete, Block, and Resume—drive every business
-  transition. The runtime transports decisions; it does not guess them from
-  model prose.
-- **Files are authoritative:** immutable inputs, hashed payloads, and the
-  append-only Event Journal are the durable source of truth. Pane text, logs,
-  and best-effort notifications cannot change Run state, which makes recovery
-  and auditing reproducible after a process crash.
-- **tmux is the process and visibility layer:** each External role gets a
-  detachable window; Interactive roles show the native TUI and Headless roles
-  show Worker diagnostics. Users can attach read-only, and missing idle Workers
-  can be rebuilt from durable state. tmux notifications reduce latency, but
-  Workers also rescan the Journal, so a lost notification never loses a
-  Handoff.
+```mermaid
+flowchart TB
+    Task[Natural-language task] --> Integration[Codex Skill / Claude Code plugin]
+    Integration --> Inputs[Immutable REQUEST.md + PROTOCOL.md]
+    Inputs --> Journal[(Append-only Event Journal)]
+    Journal --> Worker[Role Worker]
+    Worker --> Harness[Codex / Claude Code Session]
+    Harness --> Action[Formal role action]
+    Action --> Journal
+    Worker -. native TUI / diagnostics .-> Tmux[tmux window]
+    Tmux -. read-only visibility .-> User[User]
+```
+
+The plugin layer turns each task into a readable protocol instead of compiled
+workflow code. Immutable files, hashed payloads, and the Event Journal are the
+durable source of truth. tmux only hosts detachable processes and visibility;
+Pane text, logs, and best-effort notifications cannot change Run state. Workers
+rescan the Journal, so losing a tmux notification never loses a Handoff.
+
+Only a small set of formal events changes business state:
+
+```mermaid
+flowchart LR
+    K((Kickoff)) --> Running
+    Running -- Handoff to next role --> Running
+    Running -- Complete --> Completed
+    Running -- Block --> Blocked
+    Blocked -- Resume after user instruction --> Running
+    Running -- Cancel --> Cancelled
+    Blocked -- Cancel --> Cancelled
+```
 
 The result is deliberately local and mechanically simple: no permanent manager
 Agent, compiled workflow engine, database, or Pane-scraping control loop.
@@ -104,10 +121,11 @@ Then describe the team and task:
 ```text
 $agent-team
 
-Use one Claude Code Developer and one independent Codex Reviewer. Preserve
-both Sessions. The Developer implements and tests the change. The Reviewer is
-the completion authority and sends every P0-P3 finding back to the Developer.
-Repeat the fix and full-review loop until no finding remains.
+Use one Claude Code Opus 4.7 max as Developer and one independent Codex gpt5.6
+sol max as Reviewer. Preserve both Sessions. The Developer implements and tests
+the change. The Reviewer is the completion authority and sends every P0-P3
+finding back to the Developer. Repeat the fix and full-review loop until no
+finding remains.
 
 Task: <describe the change>
 Limits: at most 12 role turns and 7200 seconds.

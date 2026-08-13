@@ -2,22 +2,63 @@
 
 [![CI](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml/badge.svg)](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml)
 
-Agent-Team is a local runtime for temporary coding-agent teams described in
-natural language. It coordinates Codex and Claude Code roles, gives one role at
-a time the execution token, preserves formal handoffs and audit evidence, and
-keeps role sessions resumable across review loops.
+Agent-Team is an event-driven local runtime for temporary coding-agent teams.
+Describe a task and collaboration rules in natural language; Agent-Team creates
+the roles and topology for that Run, coordinates Codex and Claude Code, and
+preserves resumable Sessions and auditable handoffs until Completion or Block.
 
-External roles use their native Harness TUI inside tmux. Agent-Team supervises
-the processes and durable event journal; it does not route work by scraping
-terminal text or by automating `tmux send-keys`.
+## The task defines the team
 
-## Highlights
+Agent-Team has no permanent team and no hard-coded Developer–Reviewer flow.
+For each Run, its Skill turns the request into dynamic roles and a readable
+`PROTOCOL.md`. During execution, a formal Handoff event names the next role, so
+the emerging collaboration is a task-specific directed graph rather than a
+workflow users must prebuild in a DSL.
 
-- Define roles, responsibilities, routing, and completion rules per task.
-- Mix Codex and Claude Code while preserving each role's Session.
-- Observe interactive Turns through tmux and structured trace commands.
-- Fail closed on ambiguous process, permission, or recovery state.
-- Resume a Block only after a new, explicit user instruction.
+The same runtime can express many classic collaboration patterns:
+
+| Pattern | Example topology |
+| --- | --- |
+| Serial pipeline | Planner → Developer → Tester → Release reviewer |
+| Iterative review | Developer ↔ Reviewer until no findings remain |
+| Adversarial deliberation | Proposer → Critic → Reviser → Judge, with challenge loops |
+| Conditional expert routing | Triage → Security, Performance, or API specialist → Integrator |
+| Independent verification | Implementer → QA → Reviewer, routing failures back to their owner |
+
+Any topology expressible as explicit single-token transitions can use the same
+runtime: edges may be conditional and graphs may contain cycles. Stage 1
+supports serial paths, loops, and dynamic routing, but not simultaneous
+branches or parallel Fan-out/Join. This keeps shared-worktree collaboration
+deterministic while leaving the business topology flexible.
+
+## A small, inspectable core
+
+- **Plugin-native:** a Codex Skill and Claude Code plugin add coordination to
+  the Harnesses users already operate; Agent-Team does not replace their model,
+  native TUI, or Session implementation.
+- **Protocol over workflow code:** `REQUEST.md` preserves the objective and
+  `PROTOCOL.md` carries roles, responsibilities, routing, and exit conditions.
+  A new task can create a new topology without changing runtime code.
+- **A minimal state machine:** one execution token and a small set of formal
+  events—Kickoff, Handoff, Complete, Block, and Resume—drive every business
+  transition. The runtime transports decisions; it does not guess them from
+  model prose.
+- **Files are authoritative:** immutable inputs, hashed payloads, and the
+  append-only Event Journal are the durable source of truth. Pane text, logs,
+  and best-effort notifications cannot change Run state, which makes recovery
+  and auditing reproducible after a process crash.
+- **tmux is the process and visibility layer:** each External role gets a
+  detachable window; Interactive roles show the native TUI and Headless roles
+  show Worker diagnostics. Users can attach read-only, and missing idle Workers
+  can be rebuilt from durable state. tmux notifications reduce latency, but
+  Workers also rescan the Journal, so a lost notification never loses a
+  Handoff.
+
+The result is deliberately local and mechanically simple: no permanent manager
+Agent, compiled workflow engine, database, or Pane-scraping control loop.
+Natural language defines collaboration semantics, while a small event-sourced
+runtime protects ownership, process identity, Session continuity, trace
+integrity, and fail-closed recovery.
 
 ## Requirements
 
@@ -27,13 +68,7 @@ terminal text or by automating `tmux send-keys`.
 
 ## Install
 
-On macOS, install or upgrade the hosted package:
-
-```bash
-curl -fsSL https://agentteam.zengjice.com:7001/install/mac.sh | bash
-```
-
-Or install from a source checkout on macOS or Linux:
+Install from a source checkout on macOS or Linux:
 
 ```bash
 git clone https://github.com/jicezeng/agent-team.git

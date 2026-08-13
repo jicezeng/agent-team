@@ -16,16 +16,6 @@ Sparse checkout and Gitlinks are not supported in v0.1.
 
 Install Agent-Team separately for each OS account that will run it.
 
-### Hosted macOS package
-
-```bash
-curl -fsSL https://agentteam.zengjice.com:7001/install/mac.sh | bash
-```
-
-The installer verifies the wheel's pinned SHA-256 before replacing the tool,
-refreshes both bundled integrations, and refuses to upgrade while an
-Agent-Team Run owns a workspace.
-
 ### Wheel
 
 Build the wheel from a source checkout:

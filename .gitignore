@@ -11,4 +11,5 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+deploy2home.sh
 .DS_Store

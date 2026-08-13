@@ -10,7 +10,7 @@
 本文定义 Agent-Team v0.1 的产品问题、目标用户、功能范围、验收标准和已知限制。
 
 - [技术设计文档](agent-team_technical_design_v0.1.md)定义实现合同、数据结构、状态转换和恢复不变量；
-- [README](README.md)提供安装和使用说明；
+- [README](README.md)提供安装与快速上手，[用户指南](docs/user-guide.md)提供完整操作说明；
 - [`docs/validation/README.md`](docs/validation/README.md)索引真实运行的验证材料与结果。
 
 发生冲突时，产品范围以本文为准，运行时行为以技术设计和当前测试共同约束；README

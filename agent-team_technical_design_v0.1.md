@@ -2957,6 +2957,9 @@ agent-team/
 ├── README.md
 ├── agent-team_prd_v0.1.md
 ├── agent-team_technical_design_v0.1.md
+├── docs/
+│   ├── user-guide.md
+│   └── validation/
 ├── src/agent_team/
 ├── skills/
 │   └── codex/agent-team/
@@ -2969,8 +2972,7 @@ agent-team/
 │       └── skills/agent-team/
 │           ├── SKILL.md
 │           └── references/
-├── tests/
-└── docs/validation/
+└── tests/
 ```
 
 ### 24.1 Codex

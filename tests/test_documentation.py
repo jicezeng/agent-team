@@ -14,6 +14,7 @@ from agent_team.turns import RUNTIME_REQUIRED
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CLAIM_GUIDES = (
     "README.md",
+    "docs/user-guide.md",
     "agent-team_technical_design_v0.1.md",
     "skills/codex/agent-team/SKILL.md",
     "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
@@ -200,7 +201,7 @@ def test_technical_design_does_not_overstate_adapter_probe() -> None:
 
 @pytest.mark.parametrize(
     "relative_path",
-    ("README.md", "agent-team_technical_design_v0.1.md"),
+    ("docs/user-guide.md", "agent-team_technical_design_v0.1.md"),
 )
 def test_operator_docs_list_the_complete_external_turn_environment(
     relative_path: str,
@@ -253,6 +254,13 @@ def test_product_docs_define_full_access_default_and_start_confirmation(
     assert "full-access" in content
     assert "--confirm-full-access" in content
     assert "一次" in content or "once" in content
+
+
+def test_readme_stays_focused_and_links_to_the_user_guide() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert len(readme.splitlines()) <= 200
+    assert "docs/user-guide.md" in readme
 
 
 @pytest.mark.parametrize("relative_path", PROFILE_GUIDES)

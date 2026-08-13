@@ -1,136 +1,62 @@
 # Agent-Team
 
-Agent-Team v0.1 is a local runtime for temporary coding-agent teams described
-in natural language. It gives one dynamic role at a time the execution token,
-persists every formal handoff in an immutable journal, keeps external Codex or
-Claude Code sessions resumable, and returns completion or a user-visible Block
-to the current Origin session. New External roles run the Harness's native TUI
-through a supervised PTY by default, so live progress is visible in the role's
-tmux window without making Pane text part of the control protocol.
+[![CI](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml/badge.svg)](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml)
 
-Documentation is split by purpose:
+Agent-Team is a local runtime for temporary coding-agent teams described in
+natural language. It coordinates Codex and Claude Code roles, gives one role at
+a time the execution token, preserves formal handoffs and audit evidence, and
+keeps role sessions resumable across review loops.
 
-- [`agent-team_prd_v0.1.md`](agent-team_prd_v0.1.md) defines the product scope,
-  requirements, acceptance criteria, and limitations;
-- [`agent-team_technical_design_v0.1.md`](agent-team_technical_design_v0.1.md)
-  is the normative runtime and recovery contract;
-- this README is the installation and operating guide.
+External roles use their native Harness TUI inside tmux. Agent-Team supervises
+the processes and durable event journal; it does not route work by scraping
+terminal text or by automating `tmux send-keys`.
 
-Stage 1 deliberately keeps business workflow in `PROTOCOL.md`; the runtime
-structures transport, ownership, process safety, session continuity, and
-recovery rather than trying to parse reviewer verdicts from model prose.
+## Highlights
+
+- Define roles, responsibilities, routing, and completion rules per task.
+- Mix Codex and Claude Code while preserving each role's Session.
+- Observe interactive Turns through tmux and structured trace commands.
+- Fail closed on ambiguous process, permission, or recovery state.
+- Resume a Block only after a new, explicit user instruction.
 
 ## Requirements
 
-- Python 3.11 or newer
-- `uv` for the installation and development commands below
-- Git
-- tmux when any role has an External binding
-- Codex CLI and/or Claude Code CLI for the configured External roles
-- macOS or Linux on a local filesystem with `flock`, atomic same-directory
-  rename, and `fsync`
-- exactly one Git worktree root per Run; sparse checkout and Gitlinks are not
-  supported in v0.1
+- macOS or Linux, Python 3.11+, `uv`, Git, and tmux
+- Codex CLI and/or Claude Code CLI, already installed and authenticated
+- One normal Git worktree root per Run
 
 ## Install
 
-Install Agent-Team separately for every OS account that will run it. The
-Python package contains the CLI, Codex skill, and Claude Code plugin, but it
-does not install or authenticate the Codex and Claude Code CLIs.
-
-### Install on another machine from a wheel
-
-Build a wheel on a machine that has this source checkout:
-
-```bash
-cd /path/to/agent-team
-uv build --wheel
-```
-
-Copy `dist/agent_team-0.1.3-py3-none-any.whl` to the target macOS or Linux
-machine, then run:
-
-```bash
-uv tool install --force /path/to/agent_team-0.1.3-py3-none-any.whl
-agent-team install
-agent-team doctor --workspace /path/to/worktree --json
-```
-
-The wheel is platform-independent, but the target machine must still satisfy
-the requirements above. Configure and authenticate each harness CLI on that
-machine before starting a Run.
-
-### Install on macOS from the hosted package
-
-The fixed release package hosted by `agentteam.zengjice.com` can be installed
-or upgraded with:
+On macOS, install or upgrade the hosted package:
 
 ```bash
 curl -fsSL https://agentteam.zengjice.com:7001/install/mac.sh | bash
 ```
 
-The installer verifies the wheel's pinned SHA-256 before replacing the tool,
-then refreshes and verifies both bundled integrations. The Mac must already
-provide `uv`, Git, tmux, and at least one of Codex CLI or Claude Code CLI. The
-installer refuses to upgrade while an Agent-Team Run owns a workspace.
-
-### Install from a source checkout
-
-If the target machine has a copy of this repository, install directly from
-the checkout:
+Or install from a source checkout on macOS or Linux:
 
 ```bash
-cd /path/to/agent-team
+git clone https://github.com/jicezeng/agent-team.git
+cd agent-team
 uv tool install --force .
 agent-team install
+```
+
+Then verify the target worktree and installed Harnesses:
+
+```bash
 agent-team doctor --workspace /path/to/worktree --json
 ```
 
-Use `--force` to make upgrades and reinstalls deterministic. After upgrading
-the Python package, run `agent-team install` again so the copied integrations
-match the installed package. Do not upgrade the package or replace the
-integrations while a Run is active: a later Turn could otherwise load a
-different runtime or Skill than the earlier Turns. Complete or cancel and
-safely recover the active Run first.
+Agent-Team installs its bundled Codex skill and Claude Code plugin, but it does
+not install or authenticate either Harness CLI. Wheel, development, upgrade,
+and integration-location instructions are in the
+[user guide](docs/user-guide.md#installation-and-upgrades).
 
-### Development install
+## Quick start
 
-To run from the project environment without installing the CLI as a global
-tool:
-
-```bash
-uv sync
-uv run agent-team install
-uv run agent-team doctor --workspace /path/to/worktree --json
-```
-
-`agent-team install` replaces only Agent-Team's exact integration trees:
-
-- Codex skill: `~/.codex/skills/agent-team`
-- Claude Code plugin: the account's fixed Agent-Team state directory under
-  `installed/claude-code-plugin`
-
-On macOS the fixed state directory is
-`~/Library/Application Support/agent-team`; on Linux it is
-`~/.local/state/agent-team`. The location is derived from the current OS
-account and is not configurable. `doctor` reports tool availability,
-authentication when it can be determined without a model call, all supplied
-profile mappings, active-Run fingerprints when a Workspace owner exists,
-Resume support, integration contents, filesystem capabilities, workspace
-boundaries, state permissions, and any current Workspace owner. An
-authentication result may be `unknown` when a harness cannot be checked
-without an interactive or model call; confirm that harness separately before
-using it.
-
-Do not copy `.agent-team/` or the per-account fixed state directory to another
-machine and try to resume a Run. Harness sessions, process identities, tmux
-workers, and Workspace ownership are machine-local. Install Agent-Team on the
-new machine and bootstrap a new Run there.
-
-## Use from Codex
-
-The recommended entry point is the installed `$agent-team` Codex skill. Start
-a new Codex session in the Git worktree that the team should modify:
+The recommended entry point is the installed `$agent-team` Codex skill. Open
+Codex in the Git worktree the team should modify:
 
 ```bash
 cd /path/to/worktree
@@ -138,531 +64,80 @@ agent-team doctor --workspace "$PWD" --json
 codex
 ```
 
-Then invoke the skill with a complete natural-language team request. For
-example:
+Then describe the team and task:
 
 ```text
 $agent-team
 
-Work in the current Git worktree with one Claude Code Developer and one
-independent Codex Reviewer. Use resumable sessions for both roles.
+Use one Claude Code Developer and one independent Codex Reviewer. Preserve
+both Sessions. The Developer implements and tests the change. The Reviewer is
+the completion authority and sends every P0-P3 finding back to the Developer.
+Repeat the fix and full-review loop until no finding remains.
 
-The Developer should implement the requested change and run relevant tests.
-The Reviewer is the sole completion authority and must report every P0-P3
-finding to the Developer. The Developer must explicitly accept and fix, or
-reject with evidence, every finding. After each fix, the same Reviewer session
-must perform a complete re-review. Continue until there are no open P0-P3
-findings, then return the final result to this Codex session.
-
-Task: <describe the change here>
-
+Task: <describe the change>
 Limits: at most 12 role turns and 7200 seconds.
 ```
 
-The skill preserves the request in `REQUEST.md`, generates a readable
-`PROTOCOL.md`, checks the selected harness profiles, starts the Run, and
-handles Origin handoffs until the Reviewer completes the team or a Block must
-be shown to the user. Keep the originating Codex session open while the Run is
-active. Use `status`, `watch`, or `attach` from another terminal if you want to
-observe it.
+The skill writes the immutable Request and Protocol, starts the Run, follows
+handoffs, and returns either Completion or a user-visible Block to the Origin
+session.
 
-New External roles default to `full-access` (YOLO): no Harness host sandbox,
-unrestricted command network, and no per-command approval prompts. Immediately
-before creating and starting each new Run, the skill shows this boundary and
-asks for one explicit user confirmation. That confirmation covers every
-full-access External role in that immutable Run; it is not repeated for later
-Turns, Handoffs, Resumes, or Recovery. Select the restricted `default` or
-`trusted-workspace` Profile explicitly when host containment is preferred.
+New External roles default to `full-access` (YOLO), which disables the Harness
+host sandbox, opens command network access, and suppresses per-command approval
+prompts. The skill must obtain explicit confirmation once for each new Run and
+passes `--confirm-full-access` only after that confirmation. Choose the
+restricted `default` or `trusted-workspace` Profile explicitly when host
+containment is required.
 
-## Manual CLI bootstrap
-
-To operate without the Codex skill, first create two readable files outside
-`.agent-team/`:
-
-- `REQUEST.md`, preserving the original objective
-- `PROTOCOL.md`, defining dynamic roles, routing, review loops, completion
-  authority, context policy, assumptions, and safety limits
-
-Create a Run from the exact Git worktree root:
-
-```bash
-agent-team init \
-  --workspace /path/to/worktree \
-  --request /path/to/REQUEST.md \
-  --protocol /path/to/PROTOCOL.md \
-  --role developer=claude-code:resume \
-  --role reviewer=codex:resume \
-  --initial-role developer \
-  --origin-harness codex \
-  --max-turns 12 \
-  --max-wall-time-seconds 7200 \
-  --audit-mode full \
-  --trace-redaction standard \
-  --max-trace-bytes 67108864 \
-  --raw-retention redacted \
-  --run-id at-example
-
-agent-team start at-example \
-  --workspace /path/to/worktree \
-  --confirm-full-access
-agent-team wait-origin \
-  --run at-example \
-  --workspace /path/to/worktree \
-  --timeout 90
-```
-
-A role specification is one of:
-
-```text
-ROLE=origin
-ROLE=codex:<resume|fresh>[:<profile>]
-ROLE=claude-code:<resume|fresh>[:<profile>]
-```
-
-Role IDs match `[a-z][a-z0-9_-]{0,31}`. `resume` preserves a validated harness
-session across that role's Turns; `fresh` creates a new session every Turn.
-Omitting `<profile>` selects `full-access`.
-Model and speed choices are role-scoped, optional `init` arguments:
-
-```text
---role-model ROLE=MODEL
---role-reasoning-effort ROLE=EFFORT
---role-fast ROLE
---role-launch-mode ROLE=<interactive|headless>
-```
-
-`--role-model` and `--role-reasoning-effort` work with both Codex and Claude
-Code. `--role-fast` is Codex-only and enables both the `fast_mode` feature and
-the `fast` service tier. Codex accepts `minimal`, `low`, `medium`, `high`,
-`xhigh`, `max`, or `ultra` effort; Claude Code accepts `auto`, `low`, `medium`,
-`high`, `xhigh`, or `max`.
-
-Each omitted field inherits the user's Harness default at `init`. Agent-Team
-reads only the relevant user-level values and freezes its requested result in
-`team.json`: Codex `model`, `model_reasoning_effort`, and fast service-tier
-settings; Claude Code `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` (when
-set), then user `model` / `effortLevel` settings. If the user has not configured
-a model or reasoning-effort value, the Harness retains its own account/model
-default. Codex Fast Mode is different: a new role freezes the effective value
-as `true` only when the user's `service_tier="fast"` setting is active and the
-feature is not disabled; otherwise it freezes `false`. This selective default
-resolution reads no other fields from the Harness user configuration files;
-the exact launch-time source isolation is described below. It does not erase
-configuration stored inside a trusted Workspace: Agent-Team freezes the Codex
-permission keys and disables non-managed Codex hooks, while other project
-configuration and instructions remain part of the Workspace trust boundary.
-As described below,
-non-overridable Claude managed policy can still replace a requested model at
-execution time.
-
-`interactive` is the default launch mode for every new External role. It runs
-native Codex or Claude Code with a real PTY and mirrors the terminal stream to
-the role's tmux Pane. Use `--role-launch-mode ROLE=headless` when that role
-specifically needs the non-interactive JSON/stream protocol. Launch mode is
-frozen in `team.json`; schema 1–3 Runs continue to load as `headless` rather
-than silently changing behavior after an upgrade.
-
-Before the first interactive Claude Code Run in a worktree, establish Claude's
-own workspace trust once from a normal terminal:
-
-```bash
-cd /path/to/worktree
-claude
-# Accept “Yes, I trust this folder”, then exit Claude Code.
-```
-
-Agent-Team never edits Claude's user trust database or answers that prompt with
-simulated keys. If trust is absent or later revoked, `start` fails before
-Kickoff (or a later Turn fails closed before launching Claude) with
-`HARNESS_WORKSPACE_TRUST_REQUIRED`; establish trust and retry the same
-UNSTARTED Run. Headless Claude roles do not require this TUI preflight. Codex
-interactive roles instead receive a private per-Run/Role `CODEX_HOME` whose
-immutable config contains only the exact current-workspace trust entry; user
-MCP, Hook, Plugin, and permission configuration is not copied.
-
-Workspace Trust is Claude's independent, one-time prerequisite for an
-interactive worktree, not an Agent-Team permission confirmation. Once the
-Run-scoped YOLO confirmation has been obtained, Claude `full-access` launches
-also set `skipDangerousModePermissionPrompt=true`, so Claude does not ask for a
-second dangerous-mode confirmation. Enterprise policy may still disable
-`bypassPermissions`, in which case the launch fails closed.
-
-Each adapter exposes the same explicit Profile names:
-
-| Profile | Codex mapping | Claude Code mapping |
+| Profile | Filesystem | Command network |
 | --- | --- | --- |
-| `default` | Workspace write plus Harness scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox plus Claude's internal scratch path, no fallback |
-| `trusted-workspace` | The same filesystem boundary, command network enabled, no approval prompts | `acceptEdits`, the same OS workspace sandbox and no fallback |
-| `full-access` | `danger-full-access` with no approval prompts | `bypassPermissions`, dangerous-mode prompt skipped, Claude sandbox disabled |
+| `default` | Workspace-contained | Disabled |
+| `trusted-workspace` | Workspace-contained | Enabled |
+| `full-access` | Unrestricted host access | Enabled |
 
-For a new External role, omitting `:PROFILE` from
-`ROLE=ADAPTER:POLICY[:PROFILE]` selects `full-access`; this is Agent-Team's
-YOLO default. The Profile removes the Harness host-filesystem boundary, opens
-command network access, and disables per-command approval prompts. Before the
-first Kickoff of any Run containing such a role, `start` requires
-`--confirm-full-access`. The Coordination Skill must first obtain one explicit
-user confirmation for that new Run. The immutable Kickoff Payload records the
-confirmation, and it is not requested again during the Run. Passing the CLI
-flag is an assertion that this user confirmation has already happened; the CLI
-does not manufacture consent or prompt on stdin.
+Agent-Team freezes its requested mapping in `launch_profile_sha256` and sets
+Codex `features.hooks=false`, but Managed Harness policy can still change or
+reject the effective configuration. Inspect `doctor` output and administrator
+policy when a permission boundary matters.
 
-The legacy-named `default` Profile remains the most restrictive option and
-must now be selected explicitly, for example
-`developer=codex:resume:default`. `trusted-workspace` is likewise opt-in.
-`full-access` should run only on a machine or VM whose files, credentials, and
-network may be exposed to the Agent. An explicit three-part role spec remains
-supported, so `:full-access` may be written when clarity is more important than
-brevity.
+## Observe and manage a Run
 
-Claude Code deliberately maps both workspace-contained Profiles to
-`acceptEdits`: its OS sandbox constrains Bash and child processes, not the
-built-in Edit/Write tools. Using `bypassPermissions` for `trusted-workspace`
-would therefore allow host-file writes outside the Workspace. Choose
-`full-access` explicitly when that wider host boundary is intended.
+Run these from the owned worktree; the Run ID is optional for active-Run
+observation commands:
 
-“Workspace-contained” is a product boundary, not a claim that the Workspace is
-the only writable inode. Codex retains its standard `/tmp` and `$TMPDIR`
-scratch roots; Claude grants Bash the single
-`<CLAUDE_CODE_TMPDIR>/claude-<uid>` internal scratch path it needs. In Claude's
-workspace-contained Profiles, the three exact formal
-`agent-team handoff|complete|block` capabilities are explicit sandbox
-exclusions, but their CLI arguments, active Turn environment and Runtime,
-source path, and immutable Outbox are validated by Agent-Team. Codex no longer
-grants a Harness generic write access to Agent-Team's shared `workspace-locks/`
-or `workspaces/` directories: it freezes additional `writable_roots` to an
-empty list, and formal actions acquire the existing operation lock read-only.
-None of these narrow runtime exceptions
-grants arbitrary host-file writes; `full-access` remains the only Profile that
-Agent-Team intentionally maps to arbitrary host-file writes.
+| Command | Purpose |
+| --- | --- |
+| `agent-team status` | Current Run, active role, health, and next action |
+| `agent-team watch` | Follow derived Run snapshots |
+| `agent-team attach [--role <role>]` | Open the active tmux view read-only |
+| `agent-team transcript` | Reconstruct Turn inputs, events, and outputs |
+| `agent-team tail` | Read or follow normalized trace events |
+| `agent-team diagnose` | Inspect failures and recovery evidence |
+| `agent-team recover <run-id>` | Apply deterministic technical recovery |
+| `agent-team cancel <run-id>` | Stop the Run while retaining its audit store |
 
-Administrative Harness policy remains outside this isolation. Agent-Team sets
-Codex `features.hooks=false`, but admin-enforced requirements can constrain
-allowed sandbox, approval, permission profile, or feature choices, reject an
-incompatible launch, force managed hooks back on, or install managed log paths
-with host-side effects. For Claude Code,
-`--setting-sources ""` excludes the user, project, and local sources but cannot
-suppress higher-priority enterprise-managed settings; managed scalars can
-override command-line settings, and managed arrays such as sandbox write roots
-merge into the effective configuration. The boundaries above therefore
-describe Agent-Team's supplied mapping. On a managed machine, `default` and
-`trusted-workspace` retain that product boundary only when administrator policy
-does not add host paths, sandbox exclusions, or host-side execution hooks.
+Detach from `attach` with tmux's `Ctrl-b d`. Formal Handoff, Completion, Block,
+and Resume decisions always go through Agent-Team's validated journal, never
+through Pane text or manual TUI input.
 
-Neither Harness's administrative policy is included in
-`launch_profile_sha256`, and `doctor` cannot prove cloud-delivered or final
-effective policy. Inspect the applicable administrator configuration—and
-Claude Code's `/status` and `/permissions`—or use a dedicated unmanaged host/VM
-when this boundary is a security requirement.
+See the [user guide](docs/user-guide.md) for manual CLI bootstrap, role options,
+Claude workspace trust, observability modes, formal actions, Block/Resume,
+recovery, Unlock, and data-retention boundaries.
 
-All three Profiles ignore mutable user-level Codex/Claude permission settings
-and freeze an explicit Start/Resume mapping and hash in `team.json`. Claude
-also excludes User, Project, and Local setting sources. Codex Headless ignores
-the user config and user/project Rules; Interactive uses the private Home
-described above. Both Codex modes explicitly freeze their permission keys and
-set `features.hooks=false`. Other trusted Workspace configuration,
-instructions, and extensions remain part of the Workspace's own trust
-boundary and must be vetted when Host containment matters. Claude's separate
-workspace-trust decision is only preflight state, not permission configuration,
-and is rechecked before every interactive launch. Selective model, effort, and
-Codex fast defaults are snapshotted separately as described above; Profiles do
-not otherwise mean “reuse my current interactive session settings.” A protocol
-restriction such as “review only” remains a natural-language role
-responsibility and is never inferred from the role name. Agent-Team's
-formal-action rules continue to apply, but they are not a containment boundary
-in `full-access` mode.
+## Documentation
 
-Examples:
+- [User guide](docs/user-guide.md): installation and operations
+- [Product requirements](agent-team_prd_v0.1.md): scope and acceptance criteria
+- [Technical design](agent-team_technical_design_v0.1.md): normative runtime
+  and recovery contract
+- [Validation evidence](docs/validation/README.md): retained real-run reports
 
-```text
---role developer=claude-code:resume
---role reviewer=codex:resume
---role developer=claude-code:resume:trusted-workspace
---role reviewer=codex:resume:full-access
---role-model developer=opus
---role-reasoning-effort developer=high
---role-model reviewer=gpt-5.6-sol
---role-reasoning-effort reviewer=max
---role-fast reviewer
---role-launch-mode developer=interactive
---role-launch-mode reviewer=headless
-```
-
-Run `agent-team doctor --workspace <root> --json` to inspect every
-Agent-Team-supplied mapping it will use with the installed Harness versions. Managed
-Harness policy may still reject a Codex choice, add managed Codex side effects,
-narrow or broaden the effective Claude boundary, disable a bypass mode, or
-select a Claude model. A Profile and
-its frozen Harness options are immutable after Kickoff; changing them requires
-cancelling the old Run and creating a new one.
-
-`init` atomically commits an UNSTARTED audit directory but acquires no
-Workspace ownership and starts no process. `start` performs final capability
-and Git-visible snapshot checks, acquires the durable Workspace owner, commits
-the one Kickoff Event, and creates one tmux Worker window for every External
-role. During an interactive Turn, that window displays the native Harness TUI
-while the Worker → Supervisor → Runner identity and authorization chain remains
-in force. Repeating `start` converges through the same deterministic recovery
-path; it does not create a second Kickoff.
-
-`agent-team attach` deliberately opens a read-only tmux client. When an
-operator explicitly uses a writable tmux client for the same Session, the
-Supervisor temporarily places the Worker Pane's stdin in raw mode and relays
-keyboard bytes unchanged to the Harness PTY; it restores the terminal flags
-afterward. Such manual TUI input is never a Handoff, Completion, Block, Resume,
-or other formal Agent-Team action—the validated Outbox and Journal remain the
-only control protocol.
-
-### Observability modes
-
-Every new Run has an immutable observability policy:
-
-- `--audit-mode standard` allows Origin-bound business roles. External Turns
-  receive normalized Harness tracing under the configured limits. Interactive
-  terminal chunks become diagnostic events; headless structured output also
-  exposes supported tool/session/usage events. Origin
-  Turns expose only their formal input/output and workspace boundaries because
-  the host does not export its internal tool stream.
-- `--audit-mode full` requires every business role to be External. The Origin
-  session remains the control plane only, every role Turn must produce a
-  complete trace, and any raw or normalized capture truncation creates a
-  technical Block instead of silently accepting an incomplete audit.
-- `--trace-redaction standard` heuristically redacts common bearer tokens,
-  API keys, passwords, private keys, and secret-bearing structured fields in
-  normalized and retained raw Harness output. `none` is an explicit opt-out.
-- `--max-trace-bytes` caps source bytes retained across stdout, stderr, and the
-  interactive terminal stream, and separately caps normalized `trace.jsonl`
-  bytes for each Turn. The minimum is 1024 bytes; the default is 64 MiB.
-- `--raw-retention redacted` rewrites the raw archive with heuristic secret
-  substitutions; it does not remove every kind of private content. Tool
-  arguments/results, prompts, code, and even provider-emitted
-  thinking/reasoning may remain. `keep` retains the original raw stream;
-  `delete` removes raw stdout/stderr/terminal data after normalized trace
-  creation. Full audit mode does not allow `delete`.
-- `--require-rationale-evidence` makes the formal payload contract mandatory
-  in standard mode. Full audit mode enables it automatically.
-
-For a full-audit Run, every Handoff, Completion, and Agent Block payload must
-contain non-empty sections with these exact headings:
-
-```markdown
-## Decision rationale
-
-Explain the explicit decision and relevant tradeoffs.
-
-## Evidence
-
-List reproducible inspections, commands, test results, and artifact paths.
-```
-
-These sections capture an auditable explanation, not private hidden
-chain-of-thought. Agent-Team records a Harness-provided reasoning summary only
-when that Harness actually exposes one.
-
-## Formal role actions
-
-External role prompts receive the current immutable input and use exactly one
-terminal action:
+## Development
 
 ```bash
-agent-team handoff --to <role-id> --file <payload.md>
-agent-team complete --file <payload.md>
-agent-team block --file <payload.md>
-```
-
-The Worker injects `AGENT_TEAM_RUN_ID`, `AGENT_TEAM_ROLE_ID`,
-`AGENT_TEAM_TURN_ID`, `AGENT_TEAM_RUN_DIR`, `AGENT_TEAM_TURN_DIR`, and the
-absolute `AGENT_TEAM_CLI`, so these commands do not accept Run or Role
-arguments. The CLI path is frozen into the Turn LaunchSpec instead of being
-rediscovered from the Worker's inherited `PATH`. The action copies and hashes
-its payload before acceptance. Ordinary final text, tmux pane content, and log
-prose never move the execution token. A native TUI normally remains open after
-one response; once the Supervisor validates the current Turn's durable Outbox
-and Session,
-it stops the verified Runner process group and records an `action` termination
-without rewriting the real process exit code.
-
-An Origin-bound role uses the Claim-bearing `origin-*` commands. These are
-normally driven by the integration skill rather than typed manually:
-
-```bash
-agent-team origin-context \
-  --run <run-id> --event <event-id> --claim=<claim>
-
-agent-team origin-handoff \
-  --run <run-id> --turn <turn-id> --claim=<claim> \
-  --from-role <role-id> --to <role-id> --file <payload.md>
-
-agent-team origin-complete \
-  --run <run-id> --turn <turn-id> --claim=<claim> \
-  --from-role <role-id> --file <payload.md>
-
-agent-team origin-block \
-  --run <run-id> --turn <turn-id> --claim=<claim> \
-  --from-role <role-id> --file <payload.md>
-```
-
-`origin-handoff` submits and waits in the same call. `origin-complete` and
-`origin-block` leave the host Turn in an auditable `exited` phase; the next
-user Agent turn calls `wait-origin` with the same Claim to confirm that the old
-host Turn stopped and safely finalize it. New opaque tokens have a `t_` prefix
-so they cannot be parsed as command-line options. Always pass every Claim as
-`--claim=<value>`; that form also remains safe for a Claim created by an older
-version that starts with `-`. v0.1 has no Claim takeover.
-
-## Observe a Run
-
-```bash
-agent-team status [<run-id>] [--workspace <root>] [--json]
-agent-team watch [<run-id>] [--workspace <root>] [--jsonl]
-agent-team diagnose [<run-id>] [--workspace <root>] [--role <role-id>] [--json]
-agent-team transcript [<run-id>] [--workspace <root>] \
-  [--role <role-id>] [--turn <turn-id>] [--json]
-agent-team tail [<run-id>] [--workspace <root>] \
-  [--role <role-id>] [--turn <turn-id>] [--lines <n>] [--follow] [--jsonl]
-agent-team attach [<run-id>] [--workspace <root>] [--role <role-id>]
-```
-
-When Run ID is omitted, observation—including `attach`—resolves only the
-current Workspace owner; it never guesses the newest audit directory. Because
-terminal Runs release that owner and no longer have a tmux runtime, automatic
-`attach` resolution is intentionally limited to an active Run. Structured
-output is the stable control surface. `status`, `diagnose`, and each
-`watch --jsonl` line share the same derived snapshot, including `run_status`,
-`health`, active Turn, process identity, session state, each role's frozen
-launch mode/profile/model/effort/fast configuration, Block policy, evidence
-paths, and one technical `recommended_action`. Use `status --json` to inspect
-a Run's effective team configuration.
-
-`transcript` reconstructs every selected Turn's policy-filtered frozen input,
-Harness prompt, normalized event stream, formal output, and per-Turn/run aggregate
-event, tool, token, cost, and duration summaries. `tail` emits the latest
-normalized events and can follow a live Run; `--role` and `--turn` provide
-stable filters, while `--json`/`--jsonl` are the machine-readable interfaces.
-Normalized event kinds include agent messages, tool calls/results, file
-changes, usage, errors, and exposed reasoning summaries. Each event links back
-to the source stdout/stderr/terminal sequence range.
-
-`attach` is read-only. For an active `interactive` role it shows the native
-Harness TUI; for a `headless` role it shows only Worker-level diagnostics. A
-separately opened writable tmux client can provide manual raw TUI input, but
-neither that input, Pane text, nor raw logs participate in routing, completion,
-Resume, or recovery decisions, and Agent-Team never uses `tmux send-keys` as
-automation.
-
-## Blocks, Resume, and cancellation
-
-Every Block must be returned to the user. Read-only diagnosis and deterministic
-technical `recover` may run first, but a resumable Block remains Blocked until
-a later, explicit user instruction is recorded:
-
-```bash
-agent-team origin-resume \
-  --run <run-id> \
-  --claim=<management-claim> \
-  --to <role-id> \
-  --file <exact-user-instruction.md> \
-  --wait-timeout 90
-```
-
-The generated Resume Event becomes the next Turn's direct `input.md`.
-Limit/Profile Changed Blocks cannot Resume. A change to the original request,
-protocol, roles, bindings, Workspace, Launch Profile, or safety limits also
-requires cancelling the old Run and bootstrapping a new one. Launch mode,
-model, reasoning effort, and fast mode are equally immutable.
-
-Cancellation is an explicit management action and preserves the audit store:
-
-```bash
-agent-team cancel <run-id> --workspace <root>
-```
-
-## Recovery and Unlock
-
-```bash
-agent-team recover <run-id> --workspace <root>
-agent-team unlock \
-  --workspace <root> \
-  --expect-run <run-id> \
-  [--confirm-origin-stopped]
-```
-
-`recover` performs only conclusions uniquely supported by persisted evidence:
-it may rebuild missing idle Workers, finish a Runtime after an already
-committed Event, deliver a fully frozen normal-completion Outbox, or commit a
-fixed technical Block. It never chooses a business route and never creates a
-Resume Event.
-
-`unlock` is the final escape hatch for an ownership record that cannot be
-released through normal recovery. It requires the exact Run ID and refuses
-while a Worker, Supervisor, Runner process group, or tmux session may still be
-alive. `--confirm-origin-stopped` is required when an embedded Origin Turn
-cannot be machine-proven stopped. Run `diagnose --json` first and do not use
-Unlock to bypass an uncertain process identity.
-
-## State and security boundaries
-
-Each worktree contains a private `.agent-team/` State Root with immutable Run
-inputs, Event payloads, Runtime snapshots, facts, normalized traces, retained
-raw streams, and completion artifacts. A separate per-account fixed state
-directory contains the durable Workspace owner and operation lock.
-Interactive Codex roles also receive a private per-Run/per-Role `CODEX_HOME`
-under that fixed state directory. Agent-Team copies only private authentication
-state, creates an isolated config containing only the exact Workspace trust
-entry, and passes the frozen role model, effort, fast, and permission choices
-explicitly; mutable user MCP, Hook, Plugin, and permission settings are not
-imported. Agent-Team disables non-managed Codex hooks, but other project-level
-configuration, instructions, and extensions inside the trusted Workspace
-remain part of the Workspace's own security boundary. After an interactive Codex
-process group is proven quiescent, Agent-Team removes Codex's transient wrapper
-directory and clears group/other permission bits from durable private-Home
-state while preserving the resumable Session Store.
-
-After an External Turn becomes quiescent, Agent-Team writes
-`turns/<turn-id>/trace.jsonl` and `trace-manifest.json`. The manifest records
-the capture/truncation counts, event/tool/usage summary, and SHA-256 plus byte
-size for every retained trace artifact. Its SHA-256 is set once in
-`runtime.json`; `status`, `diagnose`, transcript reads, and recovery validate
-that anchor and report later artifact tampering as corruption.
-
-Agent-Team does not modify `.gitignore` or `.git/info/exclude`. Never stage
-`.agent-team/`; `doctor` warns when it is not covered by a user-managed ignore
-rule. Files are private by default, but the local Run Store can contain
-sensitive harness output and is not a secret manager. Standard redaction is
-heuristic, not a guarantee. Authoritative Request, Protocol, input, LaunchSpec,
-formal payload, and workspace artifacts remain byte-exact for integrity and
-may contain secrets; avoid placing credentials in prompts or repositories.
-Normalized traces omit private `thinking` and generic `reasoning` block
-contents, but retained raw output is a different privacy boundary:
-`--raw-retention redacted` only applies heuristic secret substitutions and may
-still contain provider-emitted private text, while `keep` preserves the
-original stream. There is no automatic TTL or purge command: retained data
-lasts with the Run Store until the user removes that Run directory; `delete`
-applies only to raw stdout/stderr/terminal data after normalization.
-
-The Runner process group provides bounded local process cleanup, not container
-isolation. The protocol forbids roles from launching daemons that escape it.
-Workspace ownership prevents a second Agent-Team Run; it cannot prevent an IDE
-or unrelated process from editing the same files. v0.1 therefore requires no
-concurrent manual edits and records Git-visible facts at every business Turn
-boundary.
-
-## Development and verification
-
-```bash
-uv sync
+uv sync --locked
 uv run pytest
+uv run ruff check --select F src tests
 uv run python -m compileall -q src tests
 uv build
 ```
-
-The real two-Codex and mixed Claude Code/Codex validation materials are listed
-in the [`validation evidence index`](docs/validation/README.md). The
-observability implementation's mixed-Harness evidence is summarized in
-[`observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md).
-The current native-TUI Codex PTY, action-termination, same-session Resume, and
-mixed Interactive Claude Code/Codex evidence is summarized separately in
-[`interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md).
-The earlier mixed-Harness reports remain the Headless Claude baseline.
-These validations define a resumable Developer / Reviewer loop where every
-P0–P3 finding must be accepted and fixed or rejected with evidence, followed
-by a complete re-review.

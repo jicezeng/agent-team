@@ -2,10 +2,11 @@
 
 [![CI](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml/badge.svg)](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml)
 
-Agent-Team is an event-driven local runtime for temporary coding-agent teams.
+Agent-Team is an event-driven local runtime for temporary AI-agent teams.
 Describe a task and collaboration rules in natural language; Agent-Team creates
-the roles and topology for that Run, coordinates Codex, Claude Code, and OpenCode, and
-preserves resumable Sessions and auditable handoffs until Completion or Block.
+the roles and topology for that Run, coordinates Codex, Claude Code, and
+OpenCode, and preserves resumable Sessions and auditable handoffs until
+Completion or Block.
 
 ## The task defines the team
 
@@ -15,27 +16,22 @@ For each Run, its Skill turns the request into dynamic roles and a readable
 the emerging collaboration is a task-specific directed graph rather than a
 workflow users must prebuild in a DSL.
 
-The same runtime can express many classic collaboration patterns:
+Start with the work scenario, not an abstract graph template. The Skill derives
+the roles, handoff route, feedback loop, and completion authority that make that
+specific job effective:
 
-```mermaid
-flowchart LR
-    P[Planner] --> D[Developer] --> T[Tester] --> R[Release reviewer]
-    D2[Developer] --> R2[Reviewer]
-    R2 -- findings --> D2
-    R2 -- clean --> Done((Complete))
-    A[Proposer] --> C[Critic] --> V[Reviser] --> J[Judge]
-    J -- challenge --> A
-    Q[Triage] --> X{Route by task}
-    X --> S[Security]
-    X --> F[Performance]
-    X --> I[API specialist]
-```
+| Scenario | High-value, common collaboration pattern | Typical completion authority |
+| --- | --- | --- |
+| Software delivery | Developer implements and tests ↔ independent Reviewer returns every finding | Reviewer completes after a clean full review |
+| Multimedia production | Creative brief → medium-specific Producer ↔ Editor iterates on the package | Creative director approves the final package |
+| Research and decision support | Researcher ↔ skeptical Fact-checker → Synthesizer | Decision owner accepts sourced evidence and explicit uncertainty |
+| Incident response | Triage → dynamically selected Specialist → independent Verifier | Incident commander accepts a verified mitigation |
 
-Any topology expressible as explicit single-token transitions can use the same
-runtime: edges may be conditional and graphs may contain cycles. Stage 1
-supports serial paths, loops, and dynamic routing, but not simultaneous
-branches or parallel Fan-out/Join. This keeps shared-worktree collaboration
-deterministic while leaving the business topology flexible.
+These are examples, not built-in templates. A request may rename roles, add
+quality gates, loop on findings, or route the next Turn to whichever specialist
+the current evidence requires. Stage 1 supports serial paths, cycles, and
+dynamic routing through explicit single-token transitions, but not simultaneous
+Fan-out/Join, keeping one shared worktree deterministic.
 
 ## A small, inspectable core
 

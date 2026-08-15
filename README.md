@@ -20,6 +20,8 @@ Start with the work scenario, not an abstract graph template. The Skill derives
 the roles, handoff route, feedback loop, and completion authority that make that
 specific job effective:
 
+![Four common Agent-Team collaboration scenarios](docs/assets/collaboration-scenarios.webp)
+
 | Scenario | High-value, common collaboration pattern | Typical completion authority |
 | --- | --- | --- |
 | Software delivery | Developer implements and tests ↔ independent Reviewer returns every finding | Reviewer completes after a clean full review |

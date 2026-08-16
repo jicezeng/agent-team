@@ -39,7 +39,13 @@ CODEX_REASONING_EFFORTS = frozenset(
 CLAUDE_REASONING_EFFORTS = frozenset(
     {"auto", "low", "medium", "high", "xhigh", "max"}
 )
-EXTERNAL_ADAPTER_IDS = ("codex", "claude-code", "opencode")
+DSH_REASONING_EFFORTS = frozenset({"off", "high", "max"})
+EXTERNAL_ADAPTER_IDS = (
+    "codex",
+    "claude-code",
+    "opencode",
+    "deepseek-harness",
+)
 ROLE_LAUNCH_MODES = frozenset({"headless", "interactive"})
 DEFAULT_EXTERNAL_LAUNCH_PROFILE = "full-access"
 
@@ -169,6 +175,12 @@ def valid_opencode_model_id(value: object) -> bool:
         and "#" not in provider
         and "#" not in model
     )
+
+
+def valid_dsh_model_id(value: object) -> bool:
+    """Validate DeepSeek Harness' explicit provider/model route."""
+
+    return valid_opencode_model_id(value)
 
 
 def valid_opencode_variant(value: object) -> bool:
@@ -320,13 +332,22 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                     raise IntegrityError(
                         f"opencode model for {role_id} must use provider/model"
                     )
+                if adapter == "deepseek-harness" and not valid_dsh_model_id(model):
+                    raise IntegrityError(
+                        f"deepseek-harness model for {role_id} must use provider/model"
+                    )
                 if adapter == "codex":
                     valid_effort = reasoning_effort in CODEX_REASONING_EFFORTS
                 elif adapter == "claude-code":
                     valid_effort = reasoning_effort in CLAUDE_REASONING_EFFORTS
+                elif adapter == "deepseek-harness":
+                    valid_effort = reasoning_effort in DSH_REASONING_EFFORTS
                 else:
                     valid_effort = valid_opencode_variant(reasoning_effort)
-                if reasoning_effort is not None and not valid_effort:
+                if (
+                    reasoning_effort is not None
+                    or adapter == "deepseek-harness"
+                ) and not valid_effort:
                     raise IntegrityError(
                         f"invalid reasoning effort for {role_id}"
                     )

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
 
-from .errors import AgentTeamError
+from .errors import AgentTeamError, InvalidArgument
 from .state import account_home, fixed_state_dir
 
 
@@ -38,6 +39,10 @@ def opencode_skill_source() -> Path:
     return bundled_asset("skills/opencode/agent-team")
 
 
+def dsh_tui_source() -> Path:
+    return bundled_asset("plugins/deepseek-harness/agent-team-tui")
+
+
 def installed_claude_plugin() -> Path:
     return fixed_state_dir() / "installed" / "claude-code-plugin"
 
@@ -48,6 +53,27 @@ def installed_codex_skill() -> Path:
 
 def installed_opencode_skill() -> Path:
     return account_home() / ".config" / "opencode" / "skills" / "agent-team"
+
+
+def resolved_dsh_home() -> Path:
+    configured = os.environ.get("DSH_HOME")
+    if configured is None or not configured.strip():
+        candidate = Path.home() / ".dsh"
+    elif configured == "~":
+        candidate = Path.home()
+    elif configured.startswith("~/"):
+        candidate = Path.home() / configured[2:]
+    else:
+        candidate = Path(configured)
+    if not candidate.is_absolute():
+        raise InvalidArgument("DSH_HOME must resolve to an absolute path")
+    # Match Node's path.resolve-style lexical normalization without resolving
+    # symlinks, so install and DeepSeek Harness identify the same directory.
+    return Path(os.path.abspath(candidate))
+
+
+def installed_dsh_skill() -> Path:
+    return resolved_dsh_home() / "skills" / "agent-team"
 
 
 def effective_claude_plugin() -> Path:

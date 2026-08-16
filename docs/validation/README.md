@@ -38,6 +38,22 @@ Full Audit evidence, process cleanup, and package/Skill installation. Its
 retained [request](opencode-interactive-v0.1.4-request.md) and
 [protocol](opencode-interactive-v0.1.4-protocol.md) define the acceptance task.
 
+## DeepSeek Harness Origin
+
+[`deepseek-harness-origin-v0.1.4-validation-report.md`](deepseek-harness-origin-v0.1.4-validation-report.md)
+records the real DSH Skill load and one-Turn restricted Codex External Role
+loop, including the winning `filesystem` provider/resource base, explicit
+`deepseek-harness` Origin metadata, formal Completion delivery, trace integrity,
+process cleanup, and package installation.
+
+## DeepSeek Harness interactive External role
+
+[`deepseek-harness-interactive-v0.1.4-validation-report.md`](deepseek-harness-interactive-v0.1.4-validation-report.md)
+records a real three-Turn DSH Developer → Origin Reviewer → same DSH Session
+loop. It covers the managed runtime and bundled TUI, native cross-process
+Session Resume, formal actions, bounded traces, private Run/Role state, a
+permission defect found by the first run, and the successful fixed recheck.
+
 ## Reading the evidence
 
 - Start with the report matching the behavior under review.

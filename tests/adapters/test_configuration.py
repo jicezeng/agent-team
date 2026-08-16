@@ -13,6 +13,7 @@ from agent_team.adapters.base import (
 )
 from agent_team.adapters.claude_code import ClaudeCodeAdapter
 from agent_team.adapters.codex import CodexAdapter
+from agent_team.adapters.deepseek_harness import DeepSeekHarnessAdapter
 from agent_team.adapters.opencode import OpenCodeAdapter
 from agent_team.bootstrap import parse_role_spec
 from agent_team.errors import AgentTeamError, InvalidArgument
@@ -41,7 +42,12 @@ def test_launch_spec_reads_legacy_headless_schema() -> None:
 
 @pytest.mark.parametrize(
     "adapter",
-    [CodexAdapter(), ClaudeCodeAdapter(), OpenCodeAdapter()],
+    [
+        CodexAdapter(),
+        ClaudeCodeAdapter(),
+        OpenCodeAdapter(),
+        DeepSeekHarnessAdapter(),
+    ],
 )
 def test_interactive_terminal_json_is_only_diagnostic(
     adapter: HarnessAdapter,
@@ -206,8 +212,10 @@ def test_claude_exposes_explicit_elevated_profiles(
         assert "Bash(/opt/agent-team/bin/agent-team cancel *)" in argv
         assert "Bash(/opt/agent-team/bin/agent-team origin-*)" in argv
 
-    def permission_mode(profile: str) -> str:
+    def permission_mode(profile: str) -> str | None:
         argv = mappings[profile]["start"]
+        if "--permission-mode" not in argv:
+            return None
         return argv[argv.index("--permission-mode") + 1]
 
     def settings(profile: str) -> dict:
@@ -216,7 +224,13 @@ def test_claude_exposes_explicit_elevated_profiles(
 
     assert permission_mode("default") == "acceptEdits"
     assert permission_mode("trusted-workspace") == "acceptEdits"
-    assert permission_mode("full-access") == "bypassPermissions"
+    assert permission_mode("full-access") is None
+    assert "--dangerously-skip-permissions" in mappings["full-access"]["start"]
+    assert "--dangerously-skip-permissions" not in mappings["default"]["start"]
+    assert (
+        "--dangerously-skip-permissions"
+        not in mappings["trusted-workspace"]["start"]
+    )
     assert "bypassPermissions" not in mappings["trusted-workspace"]["start"]
     assert settings("default")["sandbox"]["enabled"] is True
     assert settings("default")["sandbox"]["allowUnsandboxedCommands"] is False
@@ -237,6 +251,8 @@ def test_claude_exposes_explicit_elevated_profiles(
         ("claude-code", "full-access"),
         ("opencode", "trusted-workspace"),
         ("opencode", "full-access"),
+        ("deepseek-harness", "trusted-workspace"),
+        ("deepseek-harness", "full-access"),
     ],
 )
 def test_role_spec_accepts_explicit_elevated_profiles(
@@ -331,7 +347,10 @@ def test_role_spec_freezes_explicit_harness_options(
     assert role.fast_mode is True
 
 
-@pytest.mark.parametrize("adapter_id", ["codex", "claude-code", "opencode"])
+@pytest.mark.parametrize(
+    "adapter_id",
+    ["codex", "claude-code", "opencode", "deepseek-harness"],
+)
 def test_role_spec_defaults_external_roles_to_full_access(
     monkeypatch: pytest.MonkeyPatch,
     adapter_id: str,

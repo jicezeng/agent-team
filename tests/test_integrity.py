@@ -27,7 +27,11 @@ from agent_team.state import (
     workspace_lock,
 )
 from agent_team.turns import validate_outbox, validate_payload_contract
-from agent_team.util import is_uncommitted_atomic_temporary, rfc3339
+from agent_team.util import (
+    is_uncommitted_atomic_temporary,
+    read_private_regular,
+    rfc3339,
+)
 
 
 def _run(
@@ -46,6 +50,15 @@ def _run(
         max_wall_time_seconds=300,
     )
     return initialize_run(team=team, request_path=request, protocol_path=protocol)
+
+
+def test_private_run_source_rejects_multiple_hard_links(tmp_path: Path) -> None:
+    source = tmp_path / "payload.md"
+    source.write_text("private payload\n", encoding="utf-8")
+    os.link(source, tmp_path / "second-name.md")
+
+    with pytest.raises(IntegrityError, match="multiple hard links"):
+        read_private_regular(source)
 
 
 def test_full_access_requires_one_confirmation_before_first_kickoff(
@@ -383,6 +396,65 @@ def test_team_accepts_frozen_opencode_model_and_variant(workspace: Path) -> None
     assert team.roles["developer"].reasoning_effort == "provider-deep"
 
 
+def test_team_accepts_frozen_deepseek_harness_route_and_effort(
+    workspace: Path,
+) -> None:
+    team = make_team(
+        run_id="at-test-dsh-options",
+        workspace=workspace,
+        origin_harness="deepseek-harness",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "deepseek-harness",
+                "resume",
+                "default",
+                "0" * 64,
+                "deepseek-official/deepseek-v4-flash",
+                "max",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    assert team.roles["developer"].adapter == "deepseek-harness"
+    assert team.roles["developer"].reasoning_effort == "max"
+
+
+@pytest.mark.parametrize("effort", [None, "medium", "xhigh"])
+def test_team_rejects_invalid_deepseek_harness_effort(
+    workspace: Path,
+    effort: str | None,
+) -> None:
+    value = make_team(
+        run_id="at-test-dsh-invalid-effort",
+        workspace=workspace,
+        origin_harness="deepseek-harness",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "deepseek-harness",
+                "resume",
+                "default",
+                "0" * 64,
+                "deepseek-official/deepseek-v4-flash",
+                "high",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["roles"]["developer"]["harness_options"]["reasoning_effort"] = effort
+
+    with pytest.raises(IntegrityError, match="invalid reasoning effort"):
+        parse_team(value)
+
+
 @pytest.mark.parametrize("model", [None, "unqualified", "/model", "provider/"])
 def test_team_rejects_unqualified_opencode_model(
     workspace: Path,
@@ -597,12 +669,12 @@ def test_audited_payload_contract_rejects_missing_or_empty_sections(
 def test_audited_payload_contract_accepts_explicit_rationale_and_evidence() -> None:
     validate_payload_contract(
         (
-            "# Completion\n\n"
-            "## Decision rationale\n\n"
-            "The implementation meets the declared invariants.\n\n"
-            "## Evidence\n\n"
-            "`uv run pytest` passed.\n"
-        ).encode(),
+            b"# Completion\n\n"
+            b"## Decision rationale\n\n"
+            b"The implementation meets the declared invariants.\n\n"
+            b"## Evidence\n\n"
+            b"`uv run pytest` passed.\n"
+        ),
         required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     )
 
@@ -927,9 +999,11 @@ def test_lock_file_with_additional_hard_link_is_rejected(tmp_path: Path) -> None
     lock.write_bytes(b"")
     os.link(lock, tmp_path / "second-name.lock")
 
-    with pytest.raises(IntegrityError, match="not a regular file"):
-        with file_lock(lock, exclusive=False):
-            raise AssertionError("invalid lock was acquired")
+    with (
+        pytest.raises(IntegrityError, match="not a regular file"),
+        file_lock(lock, exclusive=False),
+    ):
+        raise AssertionError("invalid lock was acquired")
 
 
 @pytest.mark.parametrize(

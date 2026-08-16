@@ -18,8 +18,10 @@ from .adapters import get_adapter
 from .assets import (
     claude_plugin_source,
     codex_skill_source,
+    dsh_tui_source,
     installed_claude_plugin,
     installed_codex_skill,
+    installed_dsh_skill,
     installed_opencode_skill,
     opencode_skill_source,
 )
@@ -32,6 +34,10 @@ from .config import (
     load_team,
     make_team,
     validate_role_id,
+)
+from .dsh_runtime import (
+    install_managed_dsh_runtime,
+    managed_dsh_runtime_report,
 )
 from .errors import (
     AgentTeamError,
@@ -259,6 +265,7 @@ def _resume_help_supported(adapter_id: str, help_text: str) -> bool:
         "codex": "Resume a previous session",
         "claude-code": "--resume",
         "opencode": "--session",
+        "deepseek-harness": "--resume",
     }
     marker = markers.get(adapter_id)
     return marker is not None and marker in help_text
@@ -374,7 +381,15 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         sys.version_info >= (3, 11),
         {"version": sys.version.split()[0], "executable": sys.executable},
     )
-    for command in ("git", "tmux", "codex", "claude", "opencode"):
+    for command in (
+        "git",
+        "tmux",
+        "codex",
+        "claude",
+        "opencode",
+        "node",
+        "pnpm",
+    ):
         located = shutil.which(command)
         add(command, located is not None, {"executable": located})
     for adapter_id in EXTERNAL_ADAPTER_IDS:
@@ -401,8 +416,17 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                 {"authenticated": report.authenticated},
             )
             adapter = get_adapter(adapter_id)
-            for launch_mode in ("headless", "interactive"):
-                mappings = adapter.profile_mappings(launch_mode)
+            launch_modes = report.details.get("launch_modes")
+            if not isinstance(launch_modes, dict):
+                launch_modes = {}
+            for launch_mode, mappings in sorted(launch_modes.items()):
+                if not isinstance(launch_mode, str) or not isinstance(mappings, dict):
+                    add(
+                        f"launch_profile:{adapter_id}:invalid",
+                        False,
+                        {"launch_mode": launch_mode, "mappings": mappings},
+                    )
+                    continue
                 for profile, mapping in sorted(mappings.items()):
                     profile_ok = bool(mapping.get("start")) and bool(
                         mapping.get("resume")
@@ -423,6 +447,17 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                         },
                     )
             try:
+                if adapter_id == "deepseek-harness":
+                    add(
+                        f"session_resume:{adapter_id}",
+                        True,
+                        {
+                            "provider": "bundled Agent-Team TUI",
+                            "operation": "agents.resume",
+                            "runtime": managed_dsh_runtime_report(),
+                        },
+                    )
+                    continue
                 if adapter_id == "codex":
                     command = [report.executable, "exec", "resume", "--help"]
                 elif adapter_id == "opencode":
@@ -506,6 +541,11 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         installed_opencode_skill(),
     )
     add("integration:opencode_skill", opencode_ok, opencode_details)
+    dsh_ok, dsh_details = integration_report(
+        codex_skill_source(),
+        installed_dsh_skill(),
+    )
+    add("integration:deepseek_harness_skill", dsh_ok, dsh_details)
 
     workspace: Path | None = None
     try:
@@ -719,28 +759,43 @@ def _install_skill() -> dict[str, Any]:
             if temporary.exists():
                 shutil.rmtree(temporary)
 
-    codex_source = codex_skill_source()
-    codex_target = installed_codex_skill()
-    install_tree(codex_source, codex_target)
-    claude_source = claude_plugin_source()
-    claude_target = installed_claude_plugin()
-    install_tree(claude_source, claude_target)
-    opencode_source = opencode_skill_source()
-    opencode_target = installed_opencode_skill()
-    install_tree(opencode_source, opencode_target)
+    # Resolve every source and target before the first mutation. In particular,
+    # an invalid DSH_HOME must not leave the other integrations half-updated.
+    integrations = {
+        "codex": (codex_skill_source(), installed_codex_skill()),
+        "claude_code": (claude_plugin_source(), installed_claude_plugin()),
+        "opencode": (opencode_skill_source(), installed_opencode_skill()),
+        "deepseek_harness": (codex_skill_source(), installed_dsh_skill()),
+    }
+    # Resolve the TUI asset at the same no-mutation boundary. It is copied into
+    # a private profile when a DSH External role is prepared, not into mutable
+    # user configuration.
+    tui_source = dsh_tui_source()
+    unique_targets: dict[Path, tuple[str, Path]] = {}
+    for name, (source, target) in integrations.items():
+        previous = unique_targets.get(target)
+        if previous is not None:
+            previous_name, previous_source = previous
+            if source != previous_source:
+                raise InvalidArgument(
+                    "integration targets overlap with different bundled sources: "
+                    f"{previous_name}, {name}: {target}"
+                )
+            continue
+        unique_targets[target] = (name, source)
+    runtime = install_managed_dsh_runtime()
+    for target, (_name, source) in unique_targets.items():
+        install_tree(source, target)
     return {
         "code": "INTEGRATIONS_INSTALLED",
-        "codex": {
-            "source": str(codex_source),
-            "target": str(codex_target),
+        **{
+            name: {"source": str(source), "target": str(target)}
+            for name, (source, target) in integrations.items()
         },
-        "claude_code": {
-            "source": str(claude_source),
-            "target": str(claude_target),
-        },
-        "opencode": {
-            "source": str(opencode_source),
-            "target": str(opencode_target),
+        "deepseek_harness_runtime": runtime,
+        "deepseek_harness_tui": {
+            "source": str(tui_source),
+            "installation": "private per Run and role",
         },
     }
 

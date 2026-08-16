@@ -1,0 +1,77 @@
+# Agent-Team's small native-terminal surface over dsh-base. The profile is
+# private to one Run and role; Agent-Team freezes this patch in the launch
+# fingerprint and supplies every dynamic value through the launch environment.
+
+- id: hmr
+  disabled: true
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are an Agent-Team coding role powered by {{model}}. Work only on the
+      immutable role Turn instructions supplied by Agent-Team. Use the exact
+      AGENT_TEAM_CLI transition command from those instructions when the role
+      has finished, must hand off, or is genuinely blocked.
+
+- id: session-persistence-jsonl
+  config:
+    root: !!js process.env.AGENT_TEAM_DSH_SESSION_ROOT
+    packChunks: true
+    compression: none
+
+- id: session-title-llm
+  disabled: true
+
+- id: session-telemetry-otel
+  disabled: true
+
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE
+    workspaceRoot: !!js process.cwd()
+
+- id: approval
+  config:
+    policy: never
+
+# Permission switching is a UI convenience, not an execution dependency. The
+# Agent-Team launch profile is immutable for the Run, so no in-session preset
+# may rewrite its sandbox/approval pair.
+- id: permission
+  disabled: true
+
+# An Agent-Team role is already one owned collaboration unit. Disable DSH's
+# recursive skill/delegation surfaces so it cannot create untracked workers or
+# recursively invoke Agent-Team outside the frozen team protocol.
+- id: skill
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: subagent
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+
+- insert:
+    - id: agent-team-tui
+      name: '@agent-team/dsh-tui'

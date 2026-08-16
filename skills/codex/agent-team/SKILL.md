@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Create and operate temporary, natural-language-defined coding-agent teams across Codex, Claude Code, and OpenCode. Use when a user requests multiple agents or dynamic roles, cross-harness collaboration, explicit handoffs, iterative developer/reviewer or QA loops, resumable role sessions, or completion returned to the current Origin session.
+description: Create and operate temporary, natural-language-defined coding-agent teams across Codex, Claude Code, OpenCode, and DeepSeek Harness. Use when a user requests multiple agents or dynamic roles, cross-harness collaboration, explicit handoffs, iterative developer/reviewer or QA loops, resumable role sessions, or completion returned to the current Origin session.
 ---
 
 # Agent Team
@@ -64,6 +64,9 @@ existing Run:
    OpenCode has no OS Bash sandbox, so its restricted Profiles keep arbitrary
    Bash denied, allow only worktree file tools plus exact formal Agent-Team
    commands, and let `trusted-workspace` add only built-in web tools.
+   DeepSeek Harness restricted Profiles constrain file writes to the worktree
+   but inherit host reads, process execution, environment credentials, and
+   network access; `default` and `trusted-workspace` are identical in v0.1.
    `full-access` removes the host sandbox and is appropriate only on a
    controlled machine or VM. Never infer elevated access from a role name, a
    request to run tests, or a natural-language `read-only` restriction, and
@@ -84,11 +87,14 @@ existing Run:
    OpenCode Model IDs must resolve to `provider/model`; its reasoning-effort
    value is a provider-specific Variant. Supply an explicit OpenCode Model when
    Doctor reports an absent or unqualified user default.
-   Launch mode is separate: new External roles default to native
-   `interactive` PTY execution in their tmux Pane. Add
+   DeepSeek Harness Model IDs also use `provider/model`; its effort is `off`,
+   `high`, or `max`. Launch mode is separate: every new External role defaults
+   to native `interactive` PTY execution in its tmux Pane. For Codex, Claude
+   Code, or OpenCode, add
    `--role-launch-mode <role>=headless` only when the user explicitly requests
    headless/structured-stream execution; an explicit `interactive` value may
-   be recorded but is normally redundant. Before starting any interactive
+   be recorded but is normally redundant. DeepSeek Harness is interactive-only
+   and must never be assigned `headless`. Before starting any interactive
    Claude Code role, require the user to have opened `claude` once in the exact
    Workspace (or a trusted parent), accepted its workspace-trust prompt, and
    exited. Never edit Claude's user trust state or accept the prompt with
@@ -103,10 +109,19 @@ existing Run:
    use `standard` and disclose that Origin role internals are not captured.
    Keep standard redaction and redacted raw retention unless the user
    explicitly requests another privacy tradeoff.
-8. Write Request and Protocol outside `.agent-team`, then run:
+8. Resolve `agent-team` once to its canonical absolute executable path and
+   retain that literal path for the entire Origin loop. Substitute it for
+   `<absolute-agent-team-cli>` in every command below; do not re-resolve it
+   from `PATH` between turns. Write Request and Protocol outside `.agent-team`,
+   select the explicit Origin metadata from the managed shell, then run:
 
 ```bash
-agent-team init \
+if [ "${DSH_SHELL:-}" = "1" ]; then
+  origin_harness=deepseek-harness
+else
+  origin_harness=codex
+fi
+"<absolute-agent-team-cli>" init \
   --request <REQUEST.md> \
   --protocol <PROTOCOL.md> \
   --role <role>=<binding-spec> \
@@ -117,16 +132,20 @@ agent-team init \
   --trace-redaction standard \
   --max-trace-bytes 67108864 \
   --raw-retention redacted \
-  --require-rationale-evidence
-agent-team start <run-id> --confirm-full-access
+  --require-rationale-evidence \
+  --origin-harness "$origin_harness"
+"<absolute-agent-team-cli>" start <run-id> --confirm-full-access
 ```
+
+`DSH_SHELL=1` selects `deepseek-harness`; every other value selects `codex`.
+This branch records Origin metadata only and grants no permission.
 
 Omit `--confirm-full-access` when every External role explicitly uses a
 restricted Profile. The flag asserts that the user confirmation required in
 step 5 has already occurred; never pass it speculatively.
 
 9. Save the returned Run ID and immediately call
-   `agent-team wait-origin --run <run-id> --timeout 90`.
+   `"<absolute-agent-team-cli>" wait-origin --run <run-id> --timeout 90`.
 
 ## Origin loop
 
@@ -154,7 +173,7 @@ step 5 has already occurred; never pass it speculatively.
 - Resume only after a new, explicit user instruction:
 
 ```bash
-agent-team origin-resume \
+"<absolute-agent-team-cli>" origin-resume \
   --run <run-id> --claim=<management-claim> \
   --to <role-id> --file <exact-user-instruction.md> \
   --wait-timeout 90
@@ -172,7 +191,8 @@ and `tail --jsonl --role <role>` only for audit and observation. Never parse
 Pane text, human-readable Status, Harness prose, or logs to decide routing,
 completion, Resume, Unlock, or recovery.
 
-`agent-team attach [<run-id>] --role <role>` is a read-only live view. Omit the
+`"<absolute-agent-team-cli>" attach [<run-id>] --role <role>` is a read-only
+live view. Omit the
 Run ID inside its actively owned Workspace, or provide it explicitly. An
 interactive role shows its native Harness TUI. An operator may explicitly use
 a writable tmux client for manual TUI input, which the Supervisor relays as raw

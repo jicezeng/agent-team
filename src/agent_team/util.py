@@ -10,11 +10,11 @@ import re
 import secrets
 import stat
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .errors import AgentTeamError, IntegrityError, InvalidArgument
-
 
 UTC = dt.timezone.utc
 ATOMIC_TEMP_RE = re.compile(
@@ -146,14 +146,31 @@ def open_regular(
 def read_regular(path: Path) -> bytes:
     fd = open_regular(path)
     try:
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, 1024 * 1024)
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
+        return _read_open_regular(fd)
     finally:
         os.close(fd)
+
+
+def read_private_regular(path: Path) -> bytes:
+    """Read a Run-owned source while atomically removing shared permission bits."""
+    fd = open_regular(path)
+    try:
+        info = os.fstat(fd)
+        if info.st_nlink != 1:
+            raise IntegrityError(f"private Run file has multiple hard links: {path}")
+        os.fchmod(fd, 0o600)
+        return _read_open_regular(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_open_regular(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
 
 
 def read_json(path: Path) -> dict[str, Any]:

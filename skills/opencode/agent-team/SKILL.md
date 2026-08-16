@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Create and operate temporary, natural-language-defined coding-agent teams across Codex, Claude Code, and OpenCode. Use for dynamic roles, cross-harness collaboration, explicit handoffs, iterative review loops, resumable role sessions, or completion returned to the current Origin session.
+description: Create and operate temporary, natural-language-defined coding-agent teams across Codex, Claude Code, OpenCode, and DeepSeek Harness. Use for dynamic roles, cross-harness collaboration, explicit handoffs, iterative review loops, resumable role sessions, or completion returned to the current Origin session.
 compatibility: opencode
 ---
 
@@ -50,9 +50,14 @@ External business Turn inside an existing Run:
    and obtain one explicit confirmation for that Run. An explicit confirmation
    in the same user request counts; a prior Run's confirmation does not. Record
    it in the Protocol and pass `--confirm-full-access` only after consent.
+   If the user declines, do not create or start the Run.
    OpenCode has no OS Bash sandbox: its restricted Profiles allow worktree file
    tools and formal Agent-Team commands, while arbitrary Bash remains denied;
    `trusted-workspace` additionally allows built-in web tools. Managed
+   DeepSeek Harness restricted Profiles constrain file writes to the worktree
+   but inherit host reads, processes, environment credentials, and network;
+   its `default` and `trusted-workspace` mappings are identical in v0.1.
+   Managed
    administrator Harness policy remains outside Doctor's complete proof. On a
    managed host, use a contained Profile only after verifying that policy adds
    no host write roots, sandbox exclusions, hooks, or higher-priority tool
@@ -60,9 +65,11 @@ External business Turn inside an existing Run:
 6. Add `--role-model ROLE=MODEL` and
    `--role-reasoning-effort ROLE=VARIANT` only for choices the user made.
    OpenCode models use `provider/model`; its reasoning-effort option maps to a
-   provider-specific variant. `--role-fast` remains Codex-only. External roles
-   default to native `interactive` execution; add
-   `--role-launch-mode ROLE=headless` only when explicitly requested.
+   provider-specific variant. DSH models also use `provider/model`, with effort
+   `off`, `high`, or `max`. `--role-fast` remains Codex-only. External roles
+   default to native `interactive` execution. Add
+   `--role-launch-mode ROLE=headless` only for Codex, Claude Code, or OpenCode
+   when explicitly requested; DSH External roles are interactive-only.
    Before starting an interactive Claude Code role, require the user to open
    `claude` once in the exact Workspace, accept Claude's independent workspace
    trust prompt, and exit. Never edit its trust state or accept it with tmux
@@ -70,10 +77,14 @@ External business Turn inside an existing Run:
    UNSTARTED Run, not a second Agent-Team permission decision.
 7. Choose the observability policy. Use `full` only when every business role is
    External and Origin is control-plane only; otherwise use `standard`.
-8. Generate Request and Protocol, then run the exact CLI flow:
+8. Resolve `agent-team` once to its canonical absolute executable path and
+   retain that literal path for the entire Origin loop. Substitute it for
+   `<absolute-agent-team-cli>` in every command below; do not re-resolve it
+   from `PATH` between turns. Generate Request and Protocol, then run the exact
+   CLI flow:
 
 ```bash
-agent-team init \
+"<absolute-agent-team-cli>" init \
   --request <REQUEST.md> \
   --protocol <PROTOCOL.md> \
   --role <role>=<binding-spec> \
@@ -84,15 +95,16 @@ agent-team init \
   --trace-redaction standard \
   --max-trace-bytes 67108864 \
   --raw-retention redacted \
-  --require-rationale-evidence
-agent-team start <run-id> --confirm-full-access
+  --require-rationale-evidence \
+  --origin-harness opencode
+"<absolute-agent-team-cli>" start <run-id> --confirm-full-access
 ```
 
 Omit `--confirm-full-access` when all External roles explicitly use restricted
 Profiles. Save the Run ID and immediately call:
 
 ```bash
-agent-team wait-origin --run <run-id> --timeout 90
+"<absolute-agent-team-cli>" wait-origin --run <run-id> --timeout 90
 ```
 
 ## Origin loop
@@ -112,7 +124,7 @@ agent-team wait-origin --run <run-id> --timeout 90
 - Resume only after a new explicit user instruction:
 
 ```bash
-agent-team origin-resume \
+"<absolute-agent-team-cli>" origin-resume \
   --run <run-id> --claim=<management-claim> \
   --to <role-id> --file <exact-user-instruction.md> \
   --wait-timeout 90
@@ -132,8 +144,10 @@ health, recommended action, and evidence paths. Use `transcript --json` and
 `tail --jsonl` only for audit. Never infer routing, completion, Resume, Unlock,
 or recovery from Pane text, Harness prose, or logs.
 
-`agent-team attach [<run-id>] --role <role>` is a read-only live view. The
-OpenCode direct-interactive terminal may expose ordinary Harness interaction,
+`"<absolute-agent-team-cli>" attach [<run-id>] --role <role>` is a read-only
+live view. The
+native Codex, Claude Code, or DSH TUI and OpenCode direct-interactive terminal
+may expose ordinary Harness interaction,
 but terminal input and Pane content are never formal Agent-Team actions; Outbox
 actions and the Journal are authoritative.
 

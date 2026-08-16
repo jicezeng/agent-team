@@ -20,9 +20,8 @@ from agent_team.origin import origin_context, wait_origin
 from agent_team.state import state_paths
 from agent_team.turns import iter_runtimes
 from agent_team.util import atomic_json, atomic_write, canonical_json_bytes, rfc3339
-
-from tests.test_origin_flow import make_origin_run
 from tests.runtime._support import _external_run
+from tests.test_origin_flow import make_origin_run
 
 
 def _tree_mtimes(root: Path) -> dict[str, int]:
@@ -86,6 +85,7 @@ def test_start_parser_accepts_one_time_full_access_confirmation() -> None:
         ("codex", "Resume a previous session"),
         ("claude-code", "  --resume  Resume a session by ID"),
         ("opencode", "  -s, --session  session id to continue"),
+        ("deepseek-harness", "  --resume  Resume a session"),
     ],
 )
 def test_doctor_recognizes_adapter_specific_resume_flags(

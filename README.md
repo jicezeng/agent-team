@@ -4,8 +4,8 @@
 
 Agent-Team is an event-driven local runtime for temporary AI-agent teams.
 Describe a task and collaboration rules in natural language; Agent-Team creates
-the roles and topology for that Run, coordinates Codex, Claude Code, and
-OpenCode, and preserves resumable Sessions and auditable handoffs until
+the roles and topology for that Run, coordinates Codex, Claude Code, OpenCode,
+and DeepSeek Harness, and preserves resumable Sessions and auditable handoffs until
 Completion or Block.
 
 ## The task defines the team
@@ -39,11 +39,11 @@ Fan-out/Join, keeping one shared worktree deterministic.
 
 ```mermaid
 flowchart TB
-    Task[Natural-language task] --> Integration[Codex / OpenCode Skill / Claude Code plugin]
+    Task[Natural-language task] --> Integration[Codex / OpenCode / DSH Skill / Claude plugin]
     Integration --> Inputs[Immutable REQUEST.md + PROTOCOL.md]
     Inputs --> Journal[(Append-only Event Journal)]
     Journal --> Worker[Role Worker]
-    Worker --> Harness[Codex / Claude Code / OpenCode Session]
+    Worker --> Harness[Codex / Claude Code / OpenCode / DSH Session]
     Harness --> Action[Formal role action]
     Action --> Journal
     Worker -. native interactive terminal / diagnostics .-> Tmux[tmux window]
@@ -77,8 +77,8 @@ integrity, and fail-closed recovery.
 
 ## Requirements
 
-- macOS or Linux, Python 3.11+, `uv`, Git, and tmux
-- An authenticated Codex, Claude Code, and/or OpenCode CLI
+- macOS or Linux, Python 3.11+, `uv`, Git, tmux, Node.js, and pnpm
+- An authenticated Codex, Claude Code, or OpenCode CLI, and/or `DEEPSEEK_API_KEY`
 - One normal Git worktree root per Run
 
 ## Install
@@ -98,19 +98,18 @@ Then verify the target worktree and installed Harnesses:
 agent-team doctor --workspace /path/to/worktree --json
 ```
 
-Agent-Team installs its bundled Skills/plugin, not the Harness CLIs. Wheel,
-upgrade, and integration paths are in the [user guide](docs/user-guide.md#installation-and-upgrades).
+Agent-Team installs its Skills/plugin and pinned DSH runtime/TUI; other Harness CLIs remain separate. See the [user guide](docs/user-guide.md#installation-and-upgrades).
 
 ## Quick start
 
-The recommended entry point is the installed `agent-team` Skill in Codex or
-OpenCode. Open a supported Harness in the Git worktree the team should modify:
+The recommended entry point is the installed `agent-team` Skill in Codex,
+OpenCode, or DeepSeek Harness. Open it in the Git worktree the team should modify:
 
 ```bash
 cd /path/to/worktree
 agent-team doctor --workspace "$PWD" --json
 codex
-# or: opencode
+# or: opencode / dsh
 ```
 
 Then describe the team and task:
@@ -147,6 +146,8 @@ containment is required.
 
 OpenCode has no OS Bash sandbox, so its restricted Profiles permit workspace
 file tools and formal Agent-Team commands but deny arbitrary Bash.
+DSH External roles are interactive-only; restricted Profiles sandbox writes to
+the workspace but inherit host reads, process execution, and network access.
 
 Agent-Team freezes its requested mapping in `launch_profile_sha256`, isolates
 OpenCode project config and external plugins, and sets Codex
@@ -184,6 +185,8 @@ recovery, Unlock, and data-retention boundaries.
 - [Product requirements](agent-team_prd_v0.1.md): scope and acceptance criteria
 - [Technical design](agent-team_technical_design_v0.1.md): normative runtime
   and recovery contract
+- [DeepSeek Harness integration](docs/deepseek-harness-integration-design.md):
+  Origin Skill and interactive External Adapter design
 - [Validation evidence](docs/validation/README.md): retained real-run reports
 
 ## Development

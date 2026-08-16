@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -9,10 +10,22 @@ from pathlib import Path
 
 from agent_team.assets import effective_agent_team_cli, effective_claude_plugin
 from agent_team.config import CLAUDE_REASONING_EFFORTS, valid_model_id
-from agent_team.errors import AgentTeamError, InvalidArgument
+from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
+from agent_team.state import fixed_state_dir
+from agent_team.util import (
+    atomic_json,
+    atomic_write,
+    canonical_json_bytes,
+    ensure_dir,
+    path_entry_exists,
+    read_json,
+    read_regular,
+    sha256_bytes,
+)
 
 from .base import (
     AdapterEvidence,
+    CapabilityReport,
     HarnessAdapter,
     HarnessLaunchOptions,
     LaunchSpec,
@@ -93,10 +106,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
             # Claude's OS sandbox applies only to Bash and its child processes.
             # Keep built-in Edit/Write tools inside the working-directory scope
             # enforced by acceptEdits for every workspace-contained profile.
-            permission_mode = "acceptEdits"
+            permission_args = ["--permission-mode", "acceptEdits"]
         elif profile == "full-access":
             sandbox = {"enabled": False}
-            permission_mode = "bypassPermissions"
+            # Claude documents skipDangerousModePermissionPrompt for the
+            # dedicated dangerous-mode flag (or a persistent defaultMode), not
+            # for the generic --permission-mode override. Use the equivalent
+            # one-shot flag so the Run-scoped confirmation actually suppresses
+            # Claude's secondary interactive warning without persisting a
+            # user-level acceptance bit.
+            permission_args = ["--dangerously-skip-permissions"]
         else:
             raise AgentTeamError(
                 "UNKNOWN_LAUNCH_PROFILE",
@@ -126,8 +145,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             f"Bash({cli} _*)",
         ]
         return [
-            "--permission-mode",
-            permission_mode,
+            *permission_args,
             "--settings",
             settings,
             "--allowedTools",
@@ -159,6 +177,64 @@ class ClaudeCodeAdapter(HarnessAdapter):
             }
         return profiles
 
+    def probe(self) -> CapabilityReport:
+        report = super().probe()
+        details = dict(report.details)
+        details["runtime_isolation"] = {
+            "interactive_config": "private per Run and role",
+            "user_state": (
+                "private snapshot with only the exact pretrusted Workspace"
+            ),
+            "full_access_confirmation": (
+                "private bypassPermissionsModeAccepted; user state unchanged"
+            ),
+            "credentials": (
+                "macOS Keychain or private mode-0600 credential copy"
+            ),
+            "session_resume": "native within private CLAUDE_CONFIG_DIR",
+        }
+        return CapabilityReport(
+            adapter_id=report.adapter_id,
+            adapter_version=report.adapter_version,
+            executable=report.executable,
+            executable_version=report.executable_version,
+            authenticated=report.authenticated,
+            profiles=report.profiles,
+            launcher_stays_in_process_group=report.launcher_stays_in_process_group,
+            details=details,
+        )
+
+    def profile_fingerprint(
+        self,
+        profile: str,
+        session_policy: str,
+        launch_mode: str = "headless",
+    ) -> str:
+        base = super().profile_fingerprint(profile, session_policy, launch_mode)
+        contract = {
+            "interactive_runtime_state": (
+                {
+                    "schema_version": 1,
+                    "CLAUDE_CONFIG_DIR": "private per Run and role",
+                    "source": "private snapshot of user state",
+                    "projects": "exact trusted Workspace only",
+                    "run_confirmation": (
+                        "private bypassPermissionsModeAccepted"
+                        if profile == "full-access"
+                        else "not recorded"
+                    ),
+                }
+                if launch_mode == "interactive"
+                else None
+            )
+        }
+        components = [base.encode(), canonical_json_bytes(contract)]
+        framed = b"".join(
+            len(component).to_bytes(8, "big") + component
+            for component in components
+        )
+        return sha256_bytes(framed)
+
     def authentication_status(self) -> bool | None:
         try:
             result = subprocess.run(
@@ -186,13 +262,22 @@ class ClaudeCodeAdapter(HarnessAdapter):
         legacy_base = Path(configured).expanduser() if configured else Path.home()
         return legacy_base / ".claude.json"
 
+    @staticmethod
+    def _source_config_home() -> Path:
+        configured = os.environ.get("CLAUDE_CONFIG_DIR")
+        return (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".claude"
+        )
+
     @classmethod
-    def _workspace_is_trusted(cls, workspace: Path) -> bool:
+    def _read_user_state(cls) -> dict[str, object]:
         state_path = cls._user_state_path()
         try:
             raw = state_path.read_bytes()
         except FileNotFoundError:
-            return False
+            return {}
         except OSError as exc:
             raise AgentTeamError(
                 "HARNESS_USER_CONFIG_UNREADABLE",
@@ -210,6 +295,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "HARNESS_USER_CONFIG_INVALID",
                 "Claude Code user state must be an object",
             )
+        return state
+
+    @classmethod
+    def _workspace_is_trusted(cls, workspace: Path) -> bool:
+        state = cls._read_user_state()
         projects = state.get("projects", {})
         if not isinstance(projects, dict):
             raise AgentTeamError(
@@ -244,6 +334,127 @@ class ClaudeCodeAdapter(HarnessAdapter):
             "trust prompt, exit Claude, then retry the Agent-Team command.",
         )
 
+    @staticmethod
+    def _runtime_home(run_dir: Path, role_id: str) -> Path:
+        digest = sha256_bytes(os.fsencode(str(run_dir.resolve(strict=True))))
+        return (
+            fixed_state_dir()
+            / "harness-homes"
+            / "claude-code"
+            / digest
+            / role_id
+        )
+
+    @classmethod
+    def _runtime_hierarchy(
+        cls,
+        run_dir: Path,
+        role_id: str,
+    ) -> tuple[Path, ...]:
+        home = cls._runtime_home(run_dir, role_id)
+        state = fixed_state_dir()
+        return (
+            state,
+            state / "harness-homes",
+            state / "harness-homes" / "claude-code",
+            home.parent,
+            home,
+        )
+
+    @classmethod
+    def _runtime_marker(cls, run_dir: Path, role_id: str) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "adapter": "claude-code",
+            "run_dir": str(run_dir.resolve(strict=True)),
+            "role_id": role_id,
+        }
+
+    @staticmethod
+    def _role_profile(run_dir: Path, role_id: str) -> str:
+        team = read_json(run_dir / "team.json")
+        roles = team.get("roles")
+        role = roles.get(role_id) if isinstance(roles, dict) else None
+        profile = role.get("launch_profile") if isinstance(role, dict) else None
+        if profile not in {"default", "trusted-workspace", "full-access"}:
+            raise IntegrityError(
+                f"Claude runtime state has an invalid role Profile: {role_id}"
+            )
+        return profile
+
+    @classmethod
+    def _private_runtime_state(
+        cls,
+        *,
+        workspace: Path,
+        profile: str,
+    ) -> dict[str, object]:
+        # Claude 2.1.25 has no dynamic skipDangerousModePermissionPrompt
+        # setting. Snapshot its non-secret user state into a private home so
+        # onboarding/API-key decisions remain available without allowing this
+        # Run to mutate ~/.claude.json. Project history is deliberately
+        # replaced by the one Workspace whose trust was already preflighted.
+        state = dict(cls._read_user_state())
+        state["projects"] = {
+            str(workspace.resolve(strict=True)): {
+                "hasTrustDialogAccepted": True,
+            }
+        }
+        state["hasCompletedOnboarding"] = True
+        if profile == "full-access":
+            # This bit exists only in the Run-owned CLAUDE_CONFIG_DIR and is
+            # backed by the immutable Agent-Team full-access confirmation.
+            state["bypassPermissionsModeAccepted"] = True
+        else:
+            state.pop("bypassPermissionsModeAccepted", None)
+        return state
+
+    @classmethod
+    def _assert_runtime_home(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        workspace: Path,
+        profile: str,
+    ) -> Path:
+        home = cls._runtime_home(run_dir, role_id)
+        try:
+            info = home.lstat()
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_STATE_NOT_PREPARED",
+                f"Claude Code private state is unavailable for {role_id}",
+            ) from exc
+        if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise IntegrityError(f"Claude Code private state is unsafe: {home}")
+        marker_path = home / "agent-team-home.json"
+        if (
+            not path_entry_exists(marker_path)
+            or read_json(marker_path) != cls._runtime_marker(run_dir, role_id)
+        ):
+            raise AgentTeamError(
+                "HARNESS_STATE_NOT_PREPARED",
+                f"Claude Code private state is not prepared for {role_id}",
+            )
+        state = read_json(home / ".config.json")
+        projects = state.get("projects")
+        project = (
+            projects.get(str(workspace.resolve(strict=True)))
+            if isinstance(projects, dict)
+            else None
+        )
+        if not isinstance(project, dict) or project.get(
+            "hasTrustDialogAccepted"
+        ) is not True:
+            raise IntegrityError("Claude Code private Workspace trust is invalid")
+        accepted = state.get("bypassPermissionsModeAccepted") is True
+        if accepted != (profile == "full-access"):
+            raise IntegrityError(
+                "Claude Code private full-access confirmation is invalid"
+            )
+        return home
+
     def prepare_run_state(
         self,
         *,
@@ -257,9 +468,105 @@ class ClaudeCodeAdapter(HarnessAdapter):
             launch_mode=launch_mode,
         )
         if launch_mode == "interactive":
-            self._assert_interactive_workspace_trusted(
-                workspace_from_run_dir(run_dir)
+            workspace = workspace_from_run_dir(run_dir)
+            self._assert_interactive_workspace_trusted(workspace)
+            profile = self._role_profile(run_dir, role_id)
+            for directory in self._runtime_hierarchy(run_dir, role_id):
+                ensure_dir(directory)
+                info = directory.lstat()
+                if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                    raise IntegrityError(
+                        f"Claude Code state directory is unsafe: {directory}"
+                    )
+                directory.chmod(0o700)
+            home = self._runtime_home(run_dir, role_id)
+            marker_path = home / "agent-team-home.json"
+            marker = self._runtime_marker(run_dir, role_id)
+            if path_entry_exists(marker_path):
+                if read_json(marker_path) != marker:
+                    raise IntegrityError(
+                        f"Claude Code home belongs to another Run: {home}"
+                    )
+            else:
+                atomic_json(marker_path, marker, immutable=True)
+            atomic_json(
+                home / ".config.json",
+                self._private_runtime_state(
+                    workspace=workspace,
+                    profile=profile,
+                ),
             )
+            source_credentials = self._source_config_home() / ".credentials.json"
+            if path_entry_exists(source_credentials):
+                try:
+                    source_info = source_credentials.lstat()
+                except OSError as exc:
+                    raise AgentTeamError(
+                        "HARNESS_AUTH_STATE_UNREADABLE",
+                        "cannot read Claude Code authentication state",
+                    ) from exc
+                if (
+                    source_credentials.is_symlink()
+                    or not stat.S_ISREG(source_info.st_mode)
+                    or stat.S_IMODE(source_info.st_mode) & 0o077
+                ):
+                    raise AgentTeamError(
+                        "HARNESS_AUTH_STATE_UNSAFE",
+                        "Claude Code authentication state is not a private regular file",
+                    )
+                atomic_write(
+                    home / ".credentials.json",
+                    read_regular(source_credentials),
+                    mode=0o600,
+                )
+
+    def finalize_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().finalize_run_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        if launch_mode != "interactive":
+            return
+        home = self._runtime_home(run_dir, role_id)
+        marker_path = home / "agent-team-home.json"
+        if (
+            not path_entry_exists(marker_path)
+            or read_json(marker_path) != self._runtime_marker(run_dir, role_id)
+        ):
+            raise IntegrityError(
+                f"Claude Code private state is not owned by this Run: {home}"
+            )
+        for directory, child_dirs, files in os.walk(
+            home,
+            topdown=False,
+            followlinks=False,
+        ):
+            current = Path(directory)
+            for name in (*child_dirs, *files):
+                path = current / name
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    # Claude Code creates Run-local convenience links such as
+                    # debug/latest. Never follow or chmod their targets; the
+                    # private 0700 hierarchy remains the access boundary.
+                    continue
+                if not (
+                    stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+                ):
+                    raise IntegrityError(
+                        f"Claude Code private state entry is unsafe: {path}"
+                    )
+                path.chmod(0o700 if stat.S_ISDIR(info.st_mode) else 0o600)
+            current.chmod(0o700)
+        for directory in self._runtime_hierarchy(run_dir, role_id):
+            directory.chmod(0o700)
 
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
         if options.model is not None and not valid_model_id(options.model):
@@ -425,10 +732,19 @@ class ClaudeCodeAdapter(HarnessAdapter):
             fast_mode=context.fast_mode,
         )
         self.assert_launch_options(options)
+        runtime_home: Path | None = None
         if context.launch_mode == "interactive":
             # Recheck on every Turn so a revoked or corrupted trust decision
             # fails closed before Claude starts a native TUI.
-            self._assert_interactive_workspace_trusted(Path(context.workspace))
+            workspace = Path(context.workspace)
+            self._assert_interactive_workspace_trusted(workspace)
+            run_dir = Path(context.turn_dir).parent.parent
+            runtime_home = self._assert_runtime_home(
+                run_dir=run_dir,
+                role_id=context.role_id,
+                workspace=workspace,
+                profile=context.launch_profile,
+            )
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
         selection: tuple[str, ...] = (
@@ -476,6 +792,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
         }
         if options.reasoning_effort is not None:
             env["CLAUDE_CODE_EFFORT_LEVEL"] = options.reasoning_effort
+        if runtime_home is not None:
+            env["CLAUDE_CONFIG_DIR"] = str(runtime_home)
         return LaunchSpec(
             adapter_id=self.adapter_id,
             argv=argv,

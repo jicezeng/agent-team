@@ -1,7 +1,7 @@
 # Agent-Team 产品需求文档
 
 > **版本**：v0.1<br>
-> **最近修订**：2026-08-14<br>
+> **最近修订**：2026-08-16<br>
 > **状态**：已实现并完成本地真实场景验证<br>
 > **目标读者**：产品负责人、使用者、维护者和集成开发者
 
@@ -34,7 +34,8 @@ v0.1 的核心取舍是：
 
 ### 3.1 目标用户
 
-- 希望让 Codex、Claude Code 与 OpenCode 在同一代码任务中协作的开发者；
+- 希望从 Codex、Claude Code、OpenCode 或 DeepSeek Harness 发起临时团队，并让
+  这四种 Harness 在同一代码任务中协作的开发者；
 - 需要 Developer/Reviewer 等多轮闭环，但不想维护固定工作流 DSL 的团队；
 - 需要可恢复会话、显式交接、工作区排他和本地审计证据的高级用户；
 - 评估不同 Agent/Harness 协作质量的维护者和研究者。
@@ -43,17 +44,18 @@ v0.1 的核心取舍是：
 
 1. Developer 修改，Reviewer 独立审查，Finding 循环直到完成；
 2. Planner、Developer、Reviewer 等任意动态顺序拓扑；
-3. Codex、Claude Code 与 OpenCode 角色混合，并按角色恢复各自原 Session；
+3. Codex、Claude Code、OpenCode 与 DeepSeek Harness 角色混合，并按角色恢复各自原 Session；
 4. Origin 只作为控制面，全部业务角色使用 External Binding 并开启 Full Audit；
 5. 运行中断后，在不猜测业务路线的前提下诊断、确定性恢复或返回用户 Block。
+6. DeepSeek Harness 加载共享 Skill作为 Origin，或由 Agent-Team 作为交互式 External Role 启动。
 
 ## 4. 产品目标
 
 v0.1 必须做到：
 
 1. 用户以一次自然语言请求定义临时团队，不需要预先编写图或状态机；
-2. 支持任意名称的动态角色、Origin/External Binding，以及 Codex/Claude Code/OpenCode
-   External Adapter；
+2. 支持任意名称的动态角色、Origin/External Binding，以及 Codex、Claude Code、
+   OpenCode、DeepSeek Harness External Adapter；DeepSeek Harness 也可作为 Origin；
 3. 任意时刻只有一个业务角色持有执行 Token，Handoff 目标显式且可审计；
 4. External Role 可选择 `resume` 或 `fresh` Session Policy；
 5. 用户留在 Origin Session 即可收到 Completion 或必须处理的 Block；
@@ -93,13 +95,13 @@ v0.1 不承诺：
 
 - Role ID 由本次任务定义，不从 `developer`、`reviewer` 等名称推断权限；
 - Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex`、
-  `claude-code` 和 `opencode`；
+  `claude-code`、`opencode` 和 `deepseek-harness`；
 - External Role 支持 `resume` 与 `fresh`；
-- External Role 支持 `interactive|headless` Launch Mode；新 Run 默认
-  `interactive`，通过受管 PTY 在角色 tmux Pane 中显示原生 Codex / Claude Code TUI
-  或 OpenCode Direct-interactive Terminal，只有用户明确要求时才选择 `headless`；旧 Schema 1–3 Run 固定按
-  `headless` 读取；
-- Codex、Claude Code 与 OpenCode 都提供 `default`、`trusted-workspace` 和 `full-access`
+- External Role 默认使用 `interactive`，通过受管 PTY 在角色 tmux Pane 中显示原生
+  Codex、Claude Code、DeepSeek Harness TUI 或 OpenCode Direct-interactive Terminal；
+  Codex、Claude Code 与 OpenCode 可在用户明确要求时选择 `headless`，DeepSeek Harness
+  只支持 `interactive`；旧 Schema 1–3 Run 固定按 `headless` 读取；
+- Codex、Claude Code、OpenCode 与 DeepSeek Harness 都提供 `default`、`trusted-workspace` 和 `full-access`
   三个显式 Launch Profile；新 External Role 省略 Profile 时默认冻结为
   `full-access`（YOLO），`default` 与 `trusted-workspace` 作为显式受限选项；
 - 任一 External Role 使用 `full-access` 时，新 Run 的首次 `start` 必须在 Adapter
@@ -107,7 +109,9 @@ v0.1 不承诺：
   Host Filesystem、Network 与凭据风险，再传 `--confirm-full-access`。确认写入不可变
   Kickoff Payload；同一 Run 的后续 Turn、Handoff、Resume、Recover 与重复 Start 不再
   询问；Claude `full-access` 映射复用该确认设置
-  `skipDangerousModePermissionPrompt=true`，不再弹出危险模式二次确认；Interactive
+  Run 私有 `CLAUDE_CONFIG_DIR` 记录本 Run 的确认，并同时设置
+  `skipDangerousModePermissionPrompt=true` 兼容新版 CLI，不再把危险模式二次确认写入
+  用户级 Claude 状态；Interactive
   Workspace Trust 是 Claude 独立的一次性工作区前提，缺失时仍在 Kickoff 前拒绝；
 - Launch Profile 不继承 Codex 或 Claude 的用户级可变权限配置；Claude 额外排除
   User/Project/Local Setting Sources；Codex Headless 忽略 User Config 与
@@ -121,6 +125,11 @@ v0.1 不承诺：
   没有 Bash OS Sandbox，因此 `default`/`trusted-workspace` 只开放工作区内置文件工具
   和三类 Formal Action，任意 Bash 保持 Deny；`trusted-workspace` 额外开放内置 Web
   工具，`full-access` 才开放 Host Shell；
+- DeepSeek Harness 使用 Agent-Team 固定版本的受管 Runtime、每个 Run/Role 独立的
+  `DSH_HOME` 和 bundled 最小交互式 TUI，不载入用户 Profile、Skill、Subagent 或
+  Workflow。Session 以私有 JSONL Store 持久化并通过 DSH 原生 Resume 恢复；认证只从
+  环境读取。DSH Sandbox 只约束文件写效果，因此 `default` 与
+  `trusted-workspace` 都限制写入 Workspace，但不限制读取、进程或网络；
 - Codex 的管理员 Requirements 与 Claude 的 Enterprise Managed Settings 都不能由
   Agent-Team 覆盖，不进入 `launch_profile_sha256`，也不能由 `doctor` 证明云端或最终
   有效内容；Codex Requirements 可以约束并拒绝不兼容的 Sandbox、Approval、Permission
@@ -131,7 +140,7 @@ v0.1 不承诺：
   只允许 Workspace、Harness 必需的临时目录和经过固定参数校验的
   Formal Action；Codex 显式冻结空的额外 `writable_roots`，共享 Workspace Lock / Owner
   目录不作为 Harness 通用可写根；
-- Codex、Claude Code 与 OpenCode External Role 都可显式选择 Model 和 Reasoning Effort，
+- Codex、Claude Code、OpenCode 与 DeepSeek Harness External Role 都可显式选择 Model 和 Reasoning Effort，
   Codex 还可显式启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
   默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；新建 Codex Role
   把未启用 Fast Mode 的有效结果明确冻结为 `false`，不留给后续 Harness 默认值漂移；
@@ -139,7 +148,9 @@ v0.1 不承诺：
   的最终有效 Model；
   OpenCode Model 必须冻结为 `provider/model`，Reasoning Effort 映射为不透明的
   Provider-specific Variant；未显式给 Model 时从目标 Workspace 的有效配置解析，
-  无法解析为完整 ID 时在 `init` Fail Closed；
+  无法解析为完整 ID 时在 `init` Fail Closed；DeepSeek Harness Model 同样使用
+  `provider/model`，缺省冻结为 `deepseek-official/deepseek-v4-flash`，Reasoning
+  Effort 限于 `off|high|max`；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。
@@ -187,11 +198,14 @@ v0.1 不承诺：
 
 ### 6.6 安装与诊断
 
-- Python 包必须包含 CLI、Codex/OpenCode Skill 和 Claude Code Plugin；
+- Python 包必须包含 CLI、Codex/DeepSeek Harness 共享 Skill、OpenCode Skill、
+  Claude Code Plugin 和 DeepSeek Harness 交互式 TUI Plugin；
 - 支持从源码或平台无关 wheel 安装；
-- `agent-team install` 安装当前账号的集成副本；
+- `agent-team install` 安装当前账号的集成副本、由同一解析器确定的
+  `$DSH_HOME/skills/agent-team`，以及带版本和 npm integrity 固定的受管 DSH Runtime；
 - `doctor` 检查 Harness、认证可见性、Profile、Resume、Git/tmux、文件系统能力、
-  集成一致性、状态目录权限和 Workspace Owner；
+  集成一致性、状态目录权限和 Workspace Owner；DSH External Adapter 检查受管 Runtime
+  与 TUI 合同，DSH Origin 的独立 CLI 仍是可选项，Doctor 不声称证明 Origin 最终加载来源；
 - 不允许把某台机器的 `.agent-team/`、tmux 或 Harness Session 复制到另一台机器继续。
 
 ## 7. 标准用户旅程
@@ -214,6 +228,9 @@ v0.1 的发布验收必须同时满足：
 - Codex/Codex 与 Claude Code/Codex 真实循环均可完成；
 - OpenCode External Role 必须通过真实 Start、正式 Handoff、Session Resume 与
   Completion 的多 Turn 端到端闭环；
+- DeepSeek Harness 必须真实加载安装的共享 Skill，以显式 `deepseek-harness` Origin
+  创建 restricted External Role Run，并收到该 Role 的 Completion；同时必须作为
+  interactive External Role 完成原生 Session 创建、跨进程 Resume 和多 Turn 正式闭环；
 - Finding 能经历提出、接受或有证据拒绝、修复、同 Session 复审和关闭；
 - 至少五个后续 Turn 可恢复同一 External Role Session；
 - 生命周期、完整性、崩溃点、进程身份、Workspace Ownership 和观察接口测试通过；
@@ -230,7 +247,9 @@ v0.1 的发布验收必须同时满足：
 
 - [`docs/validation/runtime-lifecycle-v0.1-validation-report.md`](docs/validation/runtime-lifecycle-v0.1-validation-report.md)；
 - [`docs/validation/observability-claude-codex-report.md`](docs/validation/observability-claude-codex-report.md)；
-- [`docs/validation/interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md)。
+- [`docs/validation/interactive-runtime-v0.1.2-validation-report.md`](docs/validation/interactive-runtime-v0.1.2-validation-report.md)；
+- [`docs/validation/deepseek-harness-origin-v0.1.4-validation-report.md`](docs/validation/deepseek-harness-origin-v0.1.4-validation-report.md)；
+- [`docs/validation/deepseek-harness-interactive-v0.1.4-validation-report.md`](docs/validation/deepseek-harness-interactive-v0.1.4-validation-report.md)。
 
 前两份报告是 Headless/Observability 历史基线，保留当时的版本和测试计数；第三份记录
 v0.1.2 验证时点的 Interactive Codex PTY、Action Termination、Session Resume、
@@ -253,6 +272,10 @@ Headless 结构化事件路径的覆盖。
 
 已知限制包括单执行 Token、单 Worktree、本地文件协调、协作式 Origin Deadline、
 启发式脱敏和宿主 Turn 无自动唤醒。以下只是候选方向，不是 v0.1 承诺：
+
+DeepSeek Harness External Role 当前只支持交互式 Launch；其 restricted Profile 只约束
+文件写效果，不约束读取、进程和网络。Agent-Team 不采集 DSH Origin 的私有内部过程，
+也不保存 External TUI 输出中的私有 reasoning 正文。
 
 - Workflow IR、Typed Handoff 和机器可验证 Transition Guard；
 - 宿主 API/SDK 集成与可靠唤醒；

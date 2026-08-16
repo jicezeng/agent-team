@@ -91,6 +91,8 @@ administrator policy because that policy is outside the frozen Profile Hash
 and Doctor's proof. For Codex, also record that non-managed hooks are disabled
 while trusted Workspace project configuration and extensions remain inside the
 Workspace trust decision. For OpenCode, record that arbitrary Bash is denied
-in restricted Profiles because it has no OS shell sandbox. `full-access` has no Harness host sandbox or
+in restricted Profiles because it has no OS shell sandbox. For DeepSeek
+Harness, record that restricted Profiles constrain writes only and that its
+External Adapter is interactive-only. `full-access` has no Harness host sandbox or
 per-command approval prompts; the confirmation is not repeated inside the same
 immutable Run.

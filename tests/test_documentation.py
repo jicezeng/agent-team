@@ -28,6 +28,11 @@ PROFILE_GUIDES = (
     "skills/opencode/agent-team/SKILL.md",
     "skills/opencode/agent-team/references/protocol-template.md",
 )
+ORIGIN_SKILLS = (
+    "skills/codex/agent-team/SKILL.md",
+    "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
+    "skills/opencode/agent-team/SKILL.md",
+)
 
 
 def _strict_json(value: str) -> Any:
@@ -264,6 +269,94 @@ def test_readme_stays_focused_and_links_to_the_user_guide() -> None:
 
     assert len(readme.splitlines()) <= 200
     assert "docs/user-guide.md" in readme
+
+
+def test_product_docs_define_bidirectional_deepseek_harness_integration() -> None:
+    prd = (REPOSITORY_ROOT / "agent-team_prd_v0.1.md").read_text(encoding="utf-8")
+    design = (REPOSITORY_ROOT / "agent-team_technical_design_v0.1.md").read_text(
+        encoding="utf-8"
+    )
+    guide = (REPOSITORY_ROOT / "docs/user-guide.md").read_text(encoding="utf-8")
+
+    for content in (prd, design, guide):
+        assert "DeepSeek Harness" in content
+        assert "Origin" in content
+        assert "External" in content
+        assert "interactive" in content.lower()
+    assert "不是 External Adapter" not in prd
+    assert "不新增 External Adapter" not in design
+    assert "DSH is an Origin integration only" not in guide
+    assert "`deepseek-harness` 四类 External Binding" in design
+    assert "DSH External roles support only `interactive`" in guide
+    assert "integration:deepseek_harness_skill" in design
+
+
+def test_deepseek_design_freezes_managed_interactive_contract() -> None:
+    content = (
+        REPOSITORY_ROOT / "docs/deepseek-harness-integration-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "@deepseek-ai/dsh@0.1.0-rc.6" in content
+    assert "agents.create" in content
+    assert "agents.resume" in content
+    assert "interactive-only" in content.lower()
+    assert "Python SDK Bridge" in content
+    assert "private reasoning text" in content
+
+
+def test_shared_codex_dsh_skill_selects_explicit_origin_metadata() -> None:
+    content = (REPOSITORY_ROOT / ORIGIN_SKILLS[0]).read_text(encoding="utf-8")
+
+    assert 'if [ "${DSH_SHELL:-}" = "1" ]' in content
+    assert "origin_harness=deepseek-harness" in content
+    assert "origin_harness=codex" in content
+    assert '--origin-harness "$origin_harness"' in content
+    assert "This branch records Origin metadata only and grants no permission." in content
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "origin_harness"),
+    (
+        (
+            "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
+            "claude-code",
+        ),
+        ("skills/opencode/agent-team/SKILL.md", "opencode"),
+    ),
+)
+def test_harness_specific_skills_pass_explicit_origin_metadata(
+    relative_path: str,
+    origin_harness: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert f"--origin-harness {origin_harness}" in content
+
+
+@pytest.mark.parametrize("relative_path", ORIGIN_SKILLS)
+def test_origin_skills_reuse_one_absolute_cli_path(
+    relative_path: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert "canonical absolute executable path" in content
+    assert "do not re-resolve it" in content
+    assert '"<absolute-agent-team-cli>" init' in content
+    assert '"<absolute-agent-team-cli>" start' in content
+    assert '"<absolute-agent-team-cli>" wait-origin' in content
+
+
+@pytest.mark.parametrize("relative_path", ORIGIN_SKILLS)
+def test_origin_skills_keep_full_access_consent_before_init(
+    relative_path: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+    consent = content.index("obtain one explicit")
+    initialization = content.index('"<absolute-agent-team-cli>" init')
+
+    assert consent < initialization
+    assert "If the user declines, do not create or start the Run." in content
+    assert "Omit `--confirm-full-access`" in content
 
 
 @pytest.mark.parametrize("relative_path", PROFILE_GUIDES)

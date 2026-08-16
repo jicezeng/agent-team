@@ -43,6 +43,7 @@ from .turns import (
 from .util import (
     parse_rfc3339,
     path_entry_exists,
+    read_private_regular,
     read_regular,
     resolve_run_path,
     rfc3339,
@@ -681,7 +682,7 @@ def origin_action(
             save_runtime(run_dir / "turns" / turn_id, runtime, team=team)
             return {"code": "TEAM_BLOCKED", "event": event}
         relative_source = safe_relative(source_file, run_dir)
-        payload = read_regular(resolve_run_path(run_dir, relative_source))
+        payload = read_private_regular(resolve_run_path(run_dir, relative_source))
         validate_payload_contract(
             payload,
             required_sections=team.observability.required_payload_sections,
@@ -847,7 +848,9 @@ def origin_resume(
                 f"run cannot create another business turn: {reason}",
             )
         source_relative = safe_relative(source_file, run_dir)
-        instruction = read_regular(resolve_run_path(run_dir, source_relative))
+        instruction = read_private_regular(
+            resolve_run_path(run_dir, source_relative)
+        )
         if not instruction.strip():
             raise InvalidArgument("Resume user instruction must not be empty")
         decision = dt.datetime.now(dt.timezone.utc)

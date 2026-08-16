@@ -67,7 +67,7 @@ def test_shared_integration_references_are_byte_identical() -> None:
         ).read_bytes()
 
 
-def test_harness_skill_variants_have_only_the_intended_shell_wording() -> None:
+def test_harness_skill_variants_have_only_the_intended_origin_differences() -> None:
     codex_skill = (
         REPOSITORY_ROOT / "skills" / "codex" / "agent-team" / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -83,8 +83,40 @@ def test_harness_skill_variants_have_only_the_intended_shell_wording() -> None:
 
     assert codex_skill.count("shell invocation") == 1
     assert "Bash invocation" not in codex_skill
-    assert claude_skill == codex_skill.replace(
+    expected = codex_skill.replace(
         "shell invocation",
         "Bash invocation",
         1,
     )
+    expected = expected.replace(
+        """   select the explicit Origin metadata from the managed shell, then run:
+
+```bash
+if [ "${DSH_SHELL:-}" = "1" ]; then
+  origin_harness=deepseek-harness
+else
+  origin_harness=codex
+fi
+""",
+        """   then run:
+
+```bash
+""",
+        1,
+    )
+    expected = expected.replace(
+        """  --origin-harness "$origin_harness"
+"<absolute-agent-team-cli>" start <run-id> --confirm-full-access
+```
+
+`DSH_SHELL=1` selects `deepseek-harness`; every other value selects `codex`.
+This branch records Origin metadata only and grants no permission.
+""",
+        """  --origin-harness claude-code
+"<absolute-agent-team-cli>" start <run-id> --confirm-full-access
+```
+""",
+        1,
+    )
+
+    assert claude_skill == expected

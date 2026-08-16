@@ -35,10 +35,11 @@ from .util import (
     atomic_write,
     committed_directory_entries,
     fsync_dir,
-    path_entry_exists,
     parse_rfc3339,
+    path_entry_exists,
     random_token,
     read_json,
+    read_private_regular,
     read_regular,
     require_keys,
     require_schema_version,
@@ -47,7 +48,6 @@ from .util import (
     safe_relative,
     sha256_bytes,
 )
-
 
 RUNTIME_REQUIRED = {
     "schema_version",
@@ -1361,7 +1361,9 @@ def stage_external_action_locked(
     if sha256_bytes(frozen_input) != runtime["input_payload_sha256"]:
         raise IntegrityError("frozen Turn input changed before External action")
     source_relative = safe_relative(source_file, run_dir)
-    source_bytes = read_regular(resolve_run_path(run_dir, source_relative))
+    source_bytes = read_private_regular(
+        resolve_run_path(run_dir, source_relative)
+    )
     validate_payload_contract(
         source_bytes,
         required_sections=team.observability.required_payload_sections,

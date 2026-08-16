@@ -8,11 +8,13 @@ tests.
 
 ## Installation and upgrades
 
-Agent-Team requires Python 3.11 or newer, `uv`, Git, and tmux when any role has
-an External binding. Install and authenticate Codex CLI, Claude Code CLI,
-and/or OpenCode CLI separately. Runs require macOS or Linux, a local filesystem with `flock`, atomic
-same-directory rename and `fsync`, and exactly one normal Git worktree root.
-Sparse checkout and Gitlinks are not supported in v0.1.
+Agent-Team requires Python 3.11 or newer, `uv`, Git, tmux, Node.js, and pnpm.
+Install and authenticate Codex CLI, Claude Code CLI, and/or OpenCode CLI
+separately. `agent-team install` installs the pinned DeepSeek Harness runtime
+used by External roles; install a user-facing `dsh` separately only when DSH
+itself will be the Origin. Runs require macOS or Linux, a local filesystem with `flock`,
+atomic same-directory rename and `fsync`, and exactly one normal Git worktree
+root. Sparse checkout and Gitlinks are not supported in v0.1.
 
 Install Agent-Team separately for each OS account that will run it.
 
@@ -33,7 +35,7 @@ agent-team doctor --workspace /path/to/worktree --json
 ```
 
 The wheel is platform-independent, but the target machine must still meet the
-runtime requirements and have its Harness CLIs authenticated.
+runtime requirements and expose the credentials required by its selected roles.
 
 ### Source checkout
 
@@ -53,12 +55,32 @@ uv run agent-team install
 uv run agent-team doctor --workspace /path/to/worktree --json
 ```
 
-`agent-team install` replaces only Agent-Team's integration trees:
+`agent-team install` installs or replaces only Agent-Team-owned integrations:
 
 - Codex skill: `~/.codex/skills/agent-team`
 - Claude Code plugin: `installed/claude-code-plugin` under the fixed account
   state directory
 - OpenCode skill: `~/.config/opencode/skills/agent-team`
+- DeepSeek Harness skill: `$DSH_HOME/skills/agent-team`, defaulting to
+  `~/.dsh/skills/agent-team`
+- managed DeepSeek Harness `0.1.0-rc.6`: `installed/deepseek-harness-runtime`
+  under the fixed account state directory
+
+The managed DSH runtime is not added to `PATH` and does not reuse a user's DSH
+profiles. For each DSH External role, Agent-Team also creates a private
+Run/Role `DSH_HOME`, installs its bundled minimal interactive TUI there, and
+uses environment credentials such as `DEEPSEEK_API_KEY`. That private TUI is
+the External Adapter surface; a separately installed `dsh` remains the Origin
+surface.
+
+For DeepSeek Harness, unset or blank `DSH_HOME` follows the current `$HOME`.
+An explicit value must resolve to an absolute path; only `~` and `~/...` expand
+to the current user, while `~user` and relative values are rejected. If a DSH
+composition sets `dshHome`, pass the same absolute value as `DSH_HOME` to both
+`agent-team install` and `agent-team doctor`. Deployments using
+`customSkillDirs` or `includeDefaultRoots: false` must install and verify the
+Skill themselves because those provider-specific overrides are outside the
+automatic installation contract.
 
 The account state directory is `~/Library/Application Support/agent-team` on
 macOS and `~/.local/state/agent-team` on Linux. It is not configurable.
@@ -69,7 +91,7 @@ recover it first. Do not copy `.agent-team/` or the fixed account state to
 another machine to resume a Run: Harness Sessions, process identities, tmux
 workers, and workspace ownership are machine-local.
 
-## Start from Codex or OpenCode
+## Start from Codex, OpenCode, or DeepSeek Harness
 
 The recommended entry point is the installed Agent-Team Skill:
 
@@ -100,9 +122,25 @@ Limits: at most 12 role turns and 7200 seconds.
 
 The skill preserves the request in `REQUEST.md`, generates `PROTOCOL.md`,
 checks the selected Harness profiles, starts the Run, and follows Origin
-handoffs. Keep the originating Codex or OpenCode Session open while the Run is
-active. In OpenCode, ask it to use the `agent-team` Skill; OpenCode discovers
-the installed Skill through its native `skill` tool.
+handoffs. Keep the originating Session open while the Run is active. In
+OpenCode, ask it to use the `agent-team` Skill; OpenCode discovers the installed
+Skill through its native `skill` tool.
+
+DeepSeek Harness uses the same Skill source as Codex. From the target worktree,
+explicitly invoke `/agent-team` in a DSH task, for example:
+
+```bash
+dsh --profile headless '/agent-team
+Use one restricted Codex role to inspect this worktree and return a concise
+evidence-backed result. Limits: at most 2 role turns and 900 seconds.'
+```
+
+DSH can also be an External role. Its Adapter always runs the bundled
+interactive TUI in tmux, persists the native DSH Session in a private Run/Role
+home, and resumes that same Session on later Turns. A real DSH Origin Skill load
+is still the authority for which resource root won; `doctor` checks that the
+installed Skill, managed runtime, TUI asset, credentials, and Profile mapping
+required for the selected direction are available.
 
 ## Manual CLI bootstrap
 
@@ -145,6 +183,7 @@ ROLE=origin
 ROLE=codex:<resume|fresh>[:<profile>]
 ROLE=claude-code:<resume|fresh>[:<profile>]
 ROLE=opencode:<resume|fresh>[:<profile>]
+ROLE=deepseek-harness:<resume|fresh>[:<profile>]
 ```
 
 `resume` preserves the validated Harness Session across Turns; `fresh` creates
@@ -163,8 +202,11 @@ Omitted model and effort values inherit the relevant Harness default at
 models must resolve to `provider/model`; its effort value is passed as the
 provider-specific model Variant. If the effective OpenCode default is absent
 or unqualified, supply `--role-model ROLE=provider/model` explicitly.
-`--role-fast` is Codex-only. Launch mode, Profile, model, effort, and fast mode
-cannot change after Kickoff.
+DSH models also use `provider/model`; its default is
+`deepseek-official/deepseek-v4-flash`, and effort is `off`, `high`, or `max`.
+`--role-fast` is Codex-only. DSH External roles support only `interactive`;
+requesting `headless` fails before Kickoff. Launch mode, Profile, model, effort,
+and fast mode cannot change after Kickoff.
 
 Before the first interactive Claude Code Run in a worktree, establish Claude's
 own workspace trust in a normal terminal:
@@ -182,11 +224,11 @@ UNSTARTED Run. Headless Claude roles do not require this TUI preflight.
 
 ## Permission profiles
 
-| Profile | Codex | Claude Code | OpenCode |
-| --- | --- | --- | --- |
-| `default` | Workspace write, scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, internal scratch path, no fallback | Worktree file/search/LSP/todo tools; arbitrary Bash, external paths, web, skills, tasks, and MCP tools denied |
-| `trusted-workspace` | Same filesystem boundary with command network | `acceptEdits`, same OS workspace sandbox, no fallback | Same worktree boundary; built-in web tools additionally allowed; arbitrary Bash still denied |
-| `full-access` | `danger-full-access`, no approval prompts | `bypassPermissions`, Claude sandbox disabled | All OpenCode tools and host Bash allowed; Agent-Team management command patterns remain denied |
+| Profile | Codex | Claude Code | OpenCode | DeepSeek Harness |
+| --- | --- | --- | --- | --- |
+| `default` | Workspace write, scratch paths, no command network, no approval prompts | `acceptEdits`, OS workspace sandbox, internal scratch path, no fallback | Worktree file/search/LSP/todo tools; arbitrary Bash, external paths, web, skills, tasks, and MCP tools denied | DSH `workspace-write`; write effects confined to the worktree |
+| `trusted-workspace` | Same filesystem boundary with command network | `acceptEdits`, same OS workspace sandbox, no fallback | Same worktree boundary; built-in web tools additionally allowed; arbitrary Bash still denied | Same DSH write boundary; network remains inherited |
+| `full-access` | `danger-full-access`, no approval prompts | `--dangerously-skip-permissions` (`bypassPermissions`), Claude sandbox disabled; Run-private config records the one-time confirmation | All OpenCode tools and host Bash allowed; Agent-Team management command patterns remain denied | DSH `danger-full-access`, no approval prompts |
 
 Omitting a Profile selects `full-access` (YOLO). It removes the Harness host
 filesystem boundary, opens command network access, and disables per-command
@@ -212,6 +254,14 @@ YOLO confirmation. Agent-Team launches OpenCode with a private per-Run/Role
 and project permission, MCP, agent, and external-plugin config while preserving
 the machine-local OpenCode credential and Session stores. Managed OpenCode
 configuration has higher priority and remains outside the Profile Hash.
+
+DSH's sandbox is a file-effect boundary, not a complete host sandbox.
+`default` and `trusted-workspace` prevent writes outside the worktree, but reads,
+process execution, credentials in the environment, and network access remain
+available. The two restricted DSH Profiles are therefore identical in v0.1.
+The private profile disables DSH permission switching, user profiles, Skills,
+subagents, workflows, telemetry, and title-model calls; formal Agent-Team
+actions and the Journal remain the only collaboration control path.
 
 Agent-Team freezes the supplied mapping and `launch_profile_sha256`, excludes
 mutable user permission settings, isolates OpenCode project config and external
@@ -295,7 +345,7 @@ snapshot. `transcript` reconstructs selected Turn inputs, normalized events,
 formal outputs, and usage summaries. `tail` follows normalized events.
 
 `attach` opens a read-only tmux client. It shows the native Harness terminal
-(a Codex/Claude Code TUI or OpenCode direct-interactive output) for an active
+(a Codex/Claude Code/DSH TUI or OpenCode direct-interactive output) for an active
 interactive role and Worker diagnostics for a headless role. Detach with
 `Ctrl-b d`. A separately opened writable tmux client may relay raw keyboard
 input, but that input is never a formal Agent-Team action.
@@ -369,7 +419,12 @@ still be alive. Run `diagnose --json` first.
 Each worktree contains `.agent-team/` with immutable inputs, Events, Runtime
 snapshots, traces, retained raw streams, and completion artifacts. A separate
 fixed account directory contains workspace ownership, operation locks, private
-interactive Codex Homes, and private OpenCode configuration Homes.
+interactive Codex Homes, private OpenCode configuration Homes, private DSH
+Homes, and the pinned managed DSH runtime.
+
+Formal action and Resume source files must live inside their Turn directory.
+When accepted, Agent-Team reads them without following symlinks, rejects hard
+links, and forces mode `0600`, independent of the originating editor's umask.
 
 Agent-Team does not modify `.gitignore` or `.git/info/exclude`. Never stage
 `.agent-team/`; `doctor` warns if a user-managed ignore rule does not cover it.
@@ -387,6 +442,6 @@ process from editing the same files. Avoid concurrent manual edits.
 
 ## Verification evidence
 
-Real Codex, mixed Claude Code/Codex, and OpenCode validation reports are indexed in
+Real Codex, mixed Claude Code/Codex, OpenCode, and DSH validation reports are indexed in
 [`docs/validation`](validation/README.md). Reports are historical evidence;
 the technical design and current tests define the latest contract.

@@ -23,6 +23,7 @@ packages = ["src/agent_team"]
 "skills/codex/agent-team" = "agent_team/bundled/skills/codex/agent-team"
 "plugins/claude-code/agent-team" = "agent_team/bundled/plugins/claude-code/agent-team"
 "skills/opencode/agent-team" = "agent_team/bundled/skills/opencode/agent-team"
+"plugins/deepseek-harness/agent-team-tui" = "agent_team/bundled/plugins/deepseek-harness/agent-team-tui"
 
 [tool.hatch.build.targets.sdist]
 include = [

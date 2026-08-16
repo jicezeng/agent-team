@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from agent_team import observation
 from agent_team.bootstrap import initialize_run, start_run
 from agent_team.config import Role, make_team
 from agent_team.errors import AgentTeamError, IntegrityError
@@ -12,7 +14,6 @@ from agent_team.gitfacts import capture_workspace_facts, write_workspace_facts
 from agent_team.journal import scan_journal
 from agent_team.management import cancel_run, unlock_workspace
 from agent_team.observation import derive_observation
-from agent_team import observation
 from agent_team.origin import origin_action, origin_resume, wait_origin
 from agent_team.state import read_owner, release_owner
 from agent_team.turns import iter_runtimes
@@ -61,6 +62,7 @@ def test_pure_origin_run_completes_and_releases_owner(
         "# Completion\n\nThe requested work is complete and verified.\n",
         encoding="utf-8",
     )
+    payload.chmod(0o644)
 
     completed = origin_action(
         run_dir,
@@ -71,6 +73,7 @@ def test_pure_origin_run_completes_and_releases_owner(
         source_file=payload,
     )
     assert completed["code"] == "TEAM_COMPLETED"
+    assert stat.S_IMODE(payload.stat().st_mode) == 0o600
     assert scan_journal(run_dir).status == "COMPLETED"
     assert read_owner(workspace) is not None
 
@@ -327,6 +330,7 @@ def test_origin_block_can_resume_only_through_management_claim(
     instruction_bytes = b"Continue with the evidence already collected.\\n"
     instruction = run_dir / "turns" / manager["turn_id"] / "resume.md"
     instruction.write_bytes(instruction_bytes)
+    instruction.chmod(0o644)
 
     resumed = origin_resume(
         run_dir,
@@ -337,6 +341,7 @@ def test_origin_block_can_resume_only_through_management_claim(
     )
 
     assert resumed["code"] == "RESUME_TO_ORIGIN_ROLE"
+    assert stat.S_IMODE(instruction.stat().st_mode) == 0o600
     assert resumed["role_id"] == "reviewer"
     resume_event = scan_journal(run_dir).events[-1]
     assert resume_event["event_type"] == "resume"

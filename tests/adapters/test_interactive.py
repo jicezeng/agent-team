@@ -252,6 +252,11 @@ def test_claude_interactive_launch_uses_native_tui_and_known_session(
         "_assert_interactive_workspace_trusted",
         lambda _workspace: None,
     )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda **_kwargs: Path("/private/claude"),
+    )
 
     launch = adapter.prepare_launch(
         launch_context(
@@ -274,6 +279,7 @@ def test_claude_interactive_launch_uses_native_tui_and_known_session(
     )
     assert launch.prompt_file is not None
     assert launch.env["CLAUDE_CODE_EFFORT_LEVEL"] == "high"
+    assert launch.env["CLAUDE_CONFIG_DIR"] == "/private/claude"
     assert "--setting-sources" in launch.argv
     assert launch.argv[launch.argv.index("--setting-sources") + 1] == ""
 
@@ -288,6 +294,10 @@ def test_claude_interactive_run_state_requires_pretrusted_workspace(
     config_dir = tmp_path / "claude-config"
     config_dir.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
     adapter = ClaudeCodeAdapter()
 
     with pytest.raises(AgentTeamError) as rejected:
@@ -310,12 +320,53 @@ def test_claude_interactive_run_state_requires_pretrusted_workspace(
         ),
         encoding="utf-8",
     )
+    (run_dir / "team.json").write_text(
+        json.dumps(
+            {
+                "roles": {
+                    "developer": {
+                        "launch_profile": "full-access",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     adapter.prepare_run_state(
         run_dir=run_dir,
         role_id="developer",
         launch_mode="interactive",
     )
+    home = adapter._runtime_home(run_dir, "developer")
+    state = json.loads((home / ".config.json").read_text(encoding="utf-8"))
+    assert state["bypassPermissionsModeAccepted"] is True
+    assert state["projects"] == {
+        str(workspace): {"hasTrustDialogAccepted": True}
+    }
+    assert json.loads(
+        (home / "agent-team-home.json").read_text(encoding="utf-8")
+    ) == adapter._runtime_marker(run_dir, "developer")
+
+    debug_dir = home / "debug"
+    debug_dir.mkdir()
+    debug_dir.chmod(0o755)
+    debug_log = debug_dir / "session.log"
+    debug_log.write_text("session\n", encoding="utf-8")
+    debug_log.chmod(0o644)
+    latest = debug_dir / "latest"
+    latest.symlink_to(debug_log.name)
+
+    adapter.finalize_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+
+    assert latest.is_symlink()
+    assert latest.read_text(encoding="utf-8") == "session\n"
+    assert debug_dir.stat().st_mode & 0o077 == 0
+    assert debug_log.stat().st_mode & 0o077 == 0
 
 
 @pytest.mark.parametrize(
@@ -371,6 +422,36 @@ def test_claude_default_state_prefers_current_config_then_legacy_fallback(
     current_path.unlink()
     assert ClaudeCodeAdapter._user_state_path() == legacy_path
     assert ClaudeCodeAdapter._workspace_is_trusted(workspace) is legacy_trusted
+
+
+def test_claude_restricted_private_state_drops_full_access_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        ClaudeCodeAdapter,
+        "_read_user_state",
+        classmethod(
+            lambda _cls: {
+                "bypassPermissionsModeAccepted": True,
+                "customApiKeyResponses": {"approved": ["fingerprint"]},
+                "projects": {"/other": {"hasTrustDialogAccepted": True}},
+            }
+        ),
+    )
+
+    state = ClaudeCodeAdapter._private_runtime_state(
+        workspace=workspace,
+        profile="trusted-workspace",
+    )
+
+    assert "bypassPermissionsModeAccepted" not in state
+    assert state["projects"] == {
+        str(workspace): {"hasTrustDialogAccepted": True}
+    }
+    assert state["customApiKeyResponses"] == {"approved": ["fingerprint"]}
 
 
 def test_claude_interactive_trust_rejects_invalid_user_state(

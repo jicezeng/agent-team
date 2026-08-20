@@ -26,10 +26,10 @@ Build the wheel from a source checkout:
 uv build --wheel
 ```
 
-Copy `dist/agent_team-0.1.5-py3-none-any.whl` to the target machine, then run:
+Copy `dist/agent_team-0.1.6-py3-none-any.whl` to the target machine, then run:
 
 ```bash
-uv tool install --force /path/to/agent_team-0.1.5-py3-none-any.whl
+uv tool install --force /path/to/agent_team-0.1.6-py3-none-any.whl
 agent-team install
 agent-team doctor --workspace /path/to/worktree --json
 ```

@@ -2,7 +2,7 @@
 
 > **状态**：双向集成已实现，并已通过真实三 Turn 交互式闭环验证  
 > **日期**：2026-08-16  
-> **基线**：Agent-Team v0.1.5；DeepSeek Harness `0.1.0-rc.6`
+> **基线**：Agent-Team v0.1.6；DeepSeek Harness `0.1.0-rc.6`
 
 ## 1. 决策
 

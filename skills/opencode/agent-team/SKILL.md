@@ -36,7 +36,8 @@ External business Turn inside an existing Run:
 1. Preserve the user's exact request in `REQUEST.md` outside `.agent-team`.
 2. Extract dynamic roles, Origin/External bindings, Harness adapters, Session
    policies, initial role, routing loops, completion authority, final delivery,
-   safety limits, and only the model or variant choices the user made.
+   safety limits, and only the model, variant, or Codex model-provider choices
+   the user made.
 3. Reject true parallel fan-out/join, multiple workspaces, non-Git roots,
    missing completion conditions, unavailable Harnesses, or dangerous
    ambiguity. Do not silently serialize requested parallel work.
@@ -62,11 +63,16 @@ External business Turn inside an existing Run:
    managed host, use a contained Profile only after verifying that policy adds
    no host write roots, sandbox exclusions, hooks, or higher-priority tool
    grants.
-6. Add `--role-model ROLE=MODEL` and
-   `--role-reasoning-effort ROLE=VARIANT` only for choices the user made.
+6. Add `--role-model ROLE=MODEL`,
+   `--role-reasoning-effort ROLE=VARIANT`, and
+   `--role-model-provider ROLE=PROVIDER` only for choices the user made.
    OpenCode models use `provider/model`; its reasoning-effort option maps to a
    provider-specific variant. DSH models also use `provider/model`, with effort
-   `off`, `high`, or `max`. `--role-fast` remains Codex-only. External roles
+   `off`, `high`, or `max`. `--role-model-provider` and `--role-fast` are
+   Codex-only. A custom Codex Provider must already exist in the user's Codex
+   `config.toml`; pass only its ID, never a secret, endpoint credential, header
+   value, or environment value. Omit an unspecified Provider so `init` freezes
+   the Codex user default. External roles
    default to native `interactive` execution. Add
    `--role-launch-mode ROLE=headless` only for Codex, Claude Code, or OpenCode
    when explicitly requested; DSH External roles are interactive-only.

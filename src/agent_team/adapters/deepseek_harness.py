@@ -190,6 +190,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        model_provider: str | None = None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
         del workspace
@@ -197,6 +198,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             model=model or _DEFAULT_MODEL,
             reasoning_effort=reasoning_effort or _DEFAULT_REASONING_EFFORT,
             fast_mode=fast_mode,
+            model_provider=model_provider,
         )
         self.assert_launch_options(options)
         return options
@@ -212,6 +214,13 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             )
         if options.fast_mode is not None:
             raise InvalidArgument("fast mode is only supported by the codex adapter")
+        if (
+            options.model_provider is not None
+            or options.model_provider_config is not None
+        ):
+            raise InvalidArgument(
+                "model provider is only supported by the codex adapter"
+            )
 
     @staticmethod
     def _home(run_dir: Path, role_id: str) -> Path:
@@ -658,6 +667,8 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             model=context.model,
             reasoning_effort=context.reasoning_effort,
             fast_mode=context.fast_mode,
+            model_provider=context.model_provider,
+            model_provider_config=context.model_provider_config,
         )
         self.assert_launch_options(options)
         home = self._assert_home(context)

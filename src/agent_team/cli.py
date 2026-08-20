@@ -718,6 +718,7 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                                 "launch_profile_sha256": (role.launch_profile_sha256),
                                 "launch_mode": role.launch_mode,
                                 "model": role.model,
+                                "model_provider": role.model_provider,
                                 "reasoning_effort": role.reasoning_effort,
                                 "fast_mode": role.fast_mode,
                                 "dsh_plugin": role.dsh_plugin,
@@ -866,6 +867,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="ROLE=MODEL",
         help="override one External role's model; otherwise inherit its user default",
+    )
+    init.add_argument(
+        "--role-model-provider",
+        action="append",
+        metavar="ROLE=PROVIDER",
+        help=(
+            "override one Codex role's model provider; otherwise inherit its "
+            "user default"
+        ),
     )
     init.add_argument(
         "--role-reasoning-effort",
@@ -1060,6 +1070,10 @@ def dispatch(args: argparse.Namespace) -> int:
             args.role_model,
             option="--role-model",
         )
+        role_model_providers = _role_value_options(
+            args.role_model_provider,
+            option="--role-model-provider",
+        )
         role_efforts = _role_value_options(
             args.role_reasoning_effort,
             option="--role-reasoning-effort",
@@ -1079,6 +1093,7 @@ def dispatch(args: argparse.Namespace) -> int:
             role_id, role = parse_role_spec(
                 spec,
                 model=role_models.get(candidate),
+                model_provider=role_model_providers.get(candidate),
                 reasoning_effort=role_efforts.get(candidate),
                 fast_mode=True if candidate in fast_roles else None,
                 launch_mode=role_launch_modes.get(candidate),
@@ -1090,6 +1105,7 @@ def dispatch(args: argparse.Namespace) -> int:
             roles[role_id] = role
         unknown_options = (
             set(role_models)
+            | set(role_model_providers)
             | set(role_efforts)
             | fast_roles
             | set(role_launch_modes)

@@ -22,6 +22,8 @@ def _write_codex_team(
     workspace: Path,
     *,
     model: str | None = "gpt-5.6-sol",
+    model_provider: str | None = None,
+    model_provider_config: dict[str, object] | None = None,
 ) -> None:
     team = make_team(
         run_id=run_dir.name,
@@ -39,6 +41,9 @@ def _write_codex_team(
                 "max",
                 True,
                 "interactive",
+                None,
+                model_provider,
+                model_provider_config,
             )
         },
         initial_role="developer",
@@ -46,6 +51,71 @@ def _write_codex_team(
         max_wall_time_seconds=60,
     )
     (run_dir / "team.json").write_bytes(team.canonical_bytes())
+
+
+def test_codex_interactive_custom_provider_does_not_copy_openai_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-custom-provider"
+    turn_dir = run_dir / "turns" / "turn-0001"
+    turn_dir.mkdir(parents=True)
+    source_home = tmp_path / "user-codex-home"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text(
+        '{"token":"must-not-be-copied"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    monkeypatch.setenv("COMPANY_PROXY_API_KEY", "provider-secret")
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+    provider_config = {
+        "base_url": "https://proxy.example.test/v1",
+        "env_key": "COMPANY_PROXY_API_KEY",
+        "wire_api": "responses",
+    }
+    _write_codex_team(
+        run_dir,
+        workspace,
+        model="proxy-model",
+        model_provider="company_proxy",
+        model_provider_config=provider_config,
+    )
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    isolated_home = adapter._interactive_home(run_dir, "developer")
+
+    assert not (isolated_home / "auth.json").exists()
+    launch = adapter.prepare_launch(
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=None,
+            model="proxy-model",
+            reasoning_effort="max",
+            fast_mode=True,
+            model_provider="company_proxy",
+            model_provider_config=provider_config,
+            launch_mode="interactive",
+            workspace=str(workspace),
+            turn_dir=str(turn_dir),
+        )
+    )
+    assert launch.env["CODEX_HOME"] == str(isolated_home)
+    assert 'model_provider="company_proxy"' in launch.argv
+    assert "provider-secret" not in json.dumps(launch.to_json())
 
 
 def test_codex_interactive_launch_uses_isolated_native_tui_state(

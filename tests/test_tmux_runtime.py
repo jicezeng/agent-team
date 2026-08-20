@@ -58,7 +58,14 @@ def test_worker_environment_injects_only_adapter_references(
     )
 
     class Adapter:
-        def worker_environment_names(self, *, run_dir: Path, role_id: str):
+        def worker_environment_names(
+            self,
+            *,
+            run_dir: Path,
+            role_id: str,
+            options=None,
+        ):
+            del options
             assert run_dir == tmp_path / "run"
             assert role_id == "developer"
             return ("PROVIDER_API_KEY", "PROVIDER_BASE_URL")
@@ -114,6 +121,52 @@ def test_worker_environment_rejects_a_missing_reference(
 
     assert rejected.value.code == "HARNESS_ENVIRONMENT_UNAVAILABLE"
     assert "MISSING_PROVIDER_KEY" in rejected.value.message
+
+
+def test_codex_worker_environment_uses_only_frozen_provider_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    role = Role(
+        "developer",
+        "external",
+        "codex",
+        "resume",
+        "full-access",
+        "0" * 64,
+        "proxy-model",
+        "high",
+        False,
+        "interactive",
+        None,
+        "company_proxy",
+        {
+            "base_url": "https://proxy.example.test/v1",
+            "env_key": "COMPANY_PROXY_API_KEY",
+            "env_http_headers": {"X-Tenant": "COMPANY_TENANT"},
+            "wire_api": "responses",
+        },
+    )
+    monkeypatch.setenv("COMPANY_PROXY_API_KEY", "provider-secret")
+    monkeypatch.setenv("COMPANY_TENANT", "tenant-secret")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-forwarded")
+
+    arguments, sensitive_values = tmux_runtime._worker_environment_args(
+        run_dir,
+        role,
+    )
+
+    assert arguments == (
+        "-e",
+        "COMPANY_PROXY_API_KEY=provider-secret",
+        "-e",
+        "COMPANY_TENANT=tenant-secret",
+    )
+    assert "must-not-be-forwarded" not in arguments
+    assert sensitive_values == ("provider-secret", "tenant-secret")
+    assert not tuple(run_dir.iterdir())
 
 
 def test_tmux_failure_redacts_injected_environment_values(

@@ -143,10 +143,10 @@ DSH External roles are interactive-only; restricted Profiles sandbox writes to
 the workspace but inherit host reads, process execution, and network access.
 
 Agent-Team freezes its requested mapping in `launch_profile_sha256`, isolates
-OpenCode project config and external plugins, safely snapshots only a selected
-custom OpenCode provider when needed, and forwards only that snapshot's
-referenced environment variables to the role Worker without writing their
-values into Run records. It also sets Codex
+OpenCode project config and external plugins, and safely snapshots a selected
+custom OpenCode or Codex provider when needed. Only the snapshot's referenced
+environment variables reach the role Worker; their values never enter Run
+records. Agent-Team also sets Codex
 `features.hooks=false`, but Managed Harness policy can still change or
 reject the effective configuration. Inspect `doctor` output and administrator
 policy when a permission boundary matters.

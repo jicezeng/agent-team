@@ -25,6 +25,8 @@ def launch_context(
     model: str | None = None,
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
+    model_provider: str | None = None,
+    model_provider_config: dict[str, object] | None = None,
     launch_mode: str = "headless",
     workspace: str = "/tmp/workspace",
     turn_dir: str = ("/tmp/workspace/.agent-team/runs/at-adapter-test/turns/turn-0001"),
@@ -51,4 +53,6 @@ def launch_context(
         reasoning_effort=reasoning_effort,
         fast_mode=fast_mode,
         launch_mode=launch_mode,
+        model_provider=model_provider,
+        model_provider_config=model_provider_config,
     )

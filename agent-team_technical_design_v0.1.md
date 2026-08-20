@@ -814,7 +814,7 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "run_id": "at-20260725-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -835,8 +835,11 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
       "harness_options": {
         "model": null,
         "reasoning_effort": null,
-        "fast_mode": null
-      }
+        "fast_mode": null,
+        "model_provider": null,
+        "model_provider_config": null
+      },
+      "dsh_plugin": null
     }
   },
   "initial_role": "developer",
@@ -867,7 +870,8 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 - `binding=origin` 不允许出现 `adapter`、`session_policy` 或 `launch_profile`；
 - `binding=external` 必须同时提供 `adapter`、`session_policy=resume|fresh`、
   `launch_mode=interactive|headless`、`launch_profile`、
-  `launch_profile_sha256` 和闭合的 `harness_options`。新建 Role 默认
+  `launch_profile_sha256`、闭合的 `harness_options` 和可空的 `dsh_plugin`；后者仅
+  DeepSeek Harness Role 可非空。新建 Role 默认
   `interactive`；Schema 1–3 的既有配置规范化为 `headless`，升级不得改变历史 Run
   的启动方式。DeepSeek Harness Adapter 只接受 `interactive`，其他 Adapter 可接受
   显式 `headless`。
@@ -876,9 +880,22 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 `null`；OpenCode Model 必须是非空 `provider/model`，Reasoning Effort 可为
 Provider-specific Variant 字符串或 `null`；DeepSeek Harness Model 必须是非空
 `provider/model`，Reasoning Effort 必须是 `off|high|max`。`fast_mode` 的 Schema 对
-Codex 接受布尔值或 `null`，其他 Adapter 必须为 `null`。显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
+Codex 接受布尔值或 `null`，其他 Adapter 必须为 `null`。
+`model_provider` 与 `model_provider_config` 仅允许 Codex Role 使用。Schema 6 Codex
+Role 的前者必须是非空 Provider ID；后者是由 Adapter 解析并冻结的闭合结构，调用方
+不能直接提供。省略
+`--role-model-provider` 时，`init` 读取 Codex 用户配置中的有效 `model_provider`，缺失
+则冻结为内建 `openai`。显式选择自定义 Provider 时，该 ID 必须已存在于同一用户的
+Codex `config.toml`。内建 Provider 不允许附加定义；自定义 Provider 必须冻结非空
+HTTP(S) `base_url`，并且只允许 `name`、`env_key`、`env_http_headers`、
+`requires_openai_auth`、`wire_api=responses`、重试/超时和能力标志。Adapter 忽略仅供人
+阅读的 `env_key_instructions`，拒绝明文 Bearer Token、静态 Header/Query、可执行 Auth
+Command、未知字段，以及含凭据、Query 或 Fragment 的 URL。
+
+显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
 Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用的值。Codex 只读取 `model`、
-`model_reasoning_effort`、`service_tier` 和 `features.fast_mode`；Claude Code 先读取
+`model_reasoning_effort`、`service_tier`、`features.fast_mode`、`model_provider` 及所选
+Provider 的安全定义；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
 `model` / `effortLevel`。OpenCode 在目标 Workspace 禁用 Project Config 后通过
 `debug config --pure` 只解析
@@ -887,7 +904,7 @@ Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用
 `deepseek-official/deepseek-v4-flash` 与 `high`。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
 Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
 冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
-CLI 新建 Schema 4 Codex Role 时则把 Fast
+CLI 新建 Schema 6 Codex Role 时则把 Fast
 Mode 冻结为有效布尔值：用户配置的 `service_tier="fast"` 且
 `features.fast_mode` 未显式关闭时为 `true`，其他情况为 `false`；`null` 只保留为
 Schema 兼容值，表示不增加 Fast Mode 启动覆盖。不得为了继承这些选择而加载用户
@@ -911,7 +928,8 @@ Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_s
 是大小写不敏感、不可重复的 Markdown 标题闭集；Full Audit 至少要求
 `Decision rationale` 与 `Evidence`。Schema 1 的历史 Run 继续按
 `redaction=none, raw_retention=keep` 读取；Schema 1/2 External Role 的
-Harness Options 继续按未冻结的历史语义读取，不就地改写 `team.json`。
+Harness Options 继续按未冻结的历史语义读取，Schema 3–5 的 Codex Role 没有冻结
+Provider 合同；这些历史 Run 都不就地改写 `team.json`。
 
 外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex、Claude Code、OpenCode 与 DeepSeek Harness 当前都提供 `default | trusted-workspace | full-access`：
 
@@ -986,7 +1004,7 @@ Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交
 `full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言
 职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
-`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。Codex Interactive Adapter 还加入私有 Home 配置合同版本，其中包括按冻结角色 Model 预置原生 Model Availability NUX 状态；OpenCode Adapter 把基础 Inline Config、隔离环境合同、Provider 快照机制版本与“只向 Worker 注入快照所引用环境变量”的桥接合同加入第二层长度前缀摘要；具体 User Provider 内容不属于权限 Profile Hash，而由 Role 私有不可变快照固定并进入逐 Turn LaunchSpec。DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
+`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。Codex Adapter 加入“冻结 Provider 定义、只桥接其环境变量引用”的合同版本；Interactive Adapter 还加入私有 Home 配置合同版本，其中包括按冻结角色 Model 预置原生 Model Availability NUX 状态。OpenCode Adapter 把基础 Inline Config、隔离环境合同、Provider 快照机制版本与“只向 Worker 注入快照所引用环境变量”的桥接合同加入第二层长度前缀摘要。具体 User Provider 内容不属于权限 Profile Hash，而由 Role 私有不可变快照固定并进入逐 Turn LaunchSpec。DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
 Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `workspace` 为工作目录。需要修改多个根目录时必须拆成多个 Run 或等待后续版本，不能只锁其中一个目录。
 
@@ -2161,6 +2179,16 @@ Profile Changed fail-closed。
   留下空 `config.toml`。`prepare_run_state()` 只允许把这一种空文件受控替换为当前
   最小配置；预置 NUX 的 Model、终态计数、Workspace Trust 或任何其他内容发生变化都严格
   Fail Closed，内容非空、Marker 不匹配或 Run 已启动时也不得迁移或覆盖；
+- `init` 把显式 `--role-model-provider` 或用户 Codex 默认 Provider 冻结进
+  `team.json`。自定义 Provider 只从用户 `config.toml` 抽取 13.1 允许的安全结构和
+  Credential 环境变量名；不复制整个用户配置，也不把环境变量值写入 Run Store。
+  Provider 引用的每个环境变量在 Kickoff 前必须非空，创建该 Role 的 tmux Worker 时
+  仅把这些变量注入其 Window，并把值加入启动错误脱敏集合；
+- Start 与 Resume 都通过最高优先级 `-c model_provider=...` 和
+  `-c model_providers.<id>.<field>=...` 重放同一冻结定义。自定义 Provider 当前只接受
+  Responses Wire API。`openai` 或 `requires_openai_auth=true` 仍要求 Codex Login；仅用
+  环境变量认证的自定义 Provider 不复制或验证 OpenAI `auth.json`，Interactive 私有
+  Home 仍只保存 Trust 与 Model Availability NUX 配置；
 - 冻结的 `model` 通过 `--model` 应用于 Start / Resume，Reasoning Effort 通过 `model_reasoning_effort` 覆盖；`fast_mode=true` 同时启用 `features.fast_mode` 并设置 `service_tier="fast"`；
 - 可通过 `-o` 保存最终消息到本 Turn 的 `output.md`，但它只用于诊断，不产生 Handoff、Completion 或正常完成证据。
 - Interactive 使用 `--no-alt-screen` 便于 tmux 保留可观察历史；Fresh Session Ref 从
@@ -2896,7 +2924,7 @@ Event 是唯一语义提交点，但恢复判断还依赖完整的技术快照�
 版本值必须是精确的非 Boolean JSON Integer，`true`、`1.0`、字符串或缺失值均不兼容；
 不支持的版本明确失败，不根据 Pane、日志、当前 Workspace 或相邻快照猜测缺失字段，
 也不就地改写已经提交的 Run JSON。允许的兼容行为必须逐项写入规范并使用闭合前置
-条件：Schema 1–3 `team.json` 的只读规范化、LaunchSpec Schema 1 的 Headless 读取，
+条件：Schema 1–5 `team.json` 缺失后续版本字段时的只读规范化、LaunchSpec Schema 1 的 Headless 读取，
 以及 Team Schema 1 Runtime 缺少 `trace_manifest_sha256` 时只在内存中补为
 `null`。后一项不会伪造 Manifest；Schema 2+ Team 中已经执行并 Finalize 的 External
 Turn 仍必须具有非空 Anchor。Adapter 私有状态的受控迁移另按 17.4 执行，不属于 Run
@@ -3053,6 +3081,7 @@ agent-team init \
   --protocol <path> \
   --role <role-spec> [--role <role-spec> ...] \
   [--role-model <role-id>=<model>] \
+  [--role-model-provider <role-id>=<provider>] \
   [--role-reasoning-effort <role-id>=<effort>] \
   [--role-fast <role-id>] \
   [--role-launch-mode <role-id>=<interactive|headless>] \
@@ -3505,8 +3534,10 @@ Status/Diagnose/Watch 的共同信封为：
         "launch_profile": "full-access",
         "launch_profile_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "model": null,
+        "model_provider": null,
         "reasoning_effort": null,
         "fast_mode": null,
+        "dsh_plugin": null,
         "state": "running",
         "worker_pid": 12345,
         "worker_start_id": "os-process-start-id",
@@ -3526,8 +3557,10 @@ Status/Diagnose/Watch 的共同信封为：
         "launch_profile": null,
         "launch_profile_sha256": null,
         "model": null,
+        "model_provider": null,
         "reasoning_effort": null,
         "fast_mode": null,
+        "dsh_plugin": null,
         "state": "idle",
         "worker_pid": null,
         "worker_start_id": null,
@@ -4207,9 +4240,9 @@ sequenceDiagram
 
 - Run ID 和 Role ID；
 - `team.json` 的 Run 目录、State Root Workspace、非空 Roles、Initial Role 和固定 Origin Mode 交叉校验；
-- Schema 1/2 兼容语义、Schema 3 Harness Options，以及 Schema 4 Launch Mode、
-  Audit Mode、Redaction、Byte Limit、Raw Retention、Required Payload Sections 和 Full Audit
-  External-only 约束；
+- Schema 1/2 兼容语义、Schema 3 Harness Options、Schema 4 Launch Mode、Schema 5
+  DSH Plugin，以及 Schema 6 Codex Model Provider；Audit Mode、Redaction、Byte Limit、
+  Raw Retention、Required Payload Sections 和 Full Audit External-only 约束；
 - Protocol 模板区分宿主/Agent-Team 指令层级与事实证据层级；
 - 不可变 Event 原子提交；
 - Event 序号、Tail 链接和 Payload Hash；
@@ -4696,7 +4729,7 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "run_id": "at-feature-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -4717,8 +4750,11 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
       "harness_options": {
         "model": null,
         "reasoning_effort": null,
-        "fast_mode": null
-      }
+        "fast_mode": null,
+        "model_provider": null,
+        "model_provider_config": null
+      },
+      "dsh_plugin": null
     }
   },
   "initial_role": "developer",

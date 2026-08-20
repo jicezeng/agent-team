@@ -297,6 +297,7 @@ class OpenCodeAdapter(HarnessAdapter):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        model_provider: str | None = None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
         resolved_model = (
@@ -306,6 +307,7 @@ class OpenCodeAdapter(HarnessAdapter):
             model=resolved_model,
             reasoning_effort=reasoning_effort,
             fast_mode=fast_mode,
+            model_provider=model_provider,
         )
         self.assert_launch_options(options)
         return options
@@ -326,6 +328,13 @@ class OpenCodeAdapter(HarnessAdapter):
             )
         if options.fast_mode is not None:
             raise InvalidArgument("fast mode is only supported by the codex adapter")
+        if (
+            options.model_provider is not None
+            or options.model_provider_config is not None
+        ):
+            raise InvalidArgument(
+                "model provider is only supported by the codex adapter"
+            )
 
     @staticmethod
     def _config_home(run_dir: Path, role_id: str) -> Path:
@@ -522,7 +531,9 @@ class OpenCodeAdapter(HarnessAdapter):
         *,
         run_dir: Path,
         role_id: str,
+        options: HarnessLaunchOptions | None = None,
     ) -> tuple[str, ...]:
+        del options
         home = self._config_home(run_dir, role_id)
         snapshot = self._read_provider_snapshot(
             run_dir=run_dir,
@@ -700,6 +711,8 @@ class OpenCodeAdapter(HarnessAdapter):
             model=context.model,
             reasoning_effort=context.reasoning_effort,
             fast_mode=context.fast_mode,
+            model_provider=context.model_provider,
+            model_provider_config=context.model_provider_config,
         )
         self.assert_launch_options(options)
         home, provider_snapshot = self._assert_config_home(context)

@@ -61,6 +61,13 @@ class _BootstrapAdapter:
         assert options.reasoning_effort is None
         assert options.fast_mode is None
 
+    def assert_launch_prerequisites(self, options: Any) -> None:
+        self.assert_launch_options(options)
+
+    def authentication_required(self, options: Any) -> bool:
+        self.assert_launch_options(options)
+        return True
+
     def prepare_run_state(
         self,
         *,

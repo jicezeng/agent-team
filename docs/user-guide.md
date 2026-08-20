@@ -214,15 +214,18 @@ a Session for each Turn. External roles default to `interactive` launch and
 
 ```text
 --role-model ROLE=MODEL
+--role-model-provider ROLE=PROVIDER
 --role-reasoning-effort ROLE=EFFORT
 --role-fast ROLE
 --role-launch-mode ROLE=<interactive|headless>
 --role-dsh-plugin ROLE=<workspace-package-directory>
 ```
 
-Omitted model and effort values inherit the relevant Harness default at
-`init`, then Agent-Team freezes the requested result in `team.json`. OpenCode
-models must resolve to `provider/model`; its effort value is passed as the
+Omitted model, Codex Provider, and effort values inherit the relevant Harness
+default at `init`, then Agent-Team freezes the requested result in `team.json`.
+`--role-model-provider` is Codex-only and accepts a Provider ID already defined
+in the user's Codex `config.toml`; it never accepts a URL or credential.
+OpenCode models must resolve to `provider/model`; its effort value is passed as the
 provider-specific model Variant. If the effective OpenCode default is absent
 or unqualified, supply `--role-model ROLE=provider/model` explicitly. The same
 frozen OpenCode model is used for its primary agent and lightweight title
@@ -235,8 +238,36 @@ config drift still fails closed.
 DSH models also use `provider/model`; its default is
 `deepseek-official/deepseek-v4-flash`, and effort is `off`, `high`, or `max`.
 `--role-fast` is Codex-only. DSH External roles support only `interactive`;
-requesting `headless` fails before Kickoff. Launch mode, Profile, model, effort,
-and fast mode cannot change after Kickoff.
+requesting `headless` fails before Kickoff. Launch mode, Profile, model, Codex
+Provider, effort, and fast mode cannot change after Kickoff.
+
+For a custom Codex Provider, Agent-Team freezes only its safe structural
+definition: display name, HTTP(S) base URL, Responses wire API, retry/timeout
+and capability flags, plus `env_key` and `env_http_headers` environment
+variable names. It rejects literal bearer tokens, static headers/query
+parameters, executable auth commands, unsupported fields, and URLs containing
+credentials. The referenced variables must be non-empty when the Run starts;
+only those names and their current values are bridged into the role's tmux
+Worker. Values are never written to `team.json`, a LaunchSpec, Journal, or
+trace. The built-in `openai` Provider continues to require Codex login; a
+custom environment-authenticated Provider does not. Start and Resume both
+receive the same frozen `model_provider` and Provider definition through
+explicit high-priority Codex config overrides.
+
+For example, define the Provider locally without embedding its key:
+
+```toml
+# ~/.codex/config.toml
+[model_providers.company_proxy]
+name = "Company Proxy"
+base_url = "https://proxy.example.com/v1"
+env_key = "COMPANY_PROXY_API_KEY"
+wire_api = "responses"
+```
+
+Then export `COMPANY_PROXY_API_KEY` in the shell that starts Agent-Team and add
+both `--role-model reviewer=proxy-model` and
+`--role-model-provider reviewer=company_proxy` to `agent-team init`.
 
 `--role-dsh-plugin` is DSH-only and declares one installable bundle directory
 inside the Run worktree. Agent-Team does not snapshot it at `init`: when that

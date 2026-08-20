@@ -38,8 +38,8 @@ existing Run:
 1. Preserve the user's exact request in a local `REQUEST.md`.
 2. Extract dynamic roles, Origin/External bindings, external adapters, session
    policies, initial role, handoff/loop rules, completion authority, final
-   delivery, safety limits, and any model, reasoning-effort, or Codex fast-mode
-   choices the user explicitly made.
+   delivery, safety limits, and any model, reasoning-effort, Codex model
+   provider, or Codex fast-mode choices the user explicitly made.
 3. Reject true parallel fan-out/join, multiple workspaces, non-Git roots,
    missing completion conditions, unavailable Harnesses, or dangerous
    ambiguity. Do not silently serialize a requested parallel topology.
@@ -80,10 +80,16 @@ existing Run:
    requirements do not force managed hooks or add log effects; an incompatible
    requirement can reject the selected Profile and must not be bypassed.
 6. Add `--role-model <role>=<model>`,
-   `--role-reasoning-effort <role>=<effort>`, or `--role-fast <role>` only for
+   `--role-reasoning-effort <role>=<effort>`,
+   `--role-model-provider <role>=<provider>`, or `--role-fast <role>` only for
    choices the user explicitly made. Do not infer these choices from role names
    or task complexity. Omit each unspecified option so `init` snapshots that
-   Harness user's default for the field. `--role-fast` is Codex-only.
+   Harness user's default for the field. `--role-model-provider` and
+   `--role-fast` are Codex-only. A selected custom Codex Provider must already
+   exist in that user's Codex `config.toml`; pass only its Provider ID. Never
+   put an endpoint credential, token, header value, or environment value in the
+   Agent-Team CLI, Request, or Protocol. Agent-Team freezes the safe Provider
+   structure and referenced environment variable names itself.
    OpenCode Model IDs must resolve to `provider/model`; its reasoning-effort
    value is a provider-specific Variant. Supply an explicit OpenCode Model when
    Doctor reports an absent or unqualified user default.
@@ -200,8 +206,8 @@ step 5 has already occurred; never pass it speculatively.
 ```
 
 Limit/Profile Changed Blocks and changes to the Request, Protocol, roles,
-bindings, workspace, launch mode, profile, model, reasoning effort, fast mode,
-or limits require Cancel plus a new Run.
+bindings, workspace, launch mode, profile, model, model provider, reasoning
+effort, fast mode, or limits require Cancel plus a new Run.
 
 ## Structured control
 

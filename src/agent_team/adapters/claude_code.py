@@ -581,6 +581,13 @@ class ClaudeCodeAdapter(HarnessAdapter):
             )
         if options.fast_mode is not None:
             raise InvalidArgument("fast mode is only supported by the codex adapter")
+        if (
+            options.model_provider is not None
+            or options.model_provider_config is not None
+        ):
+            raise InvalidArgument(
+                "model provider is only supported by the codex adapter"
+            )
 
     @staticmethod
     def _user_settings_path() -> Path:
@@ -691,12 +698,14 @@ class ClaudeCodeAdapter(HarnessAdapter):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        model_provider: str | None = None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
         explicit = HarnessLaunchOptions(
             model=model,
             reasoning_effort=reasoning_effort,
             fast_mode=fast_mode,
+            model_provider=model_provider,
         )
         self.assert_launch_options(explicit)
         defaults = (
@@ -730,6 +739,8 @@ class ClaudeCodeAdapter(HarnessAdapter):
             model=context.model,
             reasoning_effort=context.reasoning_effort,
             fast_mode=context.fast_mode,
+            model_provider=context.model_provider,
+            model_provider_config=context.model_provider_config,
         )
         self.assert_launch_options(options)
         runtime_home: Path | None = None

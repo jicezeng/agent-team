@@ -1002,6 +1002,8 @@ def _launch_turn(
         reasoning_effort=role.reasoning_effort,
         fast_mode=role.fast_mode,
         launch_mode=role.launch_mode or "headless",
+        model_provider=role.model_provider,
+        model_provider_config=role.model_provider_config,
     )
     try:
         launch = adapter.prepare_launch(context)

@@ -46,6 +46,8 @@ def test_init_parser_accepts_role_scoped_harness_options() -> None:
             "reviewer=codex:resume:default",
             "--role-model",
             "developer=opus",
+            "--role-model-provider",
+            "reviewer=company_proxy",
             "--role-reasoning-effort",
             "reviewer=max",
             "--role-fast",
@@ -60,6 +62,10 @@ def test_init_parser_accepts_role_scoped_harness_options() -> None:
     assert _role_value_options(args.role_model, option="--role-model") == {
         "developer": "opus"
     }
+    assert _role_value_options(
+        args.role_model_provider,
+        option="--role-model-provider",
+    ) == {"reviewer": "company_proxy"}
     assert _role_value_options(
         args.role_reasoning_effort,
         option="--role-reasoning-effort",
@@ -152,6 +158,7 @@ def test_status_resolves_active_owner_without_run_id_and_is_read_only(
     result = json.loads(capsys.readouterr().out)
     assert result["result"] == "ok"
     assert result["data"]["run_id"] == run_dir.name
+    assert result["data"]["roles"][0]["model_provider"] is None
     assert _tree_mtimes(run_dir) == before
 
 
@@ -189,6 +196,7 @@ def test_status_exposes_frozen_external_role_launch_configuration(
     assert role["launch_profile"] == "test-noninteractive"
     assert role["launch_profile_sha256"] == "0" * 64
     assert role["model"] is None
+    assert role["model_provider"] == "openai"
     assert role["reasoning_effort"] is None
     assert role["fast_mode"] is None
 

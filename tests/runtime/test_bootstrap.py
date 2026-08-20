@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_team.bootstrap import initialize_run
+from agent_team.bootstrap import _assert_external_capability, initialize_run
 from agent_team.config import (
     Role,
     make_team,
@@ -140,3 +140,30 @@ def test_init_rejects_unauthenticated_external_harness(
 
     assert rejected.value.code == "HARNESS_NOT_AUTHENTICATED"
     assert not (workspace / ".agent-team").exists()
+
+
+def test_capability_allows_provider_route_without_harness_account_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _BootstrapAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "probe",
+        lambda: SimpleNamespace(
+            authenticated=False,
+            launcher_stays_in_process_group=True,
+        ),
+    )
+    monkeypatch.setattr(adapter, "authentication_required", lambda _options: False)
+    monkeypatch.setattr("agent_team.bootstrap.get_adapter", lambda _adapter: adapter)
+    role = Role(
+        "developer",
+        "external",
+        "codex",
+        "fresh",
+        PROFILE,
+        PROFILE_HASH,
+        launch_mode="headless",
+    )
+
+    _assert_external_capability(role)

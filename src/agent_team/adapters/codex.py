@@ -8,7 +8,14 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from agent_team.config import CODEX_REASONING_EFFORTS, valid_model_id
+from agent_team.config import (
+    CODEX_BUILTIN_MODEL_PROVIDERS,
+    CODEX_MODEL_PROVIDER_CONFIG_KEYS,
+    CODEX_REASONING_EFFORTS,
+    codex_model_provider_config_error,
+    valid_model_id,
+    valid_model_provider_id,
+)
 from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 from agent_team.state import fixed_state_dir
 from agent_team.util import (
@@ -39,6 +46,7 @@ from .base import (
 # Interactive Run homes preseed that terminal state so native TUI bookkeeping
 # cannot mutate the otherwise frozen security-boundary config between Turns.
 _MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT = 4
+_IGNORED_MODEL_PROVIDER_FIELDS = frozenset({"env_key_instructions"})
 
 
 class CodexAdapter(HarnessAdapter):
@@ -130,12 +138,15 @@ class CodexAdapter(HarnessAdapter):
         launch_mode: str = "headless",
     ) -> str:
         base = super().profile_fingerprint(profile, session_policy, launch_mode)
-        if launch_mode != "interactive":
-            return base
-        components = (
+        components = [
             base.encode("utf-8"),
-            b"codex-interactive-home-v3:frozen-model-availability-nux-terminal-count-4",
-        )
+            b"codex-frozen-model-provider-v1:env-name-only-bridge",
+        ]
+        if launch_mode == "interactive":
+            components.append(
+                b"codex-interactive-home-v3:"
+                b"frozen-model-availability-nux-terminal-count-4"
+            )
         framed = b"".join(
             len(component).to_bytes(8, "big") + component for component in components
         )
@@ -156,23 +167,41 @@ class CodexAdapter(HarnessAdapter):
         }
 
     @classmethod
-    def _role_model(cls, run_dir: Path, role_id: str) -> str | None:
+    def _role_launch_options(
+        cls,
+        run_dir: Path,
+        role_id: str,
+    ) -> HarnessLaunchOptions:
         team = read_json(run_dir / "team.json")
         roles = team.get("roles")
         role = roles.get(role_id) if isinstance(roles, dict) else None
         adapter = role.get("adapter") if isinstance(role, dict) else None
         options = role.get("harness_options") if isinstance(role, dict) else None
-        model = options.get("model") if isinstance(options, dict) else None
         if adapter != cls.adapter_id:
             raise IntegrityError(
                 f"Codex interactive state has an invalid role: {role_id}"
             )
-        if model is not None and not valid_model_id(model):
+        if not isinstance(options, dict):
+            return HarnessLaunchOptions()
+        launch_options = HarnessLaunchOptions(
+            model=options.get("model"),
+            reasoning_effort=options.get("reasoning_effort"),
+            fast_mode=options.get("fast_mode"),
+            model_provider=options.get("model_provider"),
+            model_provider_config=options.get("model_provider_config"),
+        )
+        try:
+            cls().assert_launch_options(launch_options)
+        except InvalidArgument as exc:
             raise IntegrityError(
-                f"Codex interactive state has an invalid role Model: {role_id}"
-            )
-        assert model is None or isinstance(model, str)
-        return model
+                f"Codex runtime state has invalid launch options for {role_id}: "
+                f"{exc.message}"
+            ) from exc
+        return launch_options
+
+    @classmethod
+    def _role_model(cls, run_dir: Path, role_id: str) -> str | None:
+        return cls._role_launch_options(run_dir, role_id).model
 
     @classmethod
     def _interactive_config(cls, run_dir: Path, role_id: str) -> bytes:
@@ -311,6 +340,8 @@ class CodexAdapter(HarnessAdapter):
             role_id=role_id,
             launch_mode=launch_mode,
         )
+        options = self._role_launch_options(run_dir, role_id)
+        self.assert_launch_prerequisites(options)
         if launch_mode != "interactive":
             return
         home = self._ensure_private_interactive_home(run_dir, role_id)
@@ -327,6 +358,8 @@ class CodexAdapter(HarnessAdapter):
         # confirmation without importing mutable user MCP, Hook, Plugin, or
         # permission settings into this Run-owned interactive home.
         self._prepare_interactive_config(run_dir, role_id, home)
+        if not self.authentication_required(options):
+            return
         source_auth = self._source_codex_home() / "auth.json"
         target_auth = home / "auth.json"
         if path_entry_exists(source_auth):
@@ -561,6 +594,87 @@ class CodexAdapter(HarnessAdapter):
             options.fast_mode, bool
         ):
             raise InvalidArgument("codex fast mode must be a boolean")
+        provider = options.model_provider
+        provider_config = options.model_provider_config
+        if provider is not None and not valid_model_provider_id(provider):
+            raise InvalidArgument(
+                "codex model provider must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+            )
+        if provider_config is not None:
+            if provider is None:
+                raise InvalidArgument("codex model provider config has no provider id")
+            error = codex_model_provider_config_error(provider_config)
+            if error is not None:
+                raise InvalidArgument(f"codex model provider config {error}")
+        if (
+            provider in CODEX_BUILTIN_MODEL_PROVIDERS
+            and provider_config is not None
+        ):
+            raise InvalidArgument(
+                f"codex built-in model provider {provider!r} cannot be overridden"
+            )
+        if (
+            provider is not None
+            and provider not in CODEX_BUILTIN_MODEL_PROVIDERS
+            and provider_config is None
+        ):
+            raise InvalidArgument(
+                f"codex custom model provider {provider!r} has no frozen definition"
+            )
+
+    @staticmethod
+    def authentication_required(options: HarnessLaunchOptions) -> bool:
+        if options.model_provider in {None, "openai"}:
+            return True
+        config = options.model_provider_config
+        return isinstance(config, dict) and config.get("requires_openai_auth") is True
+
+    @staticmethod
+    def _provider_environment_names(
+        options: HarnessLaunchOptions,
+    ) -> tuple[str, ...]:
+        config = options.model_provider_config
+        if not isinstance(config, dict):
+            return ()
+        names: set[str] = set()
+        env_key = config.get("env_key")
+        if isinstance(env_key, str):
+            names.add(env_key)
+        headers = config.get("env_http_headers")
+        if isinstance(headers, dict):
+            names.update(
+                name for name in headers.values() if isinstance(name, str)
+            )
+        return tuple(sorted(names))
+
+    def assert_launch_prerequisites(self, options: HarnessLaunchOptions) -> None:
+        self.assert_launch_options(options)
+        for name in self._provider_environment_names(options):
+            if not os.environ.get(name):
+                raise AgentTeamError(
+                    "HARNESS_ENVIRONMENT_UNAVAILABLE",
+                    f"Codex model provider {options.model_provider!r} requires "
+                    f"non-empty environment variable {name!r}",
+                )
+        if (
+            self.authentication_required(options)
+            and self.authentication_status() is False
+        ):
+            raise AgentTeamError(
+                "HARNESS_NOT_AUTHENTICATED",
+                "codex is not authenticated for the selected model provider",
+            )
+
+    def worker_environment_names(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        options: HarnessLaunchOptions | None = None,
+    ) -> tuple[str, ...]:
+        selected = options or self._role_launch_options(run_dir, role_id)
+        self.assert_launch_options(selected)
+        return self._provider_environment_names(selected)
 
     @staticmethod
     def _user_config_path() -> Path:
@@ -578,26 +692,39 @@ class CodexAdapter(HarnessAdapter):
         include_model: bool,
         include_reasoning_effort: bool,
         include_fast_mode: bool,
+        include_model_provider: bool,
+        selected_model_provider: str | None,
     ) -> HarnessLaunchOptions:
+        needs_custom_provider = (
+            not include_model_provider
+            and selected_model_provider not in CODEX_BUILTIN_MODEL_PROVIDERS
+        )
+        if not (
+            include_model
+            or include_reasoning_effort
+            or include_fast_mode
+            or include_model_provider
+            or needs_custom_provider
+        ):
+            return HarnessLaunchOptions(model_provider=selected_model_provider)
         path = self._user_config_path()
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
-            return HarnessLaunchOptions(
-                fast_mode=False if include_fast_mode else None
-            )
+            value: dict[str, object] = {}
         except OSError as exc:
             raise AgentTeamError(
                 "HARNESS_USER_CONFIG_UNREADABLE",
                 f"cannot read Codex user config {path}: {exc}",
             ) from exc
-        try:
-            value = tomllib.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise AgentTeamError(
-                "HARNESS_USER_CONFIG_INVALID",
-                f"Codex user config is invalid: {path}",
-            ) from exc
+        else:
+            try:
+                value = tomllib.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Codex user config is invalid: {path}",
+                ) from exc
         model = value.get("model") if include_model else None
         effort = (
             value.get("model_reasoning_effort")
@@ -606,6 +733,11 @@ class CodexAdapter(HarnessAdapter):
         )
         service_tier = value.get("service_tier") if include_fast_mode else None
         features = value.get("features", {}) if include_fast_mode else {}
+        provider = (
+            value.get("model_provider", "openai")
+            if include_model_provider
+            else selected_model_provider
+        )
         if model is not None and not isinstance(model, str):
             raise AgentTeamError(
                 "HARNESS_USER_CONFIG_INVALID",
@@ -626,6 +758,52 @@ class CodexAdapter(HarnessAdapter):
                 "HARNESS_USER_CONFIG_INVALID",
                 "Codex user config features must be a table",
             )
+        if not valid_model_provider_id(provider):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Codex user config model_provider must be a valid provider id",
+            )
+        assert isinstance(provider, str)
+        provider_config: dict[str, object] | None = None
+        providers = value.get("model_providers", {})
+        if provider in CODEX_BUILTIN_MODEL_PROVIDERS:
+            if isinstance(providers, dict) and provider in providers:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Codex built-in model provider {provider!r} cannot be overridden",
+                )
+        else:
+            if not isinstance(providers, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    "Codex user config model_providers must be a table",
+                )
+            configured = providers.get(provider)
+            if not isinstance(configured, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Codex model provider {provider!r} is not defined",
+                )
+            unsupported = (
+                set(configured)
+                - CODEX_MODEL_PROVIDER_CONFIG_KEYS
+                - _IGNORED_MODEL_PROVIDER_FIELDS
+            )
+            if unsupported:
+                raise AgentTeamError(
+                    "HARNESS_PROVIDER_CONFIG_UNSUPPORTED",
+                    f"Codex model provider {provider!r} uses unsupported or "
+                    "secret-bearing fields: "
+                    + ", ".join(sorted(unsupported)),
+                )
+            provider_config = {
+                key: (
+                    dict(sorted(item.items())) if isinstance(item, dict) else item
+                )
+                for key, item in configured.items()
+                if key in CODEX_MODEL_PROVIDER_CONFIG_KEYS
+            }
+            provider_config.setdefault("wire_api", "responses")
         feature_enabled = features.get("fast_mode", True)
         if not isinstance(feature_enabled, bool):
             raise AgentTeamError(
@@ -638,8 +816,10 @@ class CodexAdapter(HarnessAdapter):
             fast_mode=(
                 service_tier == "fast" and feature_enabled
                 if include_fast_mode
-                else None
+                else False
             ),
+            model_provider=provider,
+            model_provider_config=provider_config,
         )
         try:
             self.assert_launch_options(options)
@@ -656,22 +836,26 @@ class CodexAdapter(HarnessAdapter):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        model_provider: str | None = None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
+        del workspace
         explicit = HarnessLaunchOptions(
             model=model,
             reasoning_effort=reasoning_effort,
             fast_mode=fast_mode,
         )
         self.assert_launch_options(explicit)
-        defaults = (
-            self._user_launch_options(
-                include_model=model is None,
-                include_reasoning_effort=reasoning_effort is None,
-                include_fast_mode=fast_mode is None,
+        if model_provider is not None and not valid_model_provider_id(model_provider):
+            raise InvalidArgument(
+                "codex model provider must match [A-Za-z0-9][A-Za-z0-9_-]{0,63}"
             )
-            if model is None or reasoning_effort is None or fast_mode is None
-            else HarnessLaunchOptions()
+        defaults = self._user_launch_options(
+            include_model=model is None,
+            include_reasoning_effort=reasoning_effort is None,
+            include_fast_mode=fast_mode is None,
+            include_model_provider=model_provider is None,
+            selected_model_provider=model_provider,
         )
         options = HarnessLaunchOptions(
             model=model if model is not None else defaults.model,
@@ -683,9 +867,49 @@ class CodexAdapter(HarnessAdapter):
             fast_mode=(
                 fast_mode if fast_mode is not None else defaults.fast_mode
             ),
+            model_provider=defaults.model_provider,
+            model_provider_config=defaults.model_provider_config,
         )
         self.assert_launch_options(options)
         return options
+
+    @classmethod
+    def _toml_literal(cls, value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, dict):
+            entries = []
+            for key, item in sorted(value.items()):
+                if not isinstance(key, str):
+                    raise IntegrityError("Codex provider config key is not a string")
+                entries.append(
+                    f"{json.dumps(key, ensure_ascii=False)} = "
+                    f"{cls._toml_literal(item)}"
+                )
+            return "{ " + ", ".join(entries) + " }"
+        raise IntegrityError("Codex provider config contains an unsupported value")
+
+    @classmethod
+    def _provider_selection(cls, options: HarnessLaunchOptions) -> list[str]:
+        provider = options.model_provider
+        if provider is None:
+            return []
+        selection = ["-c", f"model_provider={cls._toml_literal(provider)}"]
+        config = options.model_provider_config
+        if config is None:
+            return selection
+        for key, value in sorted(config.items()):
+            selection.extend(
+                (
+                    "-c",
+                    f"model_providers.{provider}.{key}={cls._toml_literal(value)}",
+                )
+            )
+        return selection
 
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
         self.assert_launch_mode(context.launch_mode)
@@ -699,11 +923,13 @@ class CodexAdapter(HarnessAdapter):
             model=context.model,
             reasoning_effort=context.reasoning_effort,
             fast_mode=context.fast_mode,
+            model_provider=context.model_provider,
+            model_provider_config=context.model_provider_config,
         )
         self.assert_launch_options(options)
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
-        selection: list[str] = []
+        selection = self._provider_selection(options)
         if options.model is not None:
             selection.extend(("--model", options.model))
         if options.reasoning_effort is not None:

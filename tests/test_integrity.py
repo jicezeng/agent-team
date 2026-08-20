@@ -298,16 +298,167 @@ def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
         max_wall_time_seconds=300,
     )
 
-    assert team.config_schema_version == 5
+    assert team.config_schema_version == 6
     assert team.to_json()["roles"]["developer"]["harness_options"] == {
         "model": "gpt-5.6-sol",
         "reasoning_effort": "max",
         "fast_mode": True,
+        "model_provider": "openai",
+        "model_provider_config": None,
     }
     assert team.roles["developer"].model == "gpt-5.6-sol"
     assert team.roles["developer"].reasoning_effort == "max"
     assert team.roles["developer"].fast_mode is True
+    assert team.roles["developer"].model_provider == "openai"
     assert team.roles["developer"].launch_mode == "interactive"
+
+
+def test_team_schema_preserves_frozen_codex_model_provider(
+    workspace: Path,
+) -> None:
+    provider_config = {
+        "name": "Company Proxy",
+        "base_url": "https://proxy.example.test/v1",
+        "env_key": "COMPANY_PROXY_API_KEY",
+        "env_http_headers": {"X-Tenant": "COMPANY_TENANT"},
+        "wire_api": "responses",
+    }
+    team = make_team(
+        run_id="at-test-model-provider",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+                "proxy-model",
+                "high",
+                False,
+                "interactive",
+                None,
+                "company_proxy",
+                provider_config,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    parsed = parse_team(team.to_json())
+
+    assert parsed.roles["developer"].model_provider == "company_proxy"
+    assert parsed.roles["developer"].model_provider_config == provider_config
+
+
+def test_team_schema_v5_remains_readable_without_model_provider(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-schema-v5",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["schema_version"] = 5
+    options = value["roles"]["developer"]["harness_options"]
+    options.pop("model_provider")
+    options.pop("model_provider_config")
+
+    parsed = parse_team(value)
+
+    assert parsed.config_schema_version == 5
+    assert parsed.roles["developer"].model_provider is None
+    assert parsed.roles["developer"].model_provider_config is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_config", "message"),
+    [
+        (None, None, "model provider is required"),
+        (
+            "openai",
+            {"base_url": "https://proxy.example.test/v1"},
+            "built-in model provider cannot be overridden",
+        ),
+        ("company_proxy", None, "custom model provider has no definition"),
+    ],
+)
+def test_team_rejects_incomplete_codex_model_provider_contract(
+    workspace: Path,
+    provider: str | None,
+    provider_config: dict[str, object] | None,
+    message: str,
+) -> None:
+    value = make_team(
+        run_id="at-test-invalid-model-provider",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    options = value["roles"]["developer"]["harness_options"]
+    options["model_provider"] = provider
+    options["model_provider_config"] = provider_config
+
+    with pytest.raises(IntegrityError, match=message):
+        parse_team(value)
+
+
+def test_team_rejects_model_provider_for_non_codex_role(workspace: Path) -> None:
+    value = make_team(
+        run_id="at-test-claude-model-provider",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "claude-code",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    options = value["roles"]["reviewer"]["harness_options"]
+    options["model_provider"] = "company_proxy"
+    options["model_provider_config"] = {
+        "base_url": "https://proxy.example.test/v1"
+    }
+
+    with pytest.raises(IntegrityError, match="only supported for Codex"):
+        parse_team(value)
 
 
 def test_legacy_team_schema_has_no_frozen_harness_options(

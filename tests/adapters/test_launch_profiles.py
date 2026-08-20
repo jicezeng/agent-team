@@ -208,16 +208,71 @@ def test_codex_launch_applies_model_effort_and_fast_to_start_and_resume(
             model="gpt-5.6-sol",
             reasoning_effort="max",
             fast_mode=True,
+            model_provider="openai",
         )
         for session_ref in (None, "019fa804-8bc9-7bc3-a8e9-baf8cee27430")
     ]
 
     for launch in (adapter.prepare_launch(context) for context in contexts):
         assert launch.argv[launch.argv.index("--model") + 1] == "gpt-5.6-sol"
+        assert 'model_provider="openai"' in launch.argv
         assert 'model_reasoning_effort="max"' in launch.argv
         assert 'service_tier="fast"' in launch.argv
         fast_index = launch.argv.index("--enable")
         assert launch.argv[fast_index + 1] == "fast_mode"
+
+
+def test_codex_launch_freezes_custom_provider_for_start_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+    provider_config = {
+        "name": "Company Proxy",
+        "base_url": "https://proxy.example.test/v1",
+        "env_key": "COMPANY_PROXY_API_KEY",
+        "env_http_headers": {"X-Tenant": "COMPANY_TENANT"},
+        "wire_api": "responses",
+    }
+    contexts = [
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=session_ref,
+            model="proxy-model",
+            reasoning_effort="high",
+            model_provider="company_proxy",
+            model_provider_config=provider_config,
+        )
+        for session_ref in (None, "019fa804-8bc9-7bc3-a8e9-baf8cee27430")
+    ]
+
+    for launch in (adapter.prepare_launch(context) for context in contexts):
+        rendered = "\n".join(launch.argv)
+        assert 'model_provider="company_proxy"' in launch.argv
+        assert (
+            'model_providers.company_proxy.base_url="https://proxy.example.test/v1"'
+            in launch.argv
+        )
+        assert (
+            'model_providers.company_proxy.env_key="COMPANY_PROXY_API_KEY"'
+            in launch.argv
+        )
+        assert (
+            "model_providers.company_proxy.env_http_headers="
+            '{ "X-Tenant" = "COMPANY_TENANT" }' in launch.argv
+        )
+        assert 'model_providers.company_proxy.wire_api="responses"' in launch.argv
+        assert launch.argv[launch.argv.index("--model") + 1] == "proxy-model"
+        assert "provider-secret" not in rendered
+        assert "provider-secret" not in json.dumps(launch.to_json())
 
 
 def test_claude_launch_applies_model_and_effort_to_start_and_resume(

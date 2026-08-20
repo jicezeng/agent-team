@@ -150,11 +150,19 @@ def _worker_environment_args(
     role: Role,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     from .adapters import get_adapter
+    from .adapters.base import HarnessLaunchOptions
 
     adapter = get_adapter(role.adapter or "")
     names = adapter.worker_environment_names(
         run_dir=run_dir,
         role_id=role.role_id,
+        options=HarnessLaunchOptions(
+            model=role.model,
+            reasoning_effort=role.reasoning_effort,
+            fast_mode=role.fast_mode,
+            model_provider=role.model_provider,
+            model_provider_config=role.model_provider_config,
+        ),
     )
     arguments: list[str] = []
     sensitive_values: list[str] = []

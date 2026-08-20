@@ -103,11 +103,13 @@ def test_codex_resolves_isolated_user_model_effort_and_fast_defaults(
         model="gpt-user-default",
         reasoning_effort="high",
         fast_mode=True,
+        model_provider="openai",
     )
     assert overridden == HarnessLaunchOptions(
         model="gpt-explicit",
         reasoning_effort="high",
         fast_mode=True,
+        model_provider="openai",
     )
 
 
@@ -133,7 +135,216 @@ def test_explicit_codex_field_does_not_load_that_user_default(
         model="gpt-explicit",
         reasoning_effort="medium",
         fast_mode=False,
+        model_provider="openai",
     )
+
+
+def test_fully_explicit_builtin_codex_route_does_not_read_user_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text("invalid = [\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+
+    options = CodexAdapter().resolve_launch_options(
+        model="gpt-explicit",
+        reasoning_effort="medium",
+        fast_mode=False,
+        model_provider="openai",
+    )
+
+    assert options == HarnessLaunchOptions(
+        model="gpt-explicit",
+        reasoning_effort="medium",
+        fast_mode=False,
+        model_provider="openai",
+    )
+
+
+def test_codex_snapshots_selected_custom_provider_without_credential_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text(
+        (
+            'model = "proxy-model"\n'
+            'model_provider = "company_proxy"\n'
+            "[model_providers.company_proxy]\n"
+            'name = "Company Proxy"\n'
+            'base_url = "https://proxy.example.test/v1"\n'
+            'env_key = "COMPANY_PROXY_API_KEY"\n'
+            'env_key_instructions = "set this outside Agent-Team"\n'
+            'wire_api = "responses"\n'
+            'env_http_headers = { "X-Tenant" = "COMPANY_TENANT" }\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+    monkeypatch.setenv("COMPANY_PROXY_API_KEY", "must-never-enter-run-state")
+    monkeypatch.setenv("COMPANY_TENANT", "tenant-secret-value")
+
+    options = CodexAdapter().resolve_launch_options(
+        model=None,
+        reasoning_effort=None,
+        fast_mode=None,
+    )
+
+    assert options == HarnessLaunchOptions(
+        model="proxy-model",
+        reasoning_effort=None,
+        fast_mode=False,
+        model_provider="company_proxy",
+        model_provider_config={
+            "name": "Company Proxy",
+            "base_url": "https://proxy.example.test/v1",
+            "env_key": "COMPANY_PROXY_API_KEY",
+            "wire_api": "responses",
+            "env_http_headers": {"X-Tenant": "COMPANY_TENANT"},
+        },
+    )
+    rendered = json.dumps(options.model_provider_config, sort_keys=True)
+    assert "must-never-enter-run-state" not in rendered
+    assert "tenant-secret-value" not in rendered
+    assert "env_key_instructions" not in rendered
+
+
+@pytest.mark.parametrize(
+    "unsafe_config",
+    [
+        'experimental_bearer_token = "literal-secret"\n',
+        'http_headers = { Authorization = "literal-secret" }\n',
+        'query_params = { api_key = "literal-secret" }\n',
+        '[model_providers.company_proxy.auth]\ncommand = "/bin/token-helper"\n',
+    ],
+)
+def test_codex_rejects_secret_bearing_or_executable_provider_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unsafe_config: str,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text(
+        (
+            "[model_providers.company_proxy]\n"
+            'base_url = "https://proxy.example.test/v1"\n'
+            + unsafe_config
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+
+    with pytest.raises(AgentTeamError) as rejected:
+        CodexAdapter().resolve_launch_options(
+            model="proxy-model",
+            reasoning_effort="high",
+            fast_mode=False,
+            model_provider="company_proxy",
+        )
+
+    assert rejected.value.code == "HARNESS_PROVIDER_CONFIG_UNSUPPORTED"
+    assert "literal-secret" not in rejected.value.message
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "file:///tmp/provider",
+        "https://user:secret@proxy.example.test/v1",
+        "https://proxy.example.test/v1?api_key=secret",
+        "https://proxy.example.test/v1#secret",
+    ],
+)
+def test_codex_rejects_unsafe_custom_provider_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    base_url: str,
+) -> None:
+    config_home = tmp_path / "codex-home"
+    config_home.mkdir()
+    (config_home / "config.toml").write_text(
+        (
+            "[model_providers.company_proxy]\n"
+            f"base_url = {json.dumps(base_url)}\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_home))
+
+    with pytest.raises(AgentTeamError) as rejected:
+        CodexAdapter().resolve_launch_options(
+            model="proxy-model",
+            reasoning_effort="high",
+            fast_mode=False,
+            model_provider="company_proxy",
+        )
+
+    assert rejected.value.code == "HARNESS_USER_CONFIG_INVALID"
+    assert "secret" not in rejected.value.message
+
+
+def test_codex_custom_provider_prerequisites_use_only_referenced_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options = HarnessLaunchOptions(
+        model="proxy-model",
+        reasoning_effort="high",
+        fast_mode=False,
+        model_provider="company_proxy",
+        model_provider_config={
+            "base_url": "https://proxy.example.test/v1",
+            "env_key": "COMPANY_PROXY_API_KEY",
+            "wire_api": "responses",
+        },
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+    monkeypatch.setenv("COMPANY_PROXY_API_KEY", "provider-secret")
+
+    adapter.assert_launch_prerequisites(options)
+    monkeypatch.delenv("COMPANY_PROXY_API_KEY")
+
+    with pytest.raises(AgentTeamError) as rejected:
+        adapter.assert_launch_prerequisites(options)
+
+    assert rejected.value.code == "HARNESS_ENVIRONMENT_UNAVAILABLE"
+
+
+def test_codex_custom_provider_can_require_codex_account_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options = HarnessLaunchOptions(
+        model="proxy-model",
+        reasoning_effort="high",
+        fast_mode=False,
+        model_provider="company_proxy",
+        model_provider_config={
+            "base_url": "https://proxy.example.test/v1",
+            "requires_openai_auth": True,
+            "wire_api": "responses",
+        },
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+
+    with pytest.raises(AgentTeamError) as rejected:
+        adapter.assert_launch_prerequisites(options)
+
+    assert rejected.value.code == "HARNESS_NOT_AUTHENTICATED"
+
+
+def test_model_provider_option_is_codex_only() -> None:
+    with pytest.raises(InvalidArgument, match="only supported by the codex"):
+        ClaudeCodeAdapter().resolve_launch_options(
+            model="opus",
+            reasoning_effort="high",
+            fast_mode=None,
+            model_provider="company_proxy",
+        )
 
 
 def test_claude_resolves_environment_over_user_model_and_effort_defaults(
@@ -311,11 +522,17 @@ def test_role_spec_freezes_explicit_harness_options(
                 "model": "gpt-explicit",
                 "reasoning_effort": "high",
                 "fast_mode": True,
+                "model_provider": "company_proxy",
             }
             return HarnessLaunchOptions(
                 model=values["model"],
                 reasoning_effort=values["reasoning_effort"],
                 fast_mode=values["fast_mode"],
+                model_provider=values["model_provider"],
+                model_provider_config={
+                    "base_url": "https://proxy.example.test/v1",
+                    "wire_api": "responses",
+                },
             )
 
         def profile_fingerprint(
@@ -338,6 +555,7 @@ def test_role_spec_freezes_explicit_harness_options(
         model="gpt-explicit",
         reasoning_effort="high",
         fast_mode=True,
+        model_provider="company_proxy",
     )
 
     assert role_id == "reviewer"
@@ -345,6 +563,11 @@ def test_role_spec_freezes_explicit_harness_options(
     assert role.model == "gpt-explicit"
     assert role.reasoning_effort == "high"
     assert role.fast_mode is True
+    assert role.model_provider == "company_proxy"
+    assert role.model_provider_config == {
+        "base_url": "https://proxy.example.test/v1",
+        "wire_api": "responses",
+    }
 
 
 def test_role_spec_freezes_workspace_local_dsh_plugin_path(

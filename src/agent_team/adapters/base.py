@@ -51,6 +51,8 @@ class HarnessLaunchOptions:
     model: str | None = None
     reasoning_effort: str | None = None
     fast_mode: bool | None = None
+    model_provider: str | None = None
+    model_provider_config: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,8 @@ class TurnLaunchContext:
     reasoning_effort: str | None = None
     fast_mode: bool | None = None
     launch_mode: str = "headless"
+    model_provider: str | None = None
+    model_provider_config: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +373,7 @@ class HarnessAdapter(abc.ABC):
         model: str | None,
         reasoning_effort: str | None,
         fast_mode: bool | None,
+        model_provider: str | None = None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
         """Resolve explicit values over isolated user defaults for a new Run.
@@ -383,6 +388,25 @@ class HarnessAdapter(abc.ABC):
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
         """Validate immutable launch options without reading mutable defaults."""
         raise NotImplementedError
+
+    def assert_launch_prerequisites(self, options: HarnessLaunchOptions) -> None:
+        """Validate role-specific authentication and launch prerequisites."""
+
+        self.assert_launch_options(options)
+        if (
+            self.authentication_required(options)
+            and self.authentication_status() is False
+        ):
+            raise AgentTeamError(
+                "HARNESS_NOT_AUTHENTICATED",
+                f"{self.adapter_id} is not authenticated",
+            )
+
+    def authentication_required(self, options: HarnessLaunchOptions) -> bool:
+        """Return whether the selected role route uses Harness account auth."""
+
+        self.assert_launch_options(options)
+        return True
 
     @abc.abstractmethod
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None:
@@ -444,6 +468,7 @@ class HarnessAdapter(abc.ABC):
         *,
         run_dir: Path,
         role_id: str,
+        options: HarnessLaunchOptions | None = None,
     ) -> tuple[str, ...]:
         """Return environment names that must cross the tmux Worker boundary.
 
@@ -452,6 +477,7 @@ class HarnessAdapter(abc.ABC):
         become part of durable Run state.
         """
 
+        del options
         return ()
 
     def finalize_run_state(

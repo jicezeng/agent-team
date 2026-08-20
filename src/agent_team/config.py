@@ -5,6 +5,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .errors import IntegrityError, InvalidArgument
 from .state import validate_state_root
@@ -30,10 +31,31 @@ TEAM_V2_REQUIRED = TEAM_REQUIRED | {"observability"}
 TEAM_V3_REQUIRED = TEAM_V2_REQUIRED
 TEAM_V4_REQUIRED = TEAM_V3_REQUIRED
 TEAM_V5_REQUIRED = TEAM_V4_REQUIRED
+TEAM_V6_REQUIRED = TEAM_V5_REQUIRED
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
 REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
 MAX_MODEL_ID_LENGTH = 2048
+MODEL_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CODEX_MODEL_PROVIDER_CONFIG_KEYS = frozenset(
+    {
+        "name",
+        "base_url",
+        "env_key",
+        "env_http_headers",
+        "requires_openai_auth",
+        "wire_api",
+        "request_max_retries",
+        "stream_max_retries",
+        "stream_idle_timeout_ms",
+        "supports_standalone_web_search",
+        "supports_websockets",
+    }
+)
+CODEX_BUILTIN_MODEL_PROVIDERS = frozenset(
+    {"openai", "ollama", "lmstudio", "amazon-bedrock"}
+)
 CODEX_REASONING_EFFORTS = frozenset(
     {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
@@ -82,10 +104,15 @@ class Role:
     fast_mode: bool | None = None
     launch_mode: str | None = None
     dsh_plugin: str | None = None
+    model_provider: str | None = None
+    model_provider_config: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         if self.binding == "origin":
             return {"binding": "origin"}
+        model_provider = self.model_provider
+        if self.adapter == "codex" and model_provider is None:
+            model_provider = "openai"
         return {
             "binding": "external",
             "adapter": self.adapter,
@@ -99,6 +126,8 @@ class Role:
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort,
                 "fast_mode": self.fast_mode,
+                "model_provider": model_provider,
+                "model_provider_config": self.model_provider_config,
             },
             "dsh_plugin": self.dsh_plugin,
         }
@@ -114,11 +143,11 @@ class Team:
     max_turns: int
     max_wall_time_seconds: int
     observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
-    config_schema_version: int = 5
+    config_schema_version: int = 6
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 5,
+            "schema_version": 6,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -163,6 +192,103 @@ def valid_model_id(value: object) -> bool:
         and len(value) <= MAX_MODEL_ID_LENGTH
         and not any(ord(char) < 32 or ord(char) == 127 for char in value)
     )
+
+
+def valid_model_provider_id(value: object) -> bool:
+    return isinstance(value, str) and MODEL_PROVIDER_ID_RE.fullmatch(value) is not None
+
+
+def codex_model_provider_config_error(value: object) -> str | None:
+    """Return why a frozen Codex provider config is unsafe or malformed."""
+
+    if not isinstance(value, dict):
+        return "must be an object"
+    if not all(isinstance(key, str) for key in value):
+        return "contains a non-string field name"
+    unknown = set(value) - CODEX_MODEL_PROVIDER_CONFIG_KEYS
+    if unknown:
+        return "contains unsupported fields: " + ", ".join(sorted(unknown))
+    base_url = value.get("base_url")
+    if (
+        not isinstance(base_url, str)
+        or not base_url
+        or base_url != base_url.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in base_url)
+    ):
+        return "must contain a non-empty base_url"
+    try:
+        parsed_url = urlsplit(base_url)
+        hostname = parsed_url.hostname
+    except ValueError:
+        return "base_url is invalid"
+    if (
+        parsed_url.scheme not in {"http", "https"}
+        or not parsed_url.netloc
+        or hostname is None
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        return "base_url must be an HTTP(S) URL without credentials, query, or fragment"
+    name = value.get("name")
+    if name is not None and (
+        not isinstance(name, str)
+        or not name
+        or len(name) > 256
+        or any(ord(char) < 32 or ord(char) == 127 for char in name)
+    ):
+        return "name must be a non-empty printable string of at most 256 characters"
+    env_key = value.get("env_key")
+    if env_key is not None and (
+        not isinstance(env_key, str) or ENVIRONMENT_NAME_RE.fullmatch(env_key) is None
+    ):
+        return "env_key must be an environment variable name"
+    headers = value.get("env_http_headers")
+    if headers is not None:
+        if not isinstance(headers, dict):
+            return "env_http_headers must be an object"
+        for header, environment_name in headers.items():
+            if (
+                not isinstance(header, str)
+                or not header
+                or any(ord(char) < 32 or ord(char) == 127 for char in header)
+            ):
+                return "env_http_headers contains an invalid header name"
+            if (
+                not isinstance(environment_name, str)
+                or ENVIRONMENT_NAME_RE.fullmatch(environment_name) is None
+            ):
+                return "env_http_headers must reference environment variable names"
+    requires_openai_auth = value.get("requires_openai_auth")
+    if requires_openai_auth is not None and not isinstance(
+        requires_openai_auth, bool
+    ):
+        return "requires_openai_auth must be a boolean"
+    wire_api = value.get("wire_api")
+    if wire_api is not None and wire_api != "responses":
+        return "wire_api must be responses"
+    for field_name in (
+        "request_max_retries",
+        "stream_max_retries",
+        "stream_idle_timeout_ms",
+    ):
+        item = value.get(field_name)
+        if item is not None and (
+            isinstance(item, bool)
+            or not isinstance(item, int)
+            or item < 0
+            or item > MAX_LIMIT_VALUE
+        ):
+            return f"{field_name} must be an integer in 0..{MAX_LIMIT_VALUE}"
+    for field_name in (
+        "supports_standalone_web_search",
+        "supports_websockets",
+    ):
+        item = value.get(field_name)
+        if item is not None and not isinstance(item, bool):
+            return f"{field_name} must be a boolean"
+    return None
 
 
 def valid_opencode_model_id(value: object) -> bool:
@@ -218,7 +344,7 @@ def _require_exact(
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
     schema_version = require_schema_version(
         value,
-        (1, 2, 3, 4, 5),
+        (1, 2, 3, 4, 5, 6),
         subject="team.json",
     )
     if schema_version == 1:
@@ -231,6 +357,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_V4_REQUIRED, "team.json")
     elif schema_version == 5:
         _require_exact(value, TEAM_V5_REQUIRED, "team.json")
+    elif schema_version == 6:
+        _require_exact(value, TEAM_V6_REQUIRED, "team.json")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise IntegrityError("team.json run_id is invalid")
@@ -329,20 +457,26 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
             model: str | None = None
             reasoning_effort: str | None = None
             fast_mode: bool | None = None
+            model_provider: str | None = None
+            model_provider_config: dict[str, Any] | None = None
             if schema_version >= 3:
                 options = role_value["harness_options"]
                 if not isinstance(options, dict):
                     raise IntegrityError(
                         f"harness options for {role_id} must be an object"
                     )
-                _require_exact(
-                    options,
-                    {"model", "reasoning_effort", "fast_mode"},
-                    f"role {role_id} harness options",
-                )
+                option_fields = {"model", "reasoning_effort", "fast_mode"}
+                if schema_version >= 6:
+                    option_fields.update(
+                        {"model_provider", "model_provider_config"}
+                    )
+                _require_exact(options, option_fields, f"role {role_id} harness options")
                 model = options["model"]
                 reasoning_effort = options["reasoning_effort"]
                 fast_mode = options["fast_mode"]
+                if schema_version >= 6:
+                    model_provider = options["model_provider"]
+                    model_provider_config = options["model_provider_config"]
                 if model is not None and not valid_model_id(model):
                     raise IntegrityError(f"invalid model for {role_id}")
                 if adapter == "opencode" and not valid_opencode_model_id(model):
@@ -371,9 +505,50 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 if adapter == "codex":
                     if fast_mode is not None and not isinstance(fast_mode, bool):
                         raise IntegrityError(f"invalid fast mode for {role_id}")
+                    if model_provider is not None and not valid_model_provider_id(
+                        model_provider
+                    ):
+                        raise IntegrityError(f"invalid model provider for {role_id}")
+                    if schema_version >= 6 and model_provider is None:
+                        raise IntegrityError(
+                            f"model provider is required for Codex role {role_id}"
+                        )
+                    if model_provider_config is not None:
+                        if model_provider is None:
+                            raise IntegrityError(
+                                f"model provider config has no provider for {role_id}"
+                            )
+                        provider_error = codex_model_provider_config_error(
+                            model_provider_config
+                        )
+                        if provider_error is not None:
+                            raise IntegrityError(
+                                f"invalid model provider config for {role_id}: "
+                                f"{provider_error}"
+                            )
+                    if (
+                        model_provider in CODEX_BUILTIN_MODEL_PROVIDERS
+                        and model_provider_config is not None
+                    ):
+                        raise IntegrityError(
+                            f"built-in model provider cannot be overridden for "
+                            f"{role_id}"
+                        )
+                    if (
+                        model_provider is not None
+                        and model_provider not in CODEX_BUILTIN_MODEL_PROVIDERS
+                        and model_provider_config is None
+                    ):
+                        raise IntegrityError(
+                            f"custom model provider has no definition for {role_id}"
+                        )
                 elif fast_mode is not None:
                     raise IntegrityError(
                         f"fast mode is not supported for {role_id}"
+                    )
+                elif model_provider is not None or model_provider_config is not None:
+                    raise IntegrityError(
+                        f"model provider is only supported for Codex role {role_id}"
                     )
             roles[role_id] = Role(
                 role_id,
@@ -387,6 +562,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 fast_mode,
                 launch_mode,
                 dsh_plugin,
+                model_provider,
+                model_provider_config,
             )
         else:
             raise IntegrityError(f"invalid binding for role {role_id}: {binding!r}")
@@ -572,7 +749,7 @@ def make_team(
         max_turns,
         max_wall_time_seconds,
         observability or ObservabilityPolicy(),
-        5,
+        6,
     )
     try:
         return parse_team(team.to_json())

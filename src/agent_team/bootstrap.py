@@ -54,10 +54,20 @@ from .util import (
 def _assert_external_capability(role: Role) -> None:
     adapter = get_adapter(role.adapter or "")
     report = adapter.probe()
-    if report.authenticated is False:
+    options = HarnessLaunchOptions(
+        model=role.model,
+        reasoning_effort=role.reasoning_effort,
+        fast_mode=role.fast_mode,
+        model_provider=role.model_provider,
+        model_provider_config=role.model_provider_config,
+    )
+    if (
+        report.authenticated is False
+        and adapter.authentication_required(options)
+    ):
         raise AgentTeamError(
             "HARNESS_NOT_AUTHENTICATED",
-            f"{role.adapter} is not authenticated",
+            f"{role.adapter} is not authenticated for the selected model provider",
         )
     if not report.launcher_stays_in_process_group:
         raise AgentTeamError(
@@ -71,13 +81,7 @@ def _assert_external_capability(role: Role) -> None:
         role.launch_profile_sha256 or "",
         role.launch_mode or "headless",
     )
-    adapter.assert_launch_options(
-        HarnessLaunchOptions(
-            model=role.model,
-            reasoning_effort=role.reasoning_effort,
-            fast_mode=role.fast_mode,
-        )
-    )
+    adapter.assert_launch_prerequisites(options)
 
 
 def parse_role_spec(
@@ -86,6 +90,7 @@ def parse_role_spec(
     model: str | None = None,
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
+    model_provider: str | None = None,
     launch_mode: str | None = None,
     dsh_plugin: str | None = None,
     workspace: Path | None = None,
@@ -104,6 +109,7 @@ def parse_role_spec(
             model is not None
             or reasoning_effort is not None
             or fast_mode is not None
+            or model_provider is not None
             or launch_mode is not None
             or dsh_plugin is not None
         ):
@@ -146,6 +152,7 @@ def parse_role_spec(
         "model": model,
         "reasoning_effort": reasoning_effort,
         "fast_mode": fast_mode,
+        "model_provider": model_provider,
     }
     if workspace is not None:
         option_values["workspace"] = workspace
@@ -169,6 +176,8 @@ def parse_role_spec(
         options.fast_mode,
         effective_launch_mode,
         plugin_relative,
+        options.model_provider,
+        options.model_provider_config,
     )
 
 
@@ -269,10 +278,21 @@ def _preflight_start(run_dir: Path) -> Team:
             tmux_executable()
             adapter = get_adapter(role.adapter or "")
             report = adapter.probe()
-            if report.authenticated is False:
+            options = HarnessLaunchOptions(
+                model=role.model,
+                reasoning_effort=role.reasoning_effort,
+                fast_mode=role.fast_mode,
+                model_provider=role.model_provider,
+                model_provider_config=role.model_provider_config,
+            )
+            if (
+                report.authenticated is False
+                and adapter.authentication_required(options)
+            ):
                 raise AgentTeamError(
                     "HARNESS_NOT_AUTHENTICATED",
-                    f"{role.adapter} is not authenticated",
+                    f"{role.adapter} is not authenticated for the selected "
+                    "model provider",
                 )
             if not report.launcher_stays_in_process_group:
                 raise AgentTeamError(
@@ -286,13 +306,7 @@ def _preflight_start(run_dir: Path) -> Team:
                 role.launch_profile_sha256 or "",
                 role.launch_mode or "headless",
             )
-            adapter.assert_launch_options(
-                HarnessLaunchOptions(
-                    model=role.model,
-                    reasoning_effort=role.reasoning_effort,
-                    fast_mode=role.fast_mode,
-                )
-            )
+            adapter.assert_launch_prerequisites(options)
     initial = team.roles[team.initial_role]
     if initial.binding == "external":
         get_adapter(initial.adapter or "").prepare_run_state(

@@ -24,6 +24,7 @@ packages = ["src/agent_team"]
 "plugins/claude-code/agent-team" = "agent_team/bundled/plugins/claude-code/agent-team"
 "skills/opencode/agent-team" = "agent_team/bundled/skills/opencode/agent-team"
 "plugins/deepseek-harness/agent-team-tui" = "agent_team/bundled/plugins/deepseek-harness/agent-team-tui"
+"plugins/deepseek-harness/agent-team-origin" = "agent_team/bundled/plugins/deepseek-harness/agent-team-origin"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -37,6 +38,9 @@ include = [
   "/agent-team_prd_v0.1.md",
   "/agent-team_technical_design_v0.1.md",
 ]
+
+[tool.hatch.build.targets.sdist.force-include]
+"plugins/deepseek-harness/agent-team-origin" = "plugins/deepseek-harness/agent-team-origin"
 
 [tool.pytest.ini_options]
 addopts = "-q --basetemp=.pytest-tmp"

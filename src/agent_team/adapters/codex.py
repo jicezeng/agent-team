@@ -34,6 +34,12 @@ from .base import (
     workspace_from_run_dir,
 )
 
+# Codex 0.147.0 treats this field as the number of times its startup model
+# availability tooltip has been shown and stops persisting updates at four.
+# Interactive Run homes preseed that terminal state so native TUI bookkeeping
+# cannot mutate the otherwise frozen security-boundary config between Turns.
+_MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT = 4
+
 
 class CodexAdapter(HarnessAdapter):
     adapter_id = "codex"
@@ -117,6 +123,24 @@ class CodexAdapter(HarnessAdapter):
             for profile, mapping in profiles.items()
         }
 
+    def profile_fingerprint(
+        self,
+        profile: str,
+        session_policy: str,
+        launch_mode: str = "headless",
+    ) -> str:
+        base = super().profile_fingerprint(profile, session_policy, launch_mode)
+        if launch_mode != "interactive":
+            return base
+        components = (
+            base.encode("utf-8"),
+            b"codex-interactive-home-v3:frozen-model-availability-nux-terminal-count-4",
+        )
+        framed = b"".join(
+            len(component).to_bytes(8, "big") + component for component in components
+        )
+        return sha256_bytes(framed)
+
     @staticmethod
     def _interactive_home(run_dir: Path, role_id: str) -> Path:
         digest = sha256_bytes(os.fsencode(str(run_dir.resolve(strict=True))))
@@ -131,21 +155,60 @@ class CodexAdapter(HarnessAdapter):
             "role_id": role_id,
         }
 
-    @staticmethod
-    def _interactive_config(run_dir: Path) -> bytes:
+    @classmethod
+    def _role_model(cls, run_dir: Path, role_id: str) -> str | None:
+        team = read_json(run_dir / "team.json")
+        roles = team.get("roles")
+        role = roles.get(role_id) if isinstance(roles, dict) else None
+        adapter = role.get("adapter") if isinstance(role, dict) else None
+        options = role.get("harness_options") if isinstance(role, dict) else None
+        model = options.get("model") if isinstance(options, dict) else None
+        if adapter != cls.adapter_id:
+            raise IntegrityError(
+                f"Codex interactive state has an invalid role: {role_id}"
+            )
+        if model is not None and not valid_model_id(model):
+            raise IntegrityError(
+                f"Codex interactive state has an invalid role Model: {role_id}"
+            )
+        assert model is None or isinstance(model, str)
+        return model
+
+    @classmethod
+    def _interactive_config(cls, run_dir: Path, role_id: str) -> bytes:
         workspace = workspace_from_run_dir(run_dir)
+        model = cls._role_model(run_dir, role_id)
         quoted_workspace = json.dumps(str(workspace), ensure_ascii=False)
-        config = (
-            f"[projects.{quoted_workspace}]\n"
-            'trust_level = "trusted"\n'
-        ).encode()
-        # Keep this generated security boundary both minimal and syntactically
-        # valid. No mutable user MCP, Hook, Plugin, or permission setting is
-        # copied into the isolated interactive home.
-        parsed = tomllib.loads(config.decode("utf-8"))
-        if parsed != {
+        lines = [
+            f"[projects.{quoted_workspace}]",
+            'trust_level = "trusted"',
+        ]
+        expected: dict[str, object] = {
             "projects": {str(workspace): {"trust_level": "trusted"}}
-        }:
+        }
+        if model is not None:
+            quoted_model = json.dumps(model, ensure_ascii=False)
+            lines.extend(
+                (
+                    "",
+                    "[tui.model_availability_nux]",
+                    f"{quoted_model} = {_MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT}",
+                )
+            )
+            expected["tui"] = {
+                "model_availability_nux": {
+                    model: _MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT
+                }
+            }
+        config = ("\n".join(lines) + "\n").encode()
+        # Keep this generated security boundary both minimal and syntactically
+        # valid. The frozen model's native availability counter is preseeded
+        # at its terminal value so Codex does not mutate config.toml after a
+        # fresh interactive launch.
+        # No mutable user MCP, Hook, Plugin, or permission setting is copied
+        # into the isolated interactive home.
+        parsed = tomllib.loads(config.decode("utf-8"))
+        if parsed != expected:
             raise IntegrityError("generated Codex interactive config is invalid")
         return config
 
@@ -173,9 +236,14 @@ class CodexAdapter(HarnessAdapter):
             directory.chmod(0o700)
         return home
 
-    def _prepare_interactive_config(self, run_dir: Path, home: Path) -> None:
+    def _prepare_interactive_config(
+        self,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> None:
         config_path = home / "config.toml"
-        expected = self._interactive_config(run_dir)
+        expected = self._interactive_config(run_dir, role_id)
         if not path_entry_exists(config_path):
             atomic_write(config_path, expected, immutable=True)
             return
@@ -258,7 +326,7 @@ class CodexAdapter(HarnessAdapter):
         # A trust-only immutable config bypasses Codex's native workspace
         # confirmation without importing mutable user MCP, Hook, Plugin, or
         # permission settings into this Run-owned interactive home.
-        self._prepare_interactive_config(run_dir, home)
+        self._prepare_interactive_config(run_dir, role_id, home)
         source_auth = self._source_codex_home() / "auth.json"
         target_auth = home / "auth.json"
         if path_entry_exists(source_auth):
@@ -407,7 +475,8 @@ class CodexAdapter(HarnessAdapter):
         if (
             not stat.S_ISREG(config_info.st_mode)
             or stat.S_IMODE(config_info.st_mode) & 0o077
-            or read_regular(config) != self._interactive_config(run_dir)
+            or read_regular(config)
+            != self._interactive_config(run_dir, context.role_id)
         ):
             raise IntegrityError("Codex interactive config is not isolated")
         return home

@@ -1,0 +1,7 @@
+# Add one trusted control-plane tool to an existing DSH profile. The tool runs
+# only the Agent-Team executable (never a shell) and resolves the DeepSeek
+# credential through DSH's in-process credential service.
+
+- insert:
+    - id: tool-agent-team-origin
+      name: '@agent-team/dsh-origin'

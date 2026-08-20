@@ -30,13 +30,26 @@ from .base import (
     NormalizedTraceEvent,
     StreamRecord,
     TurnLaunchContext,
+    workspace_from_run_dir,
 )
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _RUNTIME_AGENT = "agent-team-runtime"
-_TERMINAL_FINISH_REASONS = frozenset(
-    {"stop", "length", "content-filter", "unknown"}
+_PROVIDER_SNAPSHOT = "agent-team-provider.json"
+_ENV_REFERENCE_RE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+_SENSITIVE_PROVIDER_KEY_SUFFIXES = (
+    "apikey",
+    "accesstoken",
+    "authtoken",
+    "bearertoken",
+    "credential",
+    "password",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+    "secretkey",
 )
+_TERMINAL_FINISH_REASONS = frozenset({"stop", "length", "content-filter", "unknown"})
 
 
 class OpenCodeAdapter(HarnessAdapter):
@@ -111,6 +124,8 @@ class OpenCodeAdapter(HarnessAdapter):
         *,
         model: str | None = None,
         variant: str | None = None,
+        provider_id: str | None = None,
+        provider_config: dict[str, object] | None = None,
     ) -> dict[str, object]:
         permission = cls._permission_mapping(profile)
         agent: dict[str, object] = {
@@ -122,7 +137,7 @@ class OpenCodeAdapter(HarnessAdapter):
             agent["model"] = model
         if variant is not None:
             agent["variant"] = variant
-        return {
+        config: dict[str, object] = {
             "$schema": "https://opencode.ai/config.json",
             "autoupdate": False,
             "share": "disabled",
@@ -130,6 +145,17 @@ class OpenCodeAdapter(HarnessAdapter):
             "permission": permission,
             "agent": {_RUNTIME_AGENT: agent},
         }
+        if model is not None:
+            # OpenCode uses `small_model` for title generation before the
+            # primary agent runs. Pin both selectors so a custom endpoint does
+            # not receive an unrelated built-in provider model first.
+            config["model"] = model
+            config["small_model"] = model
+        if provider_config is not None:
+            if provider_id is None:
+                raise IntegrityError("OpenCode provider snapshot has no provider id")
+            config["provider"] = {provider_id: provider_config}
+        return config
 
     def profile_mappings(
         self,
@@ -181,11 +207,23 @@ class OpenCodeAdapter(HarnessAdapter):
                 "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
                 "XDG_CONFIG_HOME": "private per Run and role",
             },
+            "provider_snapshot": {
+                "schema_version": 1,
+                "source": "effective user config without project config",
+                "credentials": "environment references only",
+            },
+            "model_routing": {
+                "primary": "CLI, top-level config, and runtime agent",
+                "small": "same frozen role model",
+            },
+            "provider_environment_bridge": {
+                "scope": "environment names referenced by the frozen provider",
+                "persistence": "values are injected only into the tmux Worker",
+            },
         }
         components = [base.encode(), canonical_json_bytes(contract)]
         framed = b"".join(
-            len(component).to_bytes(8, "big") + component
-            for component in components
+            len(component).to_bytes(8, "big") + component for component in components
         )
         return sha256_bytes(framed)
 
@@ -209,12 +247,16 @@ class OpenCodeAdapter(HarnessAdapter):
             return None
         return int(credentials.group(1)) + int(environment.group(1)) > 0
 
-    def _resolved_user_model(self, workspace: Path | None) -> str | None:
+    def _resolved_user_config(self, workspace: Path | None) -> dict[str, Any]:
         cwd = workspace or Path.cwd()
+        env = os.environ.copy()
+        env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+        env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
         try:
             result = subprocess.run(
                 [str(self.executable()), "debug", "config", "--pure"],
                 cwd=cwd,
+                env=env,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -228,7 +270,7 @@ class OpenCodeAdapter(HarnessAdapter):
         if result.returncode != 0:
             raise AgentTeamError(
                 "HARNESS_CONFIG_PROBE_FAILED",
-                "opencode debug config failed while resolving the model default",
+                "opencode debug config failed while resolving user configuration",
             )
         try:
             value = json.loads(result.stdout)
@@ -237,6 +279,15 @@ class OpenCodeAdapter(HarnessAdapter):
                 "HARNESS_USER_CONFIG_INVALID",
                 "opencode debug config did not return a JSON object",
             ) from exc
+        if not isinstance(value, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "opencode debug config did not return a JSON object",
+            )
+        return value
+
+    def _resolved_user_model(self, workspace: Path | None) -> str | None:
+        value = self._resolved_user_config(workspace)
         model = value.get("model") if isinstance(value, dict) else None
         return model if isinstance(model, str) and model else None
 
@@ -248,7 +299,9 @@ class OpenCodeAdapter(HarnessAdapter):
         fast_mode: bool | None,
         workspace: Path | None = None,
     ) -> HarnessLaunchOptions:
-        resolved_model = model if model is not None else self._resolved_user_model(workspace)
+        resolved_model = (
+            model if model is not None else self._resolved_user_model(workspace)
+        )
         options = HarnessLaunchOptions(
             model=resolved_model,
             reasoning_effort=reasoning_effort,
@@ -278,6 +331,205 @@ class OpenCodeAdapter(HarnessAdapter):
     def _config_home(run_dir: Path, role_id: str) -> Path:
         digest = sha256_bytes(os.fsencode(str(run_dir.resolve(strict=True))))
         return fixed_state_dir() / "harness-homes" / "opencode" / digest / role_id
+
+    @staticmethod
+    def _provider_snapshot_path(home: Path) -> Path:
+        return home / _PROVIDER_SNAPSHOT
+
+    @staticmethod
+    def _sensitive_provider_key(key: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
+        return normalized in {"authorization", "token"} or any(
+            normalized.endswith(marker) for marker in _SENSITIVE_PROVIDER_KEY_SUFFIXES
+        )
+
+    @staticmethod
+    def _environment_candidates() -> tuple[tuple[str, str], ...]:
+        candidates = [
+            (name, value)
+            for name, value in os.environ.items()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and value
+        ]
+        return tuple(sorted(candidates, key=lambda item: (-len(item[1]), item[0])))
+
+    @classmethod
+    def _sanitize_provider_value(
+        cls,
+        value: object,
+        *,
+        path: tuple[str, ...] = (),
+    ) -> object:
+        if isinstance(value, dict):
+            return {
+                key: cls._sanitize_provider_value(item, path=(*path, key))
+                for key, item in value.items()
+                if isinstance(key, str)
+            }
+        if isinstance(value, list):
+            return [cls._sanitize_provider_value(item, path=path) for item in value]
+        if not path or not cls._sensitive_provider_key(path[-1]):
+            return value
+        rendered_path = ".".join(path)
+        if value is None or value == "":
+            return value
+        if not isinstance(value, str):
+            raise AgentTeamError(
+                "HARNESS_PROVIDER_CREDENTIAL_UNSAFE",
+                "OpenCode provider credential field must be a string backed by "
+                f"an environment variable: {rendered_path}",
+            )
+        if _ENV_REFERENCE_RE.search(value):
+            return value
+        candidates = cls._environment_candidates()
+        for name, candidate in candidates:
+            if value == candidate:
+                return f"{{env:{name}}}"
+        sanitized = value
+        replaced = False
+        for name, candidate in candidates:
+            if len(candidate) >= 8 and candidate in sanitized:
+                sanitized = sanitized.replace(candidate, f"{{env:{name}}}")
+                replaced = True
+        if replaced:
+            return sanitized
+        raise AgentTeamError(
+            "HARNESS_PROVIDER_CREDENTIAL_UNSAFE",
+            "OpenCode provider credential would be copied into managed state; "
+            f"configure {rendered_path} with an environment variable or the "
+            "OpenCode credential store",
+        )
+
+    @classmethod
+    def _role_model(cls, run_dir: Path, role_id: str) -> str:
+        team = read_json(run_dir / "team.json")
+        roles = team.get("roles")
+        role = roles.get(role_id) if isinstance(roles, dict) else None
+        options = role.get("harness_options") if isinstance(role, dict) else None
+        model = options.get("model") if isinstance(options, dict) else None
+        adapter = role.get("adapter") if isinstance(role, dict) else None
+        if adapter != cls.adapter_id:
+            model = None
+        if not valid_opencode_model_id(model):
+            raise IntegrityError(
+                f"OpenCode runtime state has an invalid role Model: {role_id}"
+            )
+        assert isinstance(model, str)
+        return model
+
+    def _new_provider_snapshot(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+    ) -> dict[str, object]:
+        model = self._role_model(run_dir, role_id)
+        provider_id = model.partition("/")[0]
+        config = self._resolved_user_config(workspace_from_run_dir(run_dir))
+        providers = config.get("provider")
+        provider: object = None
+        if isinstance(providers, dict):
+            provider = providers.get(provider_id)
+        if provider is not None and not isinstance(provider, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"OpenCode provider {provider_id!r} is not a JSON object",
+            )
+        sanitized = (
+            self._sanitize_provider_value(provider)
+            if isinstance(provider, dict)
+            else None
+        )
+        if sanitized is not None and not isinstance(sanitized, dict):
+            raise IntegrityError("OpenCode provider snapshot is invalid")
+        return {
+            "schema_version": 1,
+            "adapter": self.adapter_id,
+            "run_dir": str(run_dir.resolve(strict=True)),
+            "role_id": role_id,
+            "model": model,
+            "provider_id": provider_id,
+            "provider": sanitized,
+        }
+
+    def _read_provider_snapshot(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, object]:
+        snapshot = read_json(self._provider_snapshot_path(home))
+        required = {
+            "schema_version",
+            "adapter",
+            "run_dir",
+            "role_id",
+            "model",
+            "provider_id",
+            "provider",
+        }
+        model = self._role_model(run_dir, role_id)
+        provider_id = model.partition("/")[0]
+        if (
+            set(snapshot) != required
+            or snapshot.get("schema_version") != 1
+            or snapshot.get("adapter") != self.adapter_id
+            or snapshot.get("run_dir") != str(run_dir.resolve(strict=True))
+            or snapshot.get("role_id") != role_id
+            or snapshot.get("model") != model
+            or snapshot.get("provider_id") != provider_id
+            or (
+                snapshot.get("provider") is not None
+                and not isinstance(snapshot.get("provider"), dict)
+            )
+        ):
+            raise IntegrityError("OpenCode provider snapshot is invalid")
+        provider = snapshot.get("provider")
+        if isinstance(provider, dict):
+            try:
+                sanitized = self._sanitize_provider_value(provider)
+            except AgentTeamError as exc:
+                raise IntegrityError(
+                    "OpenCode provider snapshot contains an unsafe credential"
+                ) from exc
+            if sanitized != provider:
+                raise IntegrityError(
+                    "OpenCode provider snapshot contains an expanded credential"
+                )
+        return snapshot
+
+    @classmethod
+    def _provider_environment_names(cls, value: object) -> tuple[str, ...]:
+        names: set[str] = set()
+
+        def visit(item: object) -> None:
+            if isinstance(item, dict):
+                for child in item.values():
+                    visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+            elif isinstance(item, str):
+                names.update(
+                    match.group(1) for match in _ENV_REFERENCE_RE.finditer(item)
+                )
+
+        visit(value)
+        return tuple(sorted(names))
+
+    def worker_environment_names(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+    ) -> tuple[str, ...]:
+        home = self._config_home(run_dir, role_id)
+        snapshot = self._read_provider_snapshot(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
+        return self._provider_environment_names(snapshot["provider"])
 
     @classmethod
     def _home_marker(cls, run_dir: Path, role_id: str) -> dict[str, object]:
@@ -330,8 +582,27 @@ class OpenCodeAdapter(HarnessAdapter):
                 )
         else:
             atomic_json(marker_path, marker, immutable=True)
+        snapshot_path = self._provider_snapshot_path(home)
+        if path_entry_exists(snapshot_path):
+            self._read_provider_snapshot(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+        else:
+            atomic_json(
+                snapshot_path,
+                self._new_provider_snapshot(
+                    run_dir=run_dir,
+                    role_id=role_id,
+                ),
+                immutable=True,
+            )
 
-    def _assert_config_home(self, context: TurnLaunchContext) -> Path:
+    def _assert_config_home(
+        self,
+        context: TurnLaunchContext,
+    ) -> tuple[Path, dict[str, object]]:
         run_dir = Path(context.turn_dir).parent.parent
         home = self._config_home(run_dir, context.role_id)
         try:
@@ -344,16 +615,18 @@ class OpenCodeAdapter(HarnessAdapter):
         if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
             raise IntegrityError("OpenCode configuration home is unsafe")
         marker_path = home / "agent-team-home.json"
-        if (
-            not path_entry_exists(marker_path)
-            or read_json(marker_path)
-            != self._home_marker(run_dir, context.role_id)
-        ):
+        if not path_entry_exists(marker_path) or read_json(
+            marker_path
+        ) != self._home_marker(run_dir, context.role_id):
             raise AgentTeamError(
                 "HARNESS_STATE_NOT_PREPARED",
                 f"OpenCode configuration state is not prepared for {context.role_id}",
             )
-        return home
+        return home, self._read_provider_snapshot(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            home=home,
+        )
 
     def finalize_run_state(
         self,
@@ -377,10 +650,9 @@ class OpenCodeAdapter(HarnessAdapter):
         if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
             raise IntegrityError(f"OpenCode configuration state is unsafe: {home}")
         marker_path = home / "agent-team-home.json"
-        if (
-            not path_entry_exists(marker_path)
-            or read_json(marker_path) != self._home_marker(run_dir, role_id)
-        ):
+        if not path_entry_exists(marker_path) or read_json(
+            marker_path
+        ) != self._home_marker(run_dir, role_id):
             raise IntegrityError(
                 f"OpenCode configuration state is not owned by this Run: {home}"
             )
@@ -430,15 +702,19 @@ class OpenCodeAdapter(HarnessAdapter):
             fast_mode=context.fast_mode,
         )
         self.assert_launch_options(options)
-        home = self._assert_config_home(context)
+        home, provider_snapshot = self._assert_config_home(context)
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
         model = options.model
         assert model is not None
+        provider_config = provider_snapshot["provider"]
+        assert provider_config is None or isinstance(provider_config, dict)
         config = self._runtime_config(
             context.launch_profile,
             model=model,
             variant=options.reasoning_effort,
+            provider_id=str(provider_snapshot["provider_id"]),
+            provider_config=provider_config,
         )
         env = {
             "AGENT_TEAM_RUN_ID": context.run_id,
@@ -592,9 +868,7 @@ class OpenCodeAdapter(HarnessAdapter):
         if record.encoding == "utf-8" and record.source == "stderr":
             text = _ANSI_ESCAPE_RE.sub("", record.data).strip()
             if text == "Error: Session not found":
-                return AdapterEvidence(
-                    session_unavailable_reason="session_not_found"
-                )
+                return AdapterEvidence(session_unavailable_reason="session_not_found")
         value = self.parse_json_record(record)
         if value is None:
             return None

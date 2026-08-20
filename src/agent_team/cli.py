@@ -18,9 +18,11 @@ from .adapters import get_adapter
 from .assets import (
     claude_plugin_source,
     codex_skill_source,
+    dsh_origin_source,
     dsh_tui_source,
     installed_claude_plugin,
     installed_codex_skill,
+    installed_dsh_origin,
     installed_dsh_skill,
     installed_opencode_skill,
     opencode_skill_source,
@@ -80,9 +82,11 @@ from .trace import (
 )
 from .turns import load_runtime, stage_external_action_locked
 from .util import (
+    committed_directory_entries,
     envelope,
     fsync_dir,
     path_entry_exists,
+    read_json,
     read_regular,
     rfc3339,
 )
@@ -546,6 +550,15 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
         installed_dsh_skill(),
     )
     add("integration:deepseek_harness_skill", dsh_ok, dsh_details)
+    dsh_origin_ok, dsh_origin_details = integration_report(
+        dsh_origin_source(),
+        installed_dsh_origin(),
+    )
+    add(
+        "integration:deepseek_harness_origin",
+        dsh_origin_ok,
+        dsh_origin_details,
+    )
 
     workspace: Path | None = None
     try:
@@ -707,6 +720,7 @@ def _doctor(workspace_value: str | None) -> dict[str, Any]:
                                 "model": role.model,
                                 "reasoning_effort": role.reasoning_effort,
                                 "fast_mode": role.fast_mode,
+                                "dsh_plugin": role.dsh_plugin,
                                 "valid": True,
                             }
                         )
@@ -766,6 +780,10 @@ def _install_skill() -> dict[str, Any]:
         "claude_code": (claude_plugin_source(), installed_claude_plugin()),
         "opencode": (opencode_skill_source(), installed_opencode_skill()),
         "deepseek_harness": (codex_skill_source(), installed_dsh_skill()),
+        "deepseek_harness_origin": (
+            dsh_origin_source(),
+            installed_dsh_origin(),
+        ),
     }
     # Resolve the TUI asset at the same no-mutation boundary. It is copied into
     # a private profile when a DSH External role is prepared, not into mutable
@@ -783,6 +801,33 @@ def _install_skill() -> dict[str, Any]:
                 )
             continue
         unique_targets[target] = (name, source)
+    owners_dir = fixed_state_dir() / "workspaces"
+    active_owners: list[dict[str, str]] = []
+    if path_entry_exists(owners_dir):
+        info = owners_dir.lstat()
+        if owners_dir.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise IntegrityError(f"workspace owner directory is unsafe: {owners_dir}")
+        for owner_path in committed_directory_entries(owners_dir):
+            owner_info = owner_path.lstat()
+            if owner_path.is_symlink() or not stat.S_ISREG(owner_info.st_mode):
+                raise IntegrityError(f"workspace owner entry is unsafe: {owner_path}")
+            owner = read_json(owner_path)
+            if not isinstance(owner, dict):
+                raise IntegrityError(f"workspace owner entry is invalid: {owner_path}")
+            run_id = owner.get("run_id")
+            workspace = owner.get("workspace_realpath")
+            if not isinstance(run_id, str) or not isinstance(workspace, str):
+                raise IntegrityError(f"workspace owner entry is invalid: {owner_path}")
+            active_owners.append({"run_id": run_id, "workspace": workspace})
+    if active_owners:
+        summary = ", ".join(
+            f"{item['run_id']} ({item['workspace']})" for item in active_owners
+        )
+        raise AgentTeamError(
+            "ACTIVE_RUNS_PREVENT_INSTALL",
+            "complete/cancel and finalize every owned Run before replacing "
+            f"shared integrations: {summary}",
+        )
     runtime = install_managed_dsh_runtime()
     for target, (_name, source) in unique_targets.items():
         install_tree(source, target)
@@ -844,6 +889,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "select interactive (default) or headless execution for one "
             "External role"
+        ),
+    )
+    init.add_argument(
+        "--role-dsh-plugin",
+        action="append",
+        metavar="ROLE=WORKSPACE_PATH",
+        help=(
+            "load one workspace-local DSH bundle when the role is first activated"
         ),
     )
     init.add_argument("--initial-role", required=True)
@@ -1016,6 +1069,10 @@ def dispatch(args: argparse.Namespace) -> int:
             args.role_launch_mode,
             option="--role-launch-mode",
         )
+        role_dsh_plugins = _role_value_options(
+            args.role_dsh_plugin,
+            option="--role-dsh-plugin",
+        )
         roles = {}
         for spec in args.role:
             candidate = spec.split("=", 1)[0] if "=" in spec else ""
@@ -1025,6 +1082,7 @@ def dispatch(args: argparse.Namespace) -> int:
                 reasoning_effort=role_efforts.get(candidate),
                 fast_mode=True if candidate in fast_roles else None,
                 launch_mode=role_launch_modes.get(candidate),
+                dsh_plugin=role_dsh_plugins.get(candidate),
                 workspace=workspace,
             )
             if role_id in roles:
@@ -1035,6 +1093,7 @@ def dispatch(args: argparse.Namespace) -> int:
             | set(role_efforts)
             | fast_roles
             | set(role_launch_modes)
+            | set(role_dsh_plugins)
         ) - set(roles)
         if unknown_options:
             raise InvalidArgument(

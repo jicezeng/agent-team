@@ -16,6 +16,11 @@ For each Run, its Skill turns the request into dynamic roles and a readable
 the emerging collaboration is a task-specific directed graph rather than a
 workflow users must prebuild in a DSL.
 
+Role specifications are frozen for audit, while Agent processes are dynamic:
+only the currently routed External role owns a Worker/tmux window. A Handoff
+retires the sender and lazily creates the receiver, preserving only the
+configured Harness Session when `resume` was selected.
+
 Start with the work scenario, not an abstract graph template. The Skill derives
 the roles, handoff route, feedback loop, and completion authority that make that
 specific job effective:
@@ -84,7 +89,9 @@ Then verify the target worktree and installed Harnesses:
 agent-team doctor --workspace /path/to/worktree --json
 ```
 
-Agent-Team installs its Skills/plugin and pinned DSH runtime/TUI; other Harness CLIs remain separate. See the [user guide](docs/user-guide.md#installation-and-upgrades).
+Agent-Team installs its Skills/plugin, trusted DSH Origin tool bundle, and pinned
+DSH runtime/TUI; other Harness CLIs remain separate. DSH Profile activation is
+explicit. See the [user guide](docs/user-guide.md#installation-and-upgrades).
 
 ## Quick start
 
@@ -136,7 +143,10 @@ DSH External roles are interactive-only; restricted Profiles sandbox writes to
 the workspace but inherit host reads, process execution, and network access.
 
 Agent-Team freezes its requested mapping in `launch_profile_sha256`, isolates
-OpenCode project config and external plugins, and sets Codex
+OpenCode project config and external plugins, safely snapshots only a selected
+custom OpenCode provider when needed, and forwards only that snapshot's
+referenced environment variables to the role Worker without writing their
+values into Run records. It also sets Codex
 `features.hooks=false`, but Managed Harness policy can still change or
 reject the effective configuration. Inspect `doctor` output and administrator
 policy when a permission boundary matters.

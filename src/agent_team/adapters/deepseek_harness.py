@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_team.assets import dsh_tui_source
-from agent_team.config import DSH_REASONING_EFFORTS, valid_dsh_model_id
+from agent_team.config import DSH_REASONING_EFFORTS, load_team, valid_dsh_model_id
 from agent_team.dsh_runtime import (
     DSH_NPM_INTEGRITY,
     DSH_NPM_VERSION,
@@ -49,19 +50,33 @@ _DEFAULT_REASONING_EFFORT = "high"
 _SESSION_NAMESPACE = uuid.UUID("a02f363b-039e-4a17-af70-639179544261")
 _PROFILE_NAME = "agent-team"
 _PLUGIN_PACKAGE = "@agent-team/dsh-tui"
+_PLUGIN_STATE_FILE = "agent-team-dsh-plugin.json"
+_RESERVED_PLUGIN_PACKAGES = {"@deepseek-ai/dsh-base", _PLUGIN_PACKAGE}
+_PACKAGE_NAME_RE = re.compile(
+    r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$"
+)
 
 
-def _tree_manifest(root: Path) -> dict[str, str]:
+def _tree_manifest(
+    root: Path,
+    *,
+    ignored_names: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     manifest: dict[str, str] = {}
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative_path = path.relative_to(root)
+        if any(part in ignored_names for part in relative_path.parts):
+            continue
         if path.is_symlink():
-            raise IntegrityError(f"DeepSeek Harness TUI asset contains a symlink: {path}")
+            raise IntegrityError(
+                f"DeepSeek Harness plugin tree contains a symlink: {path}"
+            )
         if path.is_file():
-            relative = path.relative_to(root).as_posix()
+            relative = relative_path.as_posix()
             manifest[relative] = sha256_bytes(read_regular(path))
         elif not path.is_dir():
             raise IntegrityError(
-                f"DeepSeek Harness TUI asset contains an unsafe entry: {path}"
+                f"DeepSeek Harness plugin tree contains an unsafe entry: {path}"
             )
     return manifest
 
@@ -231,26 +246,183 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         }
 
     @staticmethod
-    def _profile_manifest() -> dict[str, Any]:
+    def _profile_manifest(
+        candidate: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        bundles = ["@deepseek-ai/dsh-base"]
+        dependencies: dict[str, str] = {}
+        if candidate is not None:
+            bundles.append(candidate["package"])
+            dependencies[candidate["package"]] = candidate["version"]
+        bundles.append(_PLUGIN_PACKAGE)
         return {
             "name": "dsh-profile-agent-team",
             "private": True,
+            "dependencies": dependencies,
             "dsh": {
-                "profile": {
-                    "bundles": ["@deepseek-ai/dsh-base", _PLUGIN_PACKAGE]
-                }
+                "profile": {"bundles": bundles}
             },
         }
 
     @staticmethod
-    def _copy_plugin(source: Path, target: Path) -> None:
-        expected = _tree_manifest(source)
+    def _package_target(profile: Path, package_name: str) -> Path:
+        if not _PACKAGE_NAME_RE.fullmatch(package_name):
+            raise IntegrityError(
+                f"workspace DSH plugin has an invalid package name: {package_name!r}"
+            )
+        return profile / "node_modules" / Path(*package_name.split("/"))
+
+    @staticmethod
+    def _candidate_contract(
+        source: Path,
+        *,
+        source_relative: str,
+    ) -> dict[str, Any]:
+        try:
+            source_info = source.lstat()
+        except OSError as exc:
+            raise AgentTeamError(
+                "DSH_PLUGIN_UNAVAILABLE",
+                f"workspace DSH plugin is unavailable: {source_relative}",
+            ) from exc
+        if source.is_symlink() or not stat.S_ISDIR(source_info.st_mode):
+            raise IntegrityError(
+                f"workspace DSH plugin is not a real directory: {source_relative}"
+            )
+        try:
+            manifest = json.loads(read_regular(source / "package.json"))
+        except (OSError, json.JSONDecodeError, IntegrityError) as exc:
+            raise AgentTeamError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin has no valid package.json: {source_relative}",
+            ) from exc
+        if not isinstance(manifest, dict):
+            raise AgentTeamError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin manifest is not an object: {source_relative}",
+            )
+        package_name = manifest.get("name")
+        version = manifest.get("version")
+        dsh = manifest.get("dsh")
+        bundle = dsh.get("bundle") if isinstance(dsh, dict) else None
+        patch = bundle.get("patch") if isinstance(bundle, dict) else None
+        normalized_patch = (
+            patch[2:]
+            if isinstance(patch, str) and patch.startswith("./")
+            else patch
+        )
+        if (
+            not isinstance(package_name, str)
+            or not _PACKAGE_NAME_RE.fullmatch(package_name)
+            or package_name in _RESERVED_PLUGIN_PACKAGES
+            or not isinstance(version, str)
+            or not version
+            or not isinstance(normalized_patch, str)
+            or not normalized_patch
+            or normalized_patch.startswith("/")
+            or "\\" in normalized_patch
+            or any(
+                part in {"", ".", ".."}
+                for part in normalized_patch.split("/")
+            )
+        ):
+            raise AgentTeamError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin is not an installable bundle: {source_relative}",
+            )
+        patch_path = source / normalized_patch
+        try:
+            patch_info = patch_path.lstat()
+            patch_path.resolve(strict=True).relative_to(source.resolve(strict=True))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise AgentTeamError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin bundle patch is unavailable: {source_relative}",
+            ) from exc
+        if patch_path.is_symlink() or not stat.S_ISREG(patch_info.st_mode):
+            raise IntegrityError(
+                f"workspace DSH plugin bundle patch is unsafe: {source_relative}"
+            )
+        tree = _tree_manifest(source, ignored_names=frozenset({"node_modules"}))
+        return {
+            "schema_version": 1,
+            "source": source_relative,
+            "package": package_name,
+            "version": version,
+            "bundle_patch": normalized_patch,
+            "manifest": tree,
+            "content_sha256": sha256_bytes(canonical_json_bytes(tree)),
+        }
+
+    @staticmethod
+    def _validate_candidate_snapshot(
+        value: Any,
+        *,
+        expected_source: str,
+    ) -> dict[str, Any]:
+        if not isinstance(value, dict) or set(value) != {
+            "schema_version",
+            "source",
+            "package",
+            "version",
+            "bundle_patch",
+            "manifest",
+            "content_sha256",
+        }:
+            raise IntegrityError("DeepSeek Harness plugin snapshot has invalid fields")
+        package_name = value["package"]
+        version = value["version"]
+        bundle_patch = value["bundle_patch"]
+        manifest = value["manifest"]
+        content_sha256 = value["content_sha256"]
+        if (
+            value["schema_version"] != 1
+            or value["source"] != expected_source
+            or not isinstance(package_name, str)
+            or not _PACKAGE_NAME_RE.fullmatch(package_name)
+            or package_name in _RESERVED_PLUGIN_PACKAGES
+            or not isinstance(version, str)
+            or not version
+            or not isinstance(bundle_patch, str)
+            or not bundle_patch
+            or bundle_patch.startswith("/")
+            or "\\" in bundle_patch
+            or any(part in {"", ".", ".."} for part in bundle_patch.split("/"))
+            or not isinstance(manifest, dict)
+            or not manifest
+            or any(
+                not isinstance(path, str)
+                or not path
+                or path.startswith("/")
+                or "\\" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)
+                for path, digest in manifest.items()
+            )
+            or not isinstance(content_sha256, str)
+            or len(content_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in content_sha256)
+            or sha256_bytes(canonical_json_bytes(manifest)) != content_sha256
+        ):
+            raise IntegrityError("DeepSeek Harness plugin snapshot is invalid")
+        return value
+
+    @staticmethod
+    def _copy_plugin(
+        source: Path,
+        target: Path,
+        *,
+        ignored_names: frozenset[str] = frozenset(),
+    ) -> None:
+        expected = _tree_manifest(source, ignored_names=ignored_names)
         if path_entry_exists(target):
             if target.is_symlink() or not target.is_dir():
-                raise IntegrityError(f"DeepSeek Harness TUI target is unsafe: {target}")
+                raise IntegrityError(f"DeepSeek Harness plugin target is unsafe: {target}")
             if _tree_manifest(target) != expected:
                 raise IntegrityError(
-                    "DeepSeek Harness TUI state differs from the frozen bundled plugin"
+                    "DeepSeek Harness plugin state differs from its frozen source"
                 )
             return
         ensure_dir(target.parent)
@@ -258,9 +430,13 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             f".tmp-{target.name}-{os.getpid()}-{secrets.token_hex(8)}"
         )
         try:
-            shutil.copytree(source, temporary)
+            shutil.copytree(
+                source,
+                temporary,
+                ignore=shutil.ignore_patterns(*ignored_names),
+            )
             if _tree_manifest(temporary) != expected:
-                raise IntegrityError("copied DeepSeek Harness TUI asset changed")
+                raise IntegrityError("copied DeepSeek Harness plugin tree changed")
             for path in temporary.rglob("*"):
                 path.chmod(0o700 if path.is_dir() else 0o600)
             temporary.chmod(0o700)
@@ -306,9 +482,36 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         profile = home / "profiles" / _PROFILE_NAME
         ensure_dir(profile)
         profile.chmod(0o700)
+        team = load_team(run_dir)
+        role = team.roles[role_id]
+        candidate: dict[str, Any] | None = None
+        candidate_state = home / _PLUGIN_STATE_FILE
+        if role.dsh_plugin is not None:
+            if path_entry_exists(candidate_state):
+                candidate = self._validate_candidate_snapshot(
+                    read_json(candidate_state),
+                    expected_source=role.dsh_plugin,
+                )
+            else:
+                source = team.workspace / role.dsh_plugin
+                candidate = self._candidate_contract(
+                    source,
+                    source_relative=role.dsh_plugin,
+                )
+                target = self._package_target(profile, candidate["package"])
+                self._copy_plugin(
+                    source,
+                    target,
+                    ignored_names=frozenset({"node_modules"}),
+                )
+                atomic_json(candidate_state, candidate, immutable=True)
+        elif path_entry_exists(candidate_state):
+            raise IntegrityError(
+                f"unexpected DeepSeek Harness plugin snapshot: {candidate_state}"
+            )
         atomic_write(
             profile / "package.json",
-            canonical_json_bytes(self._profile_manifest()),
+            canonical_json_bytes(self._profile_manifest(candidate)),
             immutable=True,
         )
         atomic_write(profile / "cordis.patch.yml", b"[]\n", immutable=True)
@@ -321,6 +524,14 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             dsh_tui_source(),
             profile / "node_modules" / "@agent-team" / "dsh-tui",
         )
+        if candidate is not None:
+            target = self._package_target(profile, candidate["package"])
+            if not path_entry_exists(target) or _tree_manifest(target) != candidate[
+                "manifest"
+            ]:
+                raise IntegrityError(
+                    "DeepSeek Harness installed plugin differs from its frozen snapshot"
+                )
         ensure_dir(home / "sessions")
         (home / "sessions").chmod(0o700)
 
@@ -343,6 +554,31 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 "HARNESS_STATE_NOT_PREPARED",
                 f"DeepSeek Harness state is not prepared for {context.role_id}",
             )
+        team = load_team(run_dir)
+        role = team.roles[context.role_id]
+        candidate_state = home / _PLUGIN_STATE_FILE
+        candidate = (
+            self._validate_candidate_snapshot(
+                read_json(candidate_state),
+                expected_source=role.dsh_plugin or "",
+            )
+            if path_entry_exists(candidate_state)
+            else None
+        )
+        if (role.dsh_plugin is None) != (candidate is None):
+            raise IntegrityError("DeepSeek Harness plugin snapshot does not match role")
+        if candidate is not None:
+            profile = home / "profiles" / _PROFILE_NAME
+            target = self._package_target(profile, candidate["package"])
+            if _tree_manifest(target) != candidate["manifest"]:
+                raise IntegrityError(
+                    "DeepSeek Harness installed plugin changed after provisioning"
+                )
+            expected_manifest = canonical_json_bytes(self._profile_manifest(candidate))
+            if read_regular(profile / "package.json") != expected_manifest:
+                raise IntegrityError(
+                    "DeepSeek Harness profile changed after plugin provisioning"
+                )
         return home
 
     @staticmethod
@@ -475,6 +711,11 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             "DSH_TELEMETRY_DISABLED": "1",
             "DSH_TOOLS_MODE": "native",
         }
+        candidate_state = home / _PLUGIN_STATE_FILE
+        if path_entry_exists(candidate_state):
+            env["AGENT_TEAM_DSH_PLUGIN_SHA256"] = read_json(candidate_state)[
+                "content_sha256"
+            ]
         return LaunchSpec(
             adapter_id=self.adapter_id,
             argv=argv,

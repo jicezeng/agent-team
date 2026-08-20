@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .adapters import get_adapter
 from .config import ROLE_ID_RE, parse_team
 from .errors import AgentTeamError, IntegrityError
 from .gitfacts import load_workspace_facts
@@ -748,11 +749,7 @@ def _recover_unique_damaged_runtime_locked(
     replace_damaged_runtime(turn_dir, final, team=team)
     projection = scan_journal(run_dir)
     actions = [f"runtime-recovery-block:{turn_id}:{event['event_id']}"]
-    tmux = (
-        ensure_workers(run_dir, team)
-        if final["phase"] == "finalized"
-        else None
-    )
+    tmux = None
     return {
         "run_id": team.run_id,
         "status": projection.status,
@@ -834,7 +831,25 @@ def _recover_run_strict(run_dir: Path) -> dict[str, Any]:
                 "owner_released": released,
                 "tmux": None,
             }
-        tmux = ensure_workers(run_dir, projection.team)
+        active_roles = (
+            (projection.current_role,)
+            if projection.status == "RUNNING"
+            and projection.current_role is not None
+            and projection.team.roles[projection.current_role].binding == "external"
+            else ()
+        )
+        for role_id in active_roles:
+            role = projection.team.roles[role_id]
+            get_adapter(role.adapter or "").prepare_run_state(
+                run_dir=run_dir,
+                role_id=role.role_id,
+                launch_mode=role.launch_mode or "headless",
+            )
+        tmux = ensure_workers(
+            run_dir,
+            projection.team,
+            role_ids=active_roles,
+        )
     return {
         "run_id": projection.team.run_id,
         "status": projection.status,

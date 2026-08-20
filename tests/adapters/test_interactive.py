@@ -11,9 +11,41 @@ from agent_team.adapters.base import (
 )
 from agent_team.adapters.claude_code import ClaudeCodeAdapter
 from agent_team.adapters.codex import CodexAdapter
+from agent_team.config import Role, make_team
 from agent_team.errors import AgentTeamError, IntegrityError
 
 from ._support import launch_context
+
+
+def _write_codex_team(
+    run_dir: Path,
+    workspace: Path,
+    *,
+    model: str | None = "gpt-5.6-sol",
+) -> None:
+    team = make_team(
+        run_id=run_dir.name,
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "codex",
+                "resume",
+                "full-access",
+                "0" * 64,
+                model,
+                "max",
+                True,
+                "interactive",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=60,
+    )
+    (run_dir / "team.json").write_bytes(team.canonical_bytes())
 
 
 def test_codex_interactive_launch_uses_isolated_native_tui_state(
@@ -48,6 +80,7 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
         "_assert_interactive_authentication",
         lambda _home: None,
     )
+    _write_codex_team(run_dir, workspace)
 
     adapter.prepare_run_state(
         run_dir=run_dir,
@@ -71,7 +104,10 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     assert isolated_home != source_home
     assert tomllib.loads(
         (isolated_home / "config.toml").read_text(encoding="utf-8")
-    ) == {"projects": {str(workspace): {"trust_level": "trusted"}}}
+    ) == {
+        "projects": {str(workspace): {"trust_level": "trusted"}},
+        "tui": {"model_availability_nux": {"gpt-5.6-sol": 4}},
+    }
     assert (isolated_home / "auth.json").read_bytes() == source_auth.read_bytes()
     assert (isolated_home / "auth.json").stat().st_ino != source_auth.stat().st_ino
     assert launch.launch_mode == "interactive"
@@ -165,6 +201,7 @@ def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
         "_assert_interactive_authentication",
         lambda _home: None,
     )
+    _write_codex_team(run_dir, workspace)
     home = adapter._interactive_home(run_dir, "developer")
     home.mkdir(parents=True)
     marker_path = home / "agent-team-home.json"
@@ -183,7 +220,10 @@ def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
             role_id="developer",
             launch_mode="interactive",
         )
-        assert config_path.read_bytes() == adapter._interactive_config(run_dir)
+        assert config_path.read_bytes() == adapter._interactive_config(
+            run_dir,
+            "developer",
+        )
     else:
         with pytest.raises(IntegrityError, match="unexpected content"):
             adapter.prepare_run_state(
@@ -192,6 +232,65 @@ def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
                 launch_mode="interactive",
             )
         assert config_path.read_bytes() == legacy_config
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        (
+            '[projects."{workspace}"]\ntrust_level = "trusted"\n\n'
+            '[tui.model_availability_nux]\n"gpt-5.6-sol" = 3\n'
+        ),
+        (
+            '[projects."{workspace}"]\ntrust_level = "trusted"\n\n'
+            '[tui.model_availability_nux]\n"other-model" = 4\n'
+        ),
+        "[mcp_servers.unexpected]\ncommand = 'unsafe'\n",
+    ],
+)
+def test_codex_interactive_config_rejects_any_post_prepare_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unexpected: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-codex-config-drift"
+    run_dir.mkdir(parents=True)
+    source_home = tmp_path / "user-codex-home"
+    source_home.mkdir()
+    source_auth = source_home / "auth.json"
+    source_auth.write_text('{"token":"test-only"}\n', encoding="utf-8")
+    source_auth.chmod(0o600)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_assert_interactive_authentication",
+        lambda _home: None,
+    )
+    _write_codex_team(run_dir, workspace)
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    config_path = adapter._interactive_home(run_dir, "developer") / "config.toml"
+    unexpected = unexpected.format(workspace=workspace)
+    config_path.write_text(unexpected, encoding="utf-8")
+
+    with pytest.raises(IntegrityError, match="unexpected content"):
+        adapter.prepare_run_state(
+            run_dir=run_dir,
+            role_id="developer",
+            launch_mode="interactive",
+        )
+
+    assert config_path.read_text(encoding="utf-8") == unexpected
 
 
 def test_codex_interactive_session_refs_are_scoped_to_home_and_workspace(

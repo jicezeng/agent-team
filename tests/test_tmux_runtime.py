@@ -42,6 +42,110 @@ def test_has_session_uses_a_deterministic_per_run_server(
     )
 
 
+def test_worker_environment_injects_only_adapter_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    role = Role(
+        "developer",
+        "external",
+        "opencode",
+        "resume",
+        "full-access",
+        "0" * 64,
+    )
+
+    class Adapter:
+        def worker_environment_names(self, *, run_dir: Path, role_id: str):
+            assert run_dir == tmp_path / "run"
+            assert role_id == "developer"
+            return ("PROVIDER_API_KEY", "PROVIDER_BASE_URL")
+
+    monkeypatch.setattr("agent_team.adapters.get_adapter", lambda _adapter: Adapter())
+    monkeypatch.setenv("PROVIDER_API_KEY", "provider-secret")
+    monkeypatch.setenv("PROVIDER_BASE_URL", "https://provider.invalid/v1")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-forwarded")
+
+    arguments, sensitive_values = tmux_runtime._worker_environment_args(
+        run_dir,
+        role,
+    )
+
+    assert arguments == (
+        "-e",
+        "PROVIDER_API_KEY=provider-secret",
+        "-e",
+        "PROVIDER_BASE_URL=https://provider.invalid/v1",
+    )
+    assert "must-not-be-forwarded" not in arguments
+    assert sensitive_values == (
+        "provider-secret",
+        "https://provider.invalid/v1",
+    )
+    assert not tuple(run_dir.iterdir())
+
+
+def test_worker_environment_rejects_a_missing_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    role = Role(
+        "developer",
+        "external",
+        "opencode",
+        "resume",
+        "full-access",
+        "0" * 64,
+    )
+
+    class Adapter:
+        def worker_environment_names(self, **_kwargs):
+            return ("MISSING_PROVIDER_KEY",)
+
+    monkeypatch.setattr("agent_team.adapters.get_adapter", lambda _adapter: Adapter())
+    monkeypatch.delenv("MISSING_PROVIDER_KEY", raising=False)
+
+    with pytest.raises(AgentTeamError) as rejected:
+        tmux_runtime._worker_environment_args(run_dir, role)
+
+    assert rejected.value.code == "HARNESS_ENVIRONMENT_UNAVAILABLE"
+    assert "MISSING_PROVIDER_KEY" in rejected.value.message
+
+
+def test_tmux_failure_redacts_injected_environment_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "provider-secret-value"
+    result = type(
+        "Result",
+        (),
+        {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": f"failed near {secret}",
+        },
+    )()
+    monkeypatch.setattr(tmux_runtime, "tmux_executable", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(
+        tmux_runtime.subprocess, "run", lambda *_args, **_kwargs: result
+    )
+
+    with pytest.raises(AgentTeamError) as rejected:
+        tmux_runtime._run(
+            "new-window",
+            "-e",
+            f"PROVIDER_API_KEY={secret}",
+            sensitive_values=(secret,),
+        )
+
+    assert secret not in rejected.value.message
+    assert rejected.value.message.count("<redacted>") == 2
+
+
 def _external_team(workspace: Path):
     return make_team(
         run_id="at-test-tmux-runtime",
@@ -61,6 +165,75 @@ def _external_team(workspace: Path):
         max_turns=2,
         max_wall_time_seconds=300,
     )
+
+
+def _two_role_team(workspace: Path):
+    return make_team(
+        run_id="at-test-tmux-runtime",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            role_id: Role(
+                role_id,
+                "external",
+                "codex",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+            for role_id in ("developer", "reviewer")
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+
+def test_ensure_workers_creates_only_the_requested_role(
+    tmp_path: Path,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "roles").mkdir(parents=True)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(tmux_runtime, "tmux_executable", lambda: "/usr/bin/tmux")
+    monkeypatch.setattr(tmux_runtime, "has_session", lambda _run_id: False)
+    monkeypatch.setattr(
+        tmux_runtime,
+        "list_windows",
+        lambda _run_id: {
+            "reviewer": {
+                "tmux_pane_id": "%1",
+                "pane_pid": 1234,
+                "pane_dead": False,
+            }
+        },
+    )
+    monkeypatch.setattr(tmux_runtime, "process_start_id", lambda _pid: "start")
+    monkeypatch.setattr(
+        tmux_runtime,
+        "process_identity_state",
+        lambda _pid, _start_id: "match",
+    )
+    monkeypatch.setattr(
+        tmux_runtime,
+        "_run",
+        lambda *args, **_kwargs: calls.append(args),
+    )
+
+    result = tmux_runtime.ensure_workers(
+        run_dir,
+        _two_role_team(workspace),
+        role_ids=("reviewer",),
+    )
+
+    assert result["created"] == ["reviewer"]
+    assert calls[0][0] == "new-session"
+    assert "reviewer" in calls[0]
+    assert "developer" not in calls[0]
+    assert (run_dir / "roles" / "reviewer.json").exists()
+    assert not (run_dir / "roles" / "developer.json").exists()
 
 
 def test_ensure_workers_refuses_duplicate_when_tmux_is_missing(

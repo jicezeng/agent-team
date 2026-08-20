@@ -1,0 +1,22 @@
+{
+  "name": "@agent-team/dsh-origin",
+  "description": "Trusted DSH control-plane tool for invoking the Agent-Team CLI without exposing provider credentials to model-facing Bash",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml"
+  ],
+  "license": "Apache-2.0",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

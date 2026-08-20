@@ -1418,6 +1418,11 @@ def stage_external_action_locked(
                     target.launch_profile_sha256 or "",
                     target.launch_mode or "headless",
                 )
+                adapter.prepare_run_state(
+                    run_dir=run_dir,
+                    role_id=target.role_id,
+                    launch_mode=target.launch_mode or "headless",
+                )
             except AgentTeamError as exc:
                 after_probe = dt.datetime.now(dt.timezone.utc)
                 if after_probe >= deadline:
@@ -1584,11 +1589,17 @@ def deliver_outbox_locked(
             target = team.roles[outbox["to_role"]]
             if target.binding == "external":
                 try:
-                    get_adapter(target.adapter or "").assert_profile(
+                    adapter = get_adapter(target.adapter or "")
+                    adapter.assert_profile(
                         target.launch_profile or "",
                         target.session_policy or "",
                         target.launch_profile_sha256 or "",
                         target.launch_mode or "headless",
+                    )
+                    adapter.prepare_run_state(
+                        run_dir=run_dir,
+                        role_id=target.role_id,
+                        launch_mode=target.launch_mode or "headless",
                     )
                 except AgentTeamError as exc:
                     after_probe = dt.datetime.now(dt.timezone.utc)

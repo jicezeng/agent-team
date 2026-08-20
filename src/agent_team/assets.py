@@ -43,6 +43,10 @@ def dsh_tui_source() -> Path:
     return bundled_asset("plugins/deepseek-harness/agent-team-tui")
 
 
+def dsh_origin_source() -> Path:
+    return bundled_asset("plugins/deepseek-harness/agent-team-origin")
+
+
 def installed_claude_plugin() -> Path:
     return fixed_state_dir() / "installed" / "claude-code-plugin"
 
@@ -74,6 +78,10 @@ def resolved_dsh_home() -> Path:
 
 def installed_dsh_skill() -> Path:
     return resolved_dsh_home() / "skills" / "agent-team"
+
+
+def installed_dsh_origin() -> Path:
+    return resolved_dsh_home() / "plugins" / "agent-team-origin"
 
 
 def effective_claude_plugin() -> Path:

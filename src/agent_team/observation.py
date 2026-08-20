@@ -716,6 +716,7 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                         "model": None,
                         "reasoning_effort": None,
                         "fast_mode": None,
+                        "dsh_plugin": None,
                         "state": origin_role_state,
                         "worker_pid": None,
                         "worker_start_id": None,
@@ -764,10 +765,15 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                     f"Worker/tmux identity mismatch: {role.role_id}",
                     f"roles/{role.role_id}.json",
                 )
-            if projection.status in {"RUNNING", "BLOCKED"} and (
+            if (
+                projection.status == "RUNNING"
+                and projection.current_role == role.role_id
+                and (
                 not worker_alive or window is None
+                )
             ):
                 worker_missing = True
+            session = load_session(run_dir, role)
             if (
                 active
                 and active["role_id"] == role.role_id
@@ -786,9 +792,10 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                 role_state = "identity_unknown"
             elif worker_alive:
                 role_state = "idle"
+            elif session is not None:
+                role_state = "idle"
             else:
                 role_state = "not_started"
-            session = load_session(run_dir, role)
             role_items.append(
                 {
                     "role_id": role.role_id,
@@ -801,6 +808,7 @@ def derive_observation(run_dir: Path) -> dict[str, Any]:
                     "model": role.model,
                     "reasoning_effort": role.reasoning_effort,
                     "fast_mode": role.fast_mode,
+                    "dsh_plugin": role.dsh_plugin,
                     "state": role_state,
                     "worker_pid": worker["worker_pid"] if worker else None,
                     "worker_start_id": worker["worker_start_id"] if worker else None,
@@ -1300,9 +1308,17 @@ def diagnose(
                         "no active turn",
                     )
                 elif name == "worker" and role:
-                    if observation["run_status"] in {"RUNNING", "BLOCKED"} and role[
-                        "state"
-                    ] in {"not_started", "identity_unknown"}:
+                    worker_required = (
+                        observation["run_status"] == "RUNNING"
+                        and observation["current_role"] == role["role_id"]
+                    )
+                    if not worker_required:
+                        status, code, summary = (
+                            "not_applicable",
+                            "NOT_APPLICABLE",
+                            "inactive roles have no resident Worker",
+                        )
+                    elif role["state"] in {"not_started", "identity_unknown"}:
                         unknown = role["state"] == "identity_unknown"
                         status = "unknown" if unknown else "fail"
                         code = (
@@ -1353,15 +1369,15 @@ def diagnose(
                         "an unresolved process-safety recovery gate is active",
                     )
                 elif name == "tmux_runtime" and role:
-                    if observation["run_status"] in {
-                        "UNSTARTED",
-                        "COMPLETED",
-                        "CANCELLED",
-                    }:
+                    tmux_required = (
+                        observation["run_status"] == "RUNNING"
+                        and observation["current_role"] == role["role_id"]
+                    )
+                    if not tmux_required:
                         status, code, summary = (
                             "not_applicable",
                             "NOT_APPLICABLE",
-                            "tmux runtime is not required in this Run state",
+                            "inactive roles have no resident tmux runtime",
                         )
                     elif role["tmux_session"] is None or role["tmux_pane_id"] is None:
                         status, code, summary = (

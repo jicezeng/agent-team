@@ -67,6 +67,27 @@ def test_shared_integration_references_are_byte_identical() -> None:
         ).read_bytes()
 
 
+def test_dsh_origin_bundle_exposes_only_the_trusted_agent_team_cli() -> None:
+    root = (
+        REPOSITORY_ROOT
+        / "plugins"
+        / "deepseek-harness"
+        / "agent-team-origin"
+    )
+    source = (root / "lib" / "index.js").read_text(encoding="utf-8")
+    manifest = (root / "package.json").read_text(encoding="utf-8")
+    patch = (root / "cordis.patch.yml").read_text(encoding="utf-8")
+
+    assert '"name": "@agent-team/dsh-origin"' in manifest
+    assert "name: '@agent-team/dsh-origin'" in patch
+    assert "name: 'agent_team_cli'" in source
+    assert "ctx.credentials.resolve" in source
+    assert "ctx.credentials.resolve('DEEPSEEK_API_KEY')" in source
+    assert "argv: [executable, ...args]" in source
+    assert "from '" not in source
+    assert "child_process" not in source
+
+
 def test_harness_skill_variants_have_only_the_intended_origin_differences() -> None:
     codex_skill = (
         REPOSITORY_ROOT / "skills" / "codex" / "agent-team" / "SKILL.md"

@@ -63,6 +63,7 @@ uv run agent-team doctor --workspace /path/to/worktree --json
 - OpenCode skill: `~/.config/opencode/skills/agent-team`
 - DeepSeek Harness skill: `$DSH_HOME/skills/agent-team`, defaulting to
   `~/.dsh/skills/agent-team`
+- DeepSeek Harness Origin bundle: `$DSH_HOME/plugins/agent-team-origin`
 - managed DeepSeek Harness `0.1.0-rc.6`: `installed/deepseek-harness-runtime`
   under the fixed account state directory
 
@@ -72,6 +73,22 @@ Run/Role `DSH_HOME`, installs its bundled minimal interactive TUI there, and
 uses environment credentials such as `DEEPSEEK_API_KEY`. That private TUI is
 the External Adapter surface; a separately installed `dsh` remains the Origin
 surface.
+
+Agent-Team does not modify an existing DSH Profile. When a DSH Origin must
+control a Run that itself contains DSH External roles, activate the installed
+trusted control-plane bundle in the Profile you use:
+
+```bash
+dsh plugin --profile headless add ~/.dsh/plugins/agent-team-origin
+```
+
+Use the matching absolute `$DSH_HOME/plugins/agent-team-origin` path when
+`DSH_HOME` is customized. The bundle contributes one `agent_team_cli` tool. It
+runs only the fixed Agent-Team executable without a shell and resolves
+`DEEPSEEK_API_KEY` through DSH's in-process credential service, so the provider
+credential reaches DSH External Workers without becoming visible to the model
+or its Bash environment. Re-run the profile add after replacing the bundle if
+that Profile's package manager copied rather than linked the local package.
 
 For DeepSeek Harness, unset or blank `DSH_HOME` follows the current `$HOME`.
 An explicit value must resolve to an absolute path; only `~` and `~/...` expand
@@ -87,7 +104,9 @@ macOS and `~/.local/state/agent-team` on Linux. It is not configurable.
 
 After upgrading the package, run `agent-team install` again. Do not upgrade the
 runtime or integrations during an active Run; complete or cancel and safely
-recover it first. Do not copy `.agent-team/` or the fixed account state to
+finalize it first. `install` refuses while any Workspace Owner exists, including
+a Blocked Run or a terminal Run whose Origin exit is not finalized. Do not copy
+`.agent-team/` or the fixed account state to
 another machine to resume a Run: Harness Sessions, process identities, tmux
 workers, and workspace ownership are machine-local.
 
@@ -141,6 +160,9 @@ home, and resumes that same Session on later Turns. A real DSH Origin Skill load
 is still the authority for which resource root won; `doctor` checks that the
 installed Skill, managed runtime, TUI asset, credentials, and Profile mapping
 required for the selected direction are available.
+For a DSH-Origin → DSH-External team, the shared Skill uses `agent_team_cli`
+for every Agent-Team control action; ordinary DSH Bash intentionally scrubs
+credential-shaped environment variables and is not a valid substitute.
 
 ## Manual CLI bootstrap
 
@@ -195,18 +217,35 @@ a Session for each Turn. External roles default to `interactive` launch and
 --role-reasoning-effort ROLE=EFFORT
 --role-fast ROLE
 --role-launch-mode ROLE=<interactive|headless>
+--role-dsh-plugin ROLE=<workspace-package-directory>
 ```
 
 Omitted model and effort values inherit the relevant Harness default at
 `init`, then Agent-Team freezes the requested result in `team.json`. OpenCode
 models must resolve to `provider/model`; its effort value is passed as the
 provider-specific model Variant. If the effective OpenCode default is absent
-or unqualified, supply `--role-model ROLE=provider/model` explicitly.
+or unqualified, supply `--role-model ROLE=provider/model` explicitly. The same
+frozen OpenCode model is used for its primary agent and lightweight title
+generation so a custom endpoint never receives an unrelated catalog model.
+For interactive Codex roles, the private `CODEX_HOME` model-availability NUX
+table is preseeded for the frozen model at Codex's terminal shown-count (`4`).
+This suppresses native tooltip bookkeeping from rewriting the managed
+`config.toml`; a different model, count, Workspace trust entry, or any other
+config drift still fails closed.
 DSH models also use `provider/model`; its default is
 `deepseek-official/deepseek-v4-flash`, and effort is `off`, `high`, or `max`.
 `--role-fast` is Codex-only. DSH External roles support only `interactive`;
 requesting `headless` fails before Kickoff. Launch mode, Profile, model, effort,
 and fast mode cannot change after Kickoff.
+
+`--role-dsh-plugin` is DSH-only and declares one installable bundle directory
+inside the Run worktree. Agent-Team does not snapshot it at `init`: when that
+role is first routed, the Adapter copies the then-current package into the
+role-private DSH Profile, freezes its file manifest and SHA-256, and includes
+the hash in the LaunchSpec. This lets a Developer and Reviewer finish a plugin
+before a fresh Validator Agent is created, without nesting DSH from a
+model-facing Bash process. The frozen copy remains authoritative for that role
+for the rest of the Run; testing a later revision requires a new Run.
 
 Before the first interactive Claude Code Run in a worktree, establish Claude's
 own workspace trust in a normal terminal:
@@ -252,7 +291,15 @@ YOLO confirmation. Agent-Team launches OpenCode with a private per-Run/Role
 `XDG_CONFIG_HOME`, inline permission/agent config,
 `OPENCODE_DISABLE_PROJECT_CONFIG=1`, and `--pure`. This excludes mutable user
 and project permission, MCP, agent, and external-plugin config while preserving
-the machine-local OpenCode credential and Session stores. Managed OpenCode
+the machine-local OpenCode credential and Session stores. If the selected model
+uses a custom provider, Agent-Team freezes only that provider definition on the
+role's first activation. Expanded credentials are converted back to
+`{env:VARIABLE}` references; a literal credential that cannot be represented
+safely fails before launch instead of entering managed state or traces. At
+Worker creation, Agent-Team injects only the environment names referenced by
+that frozen provider through the tmux window environment. Missing or empty
+values fail closed, and their plaintext values are never written to the
+provider snapshot, `LaunchSpec`, Journal, or trace. Managed OpenCode
 configuration has higher priority and remains outside the Profile Hash.
 
 DSH's sandbox is a file-effect boundary, not a complete host sandbox.
@@ -277,9 +324,11 @@ boundary is security-critical.
 
 `init` commits an UNSTARTED audit directory but starts no process and acquires
 no workspace ownership. `start` performs final checks, records the single
-Kickoff, acquires durable ownership, and creates one tmux Worker window for
-each External role. Repeated `start` converges through deterministic recovery;
-it does not create a second Kickoff.
+Kickoff, acquires durable ownership, and creates a tmux Worker only for the
+initial External role. Each Handoff retires the sender Worker and lazily creates
+the target Worker; a later route back creates another Worker process and
+resumes the frozen Harness Session when requested. Repeated `start` converges
+through deterministic recovery; it does not create a second Kickoff.
 
 Each External Turn receives these environment variables:
 

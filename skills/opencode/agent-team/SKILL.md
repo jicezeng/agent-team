@@ -75,6 +75,11 @@ External business Turn inside an existing Run:
    trust prompt, and exit. Never edit its trust state or accept it with tmux
    input; `HARNESS_WORKSPACE_TRUST_REQUIRED` is a pre-Kickoff retry of the same
    UNSTARTED Run, not a second Agent-Team permission decision.
+   When a DSH role must validate a Workspace bundle produced during the Run,
+   add `--role-dsh-plugin ROLE=WORKSPACE_PATH`. The directory must exist at
+   `init`; Agent-Team copies and freezes its current contents in that role's
+   private DSH Profile on the first route. Tell the role to call the installed
+   tool directly. Never ask it to launch a nested DSH or manage tmux itself.
 7. Choose the observability policy. Use `full` only when every business role is
    External and Origin is control-plane only; otherwise use `standard`.
 8. Resolve `agent-team` once to its canonical absolute executable path and
@@ -82,6 +87,12 @@ External business Turn inside an existing Run:
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it
    from `PATH` between turns. Generate Request and Protocol, then run the exact
    CLI flow:
+
+   A DeepSeek Harness Origin must use the installed `agent_team_cli` tool for
+   every Agent-Team command when the Run contains DSH External roles. Ordinary
+   DSH Bash scrubs the provider credential. If the tool is unavailable, stop
+   before `init` and ask the user to activate the installed Origin Bundle in
+   the current DSH Profile.
 
 ```bash
 "<absolute-agent-team-cli>" init \
@@ -101,7 +112,10 @@ External business Turn inside an existing Run:
 ```
 
 Omit `--confirm-full-access` when all External roles explicitly use restricted
-Profiles. Save the Run ID and immediately call:
+Profiles. Role specifications stay immutable, while External Worker processes
+are lazy: Agent-Team creates only the currently routed role and retires it
+after the token moves. Do not pre-launch roles or emulate dynamic Agents with
+nested Harness processes. Save the Run ID and immediately call:
 
 ```bash
 "<absolute-agent-team-cli>" wait-origin --run <run-id> --timeout 90

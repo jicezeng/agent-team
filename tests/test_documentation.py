@@ -302,6 +302,7 @@ def test_deepseek_design_freezes_managed_interactive_contract() -> None:
     assert "interactive-only" in content.lower()
     assert "Python SDK Bridge" in content
     assert "private reasoning text" in content
+    assert "agent_team_cli" in content
 
 
 def test_shared_codex_dsh_skill_selects_explicit_origin_metadata() -> None:

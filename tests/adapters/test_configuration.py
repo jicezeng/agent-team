@@ -347,6 +347,64 @@ def test_role_spec_freezes_explicit_harness_options(
     assert role.fast_mode is True
 
 
+def test_role_spec_freezes_workspace_local_dsh_plugin_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin = workspace / "packages" / "candidate"
+    plugin.mkdir(parents=True)
+
+    class StubAdapter:
+        @staticmethod
+        def assert_launch_mode(selected_mode: str) -> None:
+            assert selected_mode == "interactive"
+
+        @staticmethod
+        def resolve_launch_options(**_values) -> HarnessLaunchOptions:
+            return HarnessLaunchOptions(
+                model="deepseek-official/test",
+                reasoning_effort="high",
+            )
+
+        @staticmethod
+        def profile_fingerprint(
+            _profile: str,
+            _policy: str,
+            _launch_mode: str,
+        ) -> str:
+            return "a" * 64
+
+    monkeypatch.setattr(
+        "agent_team.bootstrap.get_adapter",
+        lambda _adapter_id: StubAdapter(),
+    )
+
+    _, role = parse_role_spec(
+        "validator=deepseek-harness:fresh:full-access",
+        dsh_plugin=str(plugin),
+        workspace=workspace,
+    )
+
+    assert role.dsh_plugin == "packages/candidate"
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(InvalidArgument, match="inside"):
+        parse_role_spec(
+            "validator=deepseek-harness:fresh:full-access",
+            dsh_plugin=str(outside),
+            workspace=workspace,
+        )
+
+    with pytest.raises(InvalidArgument, match="deepseek-harness"):
+        parse_role_spec(
+            "reviewer=codex:fresh:full-access",
+            dsh_plugin=str(plugin),
+            workspace=workspace,
+        )
+
+
 @pytest.mark.parametrize(
     "adapter_id",
     ["codex", "claude-code", "opencode", "deepseek-harness"],

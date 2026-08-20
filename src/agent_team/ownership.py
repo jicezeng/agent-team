@@ -42,11 +42,9 @@ def release_terminal_owner_locked(run_dir: Path) -> bool:
                 pgid=runner_pgid,
             ) not in {"gone", "reused"}:
                 return False
-    # ``start`` prepares private state for every External role before Kickoff.
-    # A terminal Run may never route to some of those roles, so their adapters
-    # have no Turn finalizer that could remove transient authentication/probe
-    # state. Only after every Runtime above is finalized and process-quiescent
-    # may terminal cleanup close every prepared External role.
+    # A route probe may prepare Adapter-private state before its Event commits.
+    # Iterate the immutable role set after process quiescence so such state is
+    # closed even if the route failed; unprepared roles are an idempotent no-op.
     for role in projection.team.roles.values():
         if role.binding != "external":
             continue

@@ -29,6 +29,7 @@ TEAM_REQUIRED = {
 TEAM_V2_REQUIRED = TEAM_REQUIRED | {"observability"}
 TEAM_V3_REQUIRED = TEAM_V2_REQUIRED
 TEAM_V4_REQUIRED = TEAM_V3_REQUIRED
+TEAM_V5_REQUIRED = TEAM_V4_REQUIRED
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
 REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
@@ -80,6 +81,7 @@ class Role:
     reasoning_effort: str | None = None
     fast_mode: bool | None = None
     launch_mode: str | None = None
+    dsh_plugin: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         if self.binding == "origin":
@@ -98,6 +100,7 @@ class Role:
                 "reasoning_effort": self.reasoning_effort,
                 "fast_mode": self.fast_mode,
             },
+            "dsh_plugin": self.dsh_plugin,
         }
 
 
@@ -111,11 +114,11 @@ class Team:
     max_turns: int
     max_wall_time_seconds: int
     observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
-    config_schema_version: int = 4
+    config_schema_version: int = 5
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -215,7 +218,7 @@ def _require_exact(
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
     schema_version = require_schema_version(
         value,
-        (1, 2, 3, 4),
+        (1, 2, 3, 4, 5),
         subject="team.json",
     )
     if schema_version == 1:
@@ -226,6 +229,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_V3_REQUIRED, "team.json")
     elif schema_version == 4:
         _require_exact(value, TEAM_V4_REQUIRED, "team.json")
+    elif schema_version == 5:
+        _require_exact(value, TEAM_V5_REQUIRED, "team.json")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise IntegrityError("team.json run_id is invalid")
@@ -278,6 +283,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 external_fields.add("harness_options")
             if schema_version >= 4:
                 external_fields.add("launch_mode")
+            if schema_version >= 5:
+                external_fields.add("dsh_plugin")
             _require_exact(
                 role_value,
                 external_fields,
@@ -290,6 +297,7 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
             launch_mode = (
                 role_value["launch_mode"] if schema_version >= 4 else "headless"
             )
+            dsh_plugin = role_value["dsh_plugin"] if schema_version >= 5 else None
             if not isinstance(adapter, str) or adapter not in EXTERNAL_ADAPTER_IDS:
                 raise IntegrityError(f"unsupported adapter for {role_id}: {adapter!r}")
             if not isinstance(policy, str) or policy not in {"resume", "fresh"}:
@@ -309,6 +317,15 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 or launch_mode not in ROLE_LAUNCH_MODES
             ):
                 raise IntegrityError(f"invalid launch mode for {role_id}")
+            if dsh_plugin is not None and (
+                adapter != "deepseek-harness"
+                or not isinstance(dsh_plugin, str)
+                or not dsh_plugin
+                or dsh_plugin.startswith("/")
+                or "\\" in dsh_plugin
+                or any(part in {"", ".", ".."} for part in dsh_plugin.split("/"))
+            ):
+                raise IntegrityError(f"invalid DSH plugin path for {role_id}")
             model: str | None = None
             reasoning_effort: str | None = None
             fast_mode: bool | None = None
@@ -369,6 +386,7 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 reasoning_effort,
                 fast_mode,
                 launch_mode,
+                dsh_plugin,
             )
         else:
             raise IntegrityError(f"invalid binding for role {role_id}: {binding!r}")
@@ -554,7 +572,7 @@ def make_team(
         max_turns,
         max_wall_time_seconds,
         observability or ObservabilityPolicy(),
-        4,
+        5,
     )
     try:
         return parse_team(team.to_json())

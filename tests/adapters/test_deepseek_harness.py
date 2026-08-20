@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_team.adapters.base import HarnessLaunchOptions
 from agent_team.adapters.deepseek_harness import DeepSeekHarnessAdapter
 from agent_team.assets import dsh_tui_source
-from agent_team.errors import AgentTeamError, InvalidArgument
+from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 
 from ._support import launch_context
 
@@ -47,6 +48,13 @@ def _stub_runtime(
     monkeypatch.setattr(adapter, "executable", lambda: executable)
     monkeypatch.setattr(adapter, "executable_version", lambda: "0.1.0-rc.6")
     monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        "agent_team.adapters.deepseek_harness.load_team",
+        lambda _run_dir: SimpleNamespace(
+            workspace=_run_dir.parent.parent.parent,
+            roles={"developer": SimpleNamespace(dsh_plugin=None)},
+        ),
+    )
     return state, runtime
 
 
@@ -185,6 +193,129 @@ def test_dsh_interactive_launch_prepares_private_tui_and_resumes_session(
     assert stat.S_IMODE(session_log.stat().st_mode) == 0o600
 
 
+def test_dsh_role_installs_and_freezes_workspace_bundle_on_activation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "packages" / "candidate"
+    (source / "lib").mkdir(parents=True)
+    (source / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "@example/candidate",
+                "version": "1.2.3",
+                "type": "module",
+                "main": "lib/index.js",
+                "dsh": {"bundle": {"patch": "./cordis.patch.yml"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "cordis.patch.yml").write_text("[]\n", encoding="utf-8")
+    (source / "lib" / "index.js").write_text(
+        "export const name = 'candidate'\n",
+        encoding="utf-8",
+    )
+    (source / "node_modules").mkdir()
+    (source / "node_modules" / "workspace-dependency").symlink_to(source / "lib")
+    run_dir = workspace / ".agent-team" / "runs" / "at-plugin-test"
+    turn_dir = run_dir / "turns" / "turn-0001"
+    turn_dir.mkdir(parents=True)
+    adapter = DeepSeekHarnessAdapter()
+    state, _runtime = _stub_runtime(monkeypatch, tmp_path, adapter)
+    monkeypatch.setattr(
+        "agent_team.adapters.deepseek_harness.load_team",
+        lambda _run_dir: SimpleNamespace(
+            workspace=workspace,
+            roles={
+                "developer": SimpleNamespace(dsh_plugin="packages/candidate")
+            },
+        ),
+    )
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    context = launch_context(
+        adapter=adapter,
+        session_policy="fresh",
+        session_ref=None,
+        model="deepseek-official/deepseek-v4-flash",
+        reasoning_effort="high",
+        launch_mode="interactive",
+        workspace=str(workspace),
+        turn_dir=str(turn_dir),
+    )
+    launch = adapter.prepare_launch(context)
+    home = Path(launch.env["DSH_HOME"])
+    profile = home / "profiles" / "agent-team"
+    manifest = json.loads((profile / "package.json").read_text(encoding="utf-8"))
+    installed = profile / "node_modules" / "@example" / "candidate"
+
+    assert manifest["dsh"]["profile"]["bundles"] == [
+        "@deepseek-ai/dsh-base",
+        "@example/candidate",
+        "@agent-team/dsh-tui",
+    ]
+    assert manifest["dependencies"] == {"@example/candidate": "1.2.3"}
+    assert (installed / "lib" / "index.js").read_text(encoding="utf-8") == (
+        "export const name = 'candidate'\n"
+    )
+    assert not (installed / "node_modules").exists()
+    assert len(launch.env["AGENT_TEAM_DSH_PLUGIN_SHA256"]) == 64
+    assert home.is_relative_to(state / "harness-homes" / "deepseek-harness")
+
+    (source / "lib" / "index.js").write_text(
+        "export const name = 'changed-after-activation'\n",
+        encoding="utf-8",
+    )
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    assert (installed / "lib" / "index.js").read_text(encoding="utf-8") == (
+        "export const name = 'candidate'\n"
+    )
+
+    snapshot_path = home / "agent-team-dsh-plugin.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["content_sha256"] = "0" * 64
+    snapshot_path.chmod(0o600)
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    with pytest.raises(IntegrityError, match="snapshot"):
+        adapter.prepare_launch(context)
+
+
+def test_dsh_role_rejects_candidate_that_shadows_managed_bundles(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "candidate"
+    source.mkdir()
+    (source / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "@agent-team/dsh-tui",
+                "version": "1.0.0",
+                "dsh": {"bundle": {"patch": "cordis.patch.yml"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "cordis.patch.yml").write_text("[]\n", encoding="utf-8")
+
+    with pytest.raises(AgentTeamError) as rejected:
+        DeepSeekHarnessAdapter._candidate_contract(
+            source,
+            source_relative="candidate",
+        )
+
+    assert rejected.value.code == "DSH_PLUGIN_INVALID"
+
+
 def test_dsh_resume_rejects_missing_private_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -229,6 +360,10 @@ def test_bundled_dsh_tui_never_renders_private_reasoning() -> None:
         "text-delta", 1
     )[0]
     assert "[thinking]" in source
+    assert "const initialTurnReason = new Promise" in source
+    assert "resolveInitialTurn?.(reason)" in source
+    assert "assertInitialTurnCompleted(await renderer.initialTurnReason)" in source
+    assert "initial agent turn did not complete" in source
     assert "session-persistence-jsonl" in patch
     assert "compression: none" in patch
     assert "tool-subagent" in patch

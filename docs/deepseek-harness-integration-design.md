@@ -8,8 +8,9 @@
 
 DeepSeek Harness（DSH）支持两个独立方向：
 
-1. **DSH 作为 Origin**：加载 Agent-Team 的共享 Skill，通过既有 CLI 创建、等待和
-   管理 Run。
+1. **DSH 作为 Origin**：加载 Agent-Team 的共享 Skill；普通团队可调用既有 CLI，
+   DSH-Origin → DSH-External 团队通过可信 `agent_team_cli` 工具调用同一 CLI，避免
+   model-facing Bash 的 Credential Scrub 阻断子 Agent 认证。
 2. **DSH 作为 External Role**：Agent-Team 在 tmux 中启动受管 DSH 交互式 TUI，
    并在后续 Turn 恢复同一原生 DSH Session。
 
@@ -47,9 +48,11 @@ flowchart LR
 
 ## 3. 安装与版本冻结
 
-`agent-team install` 完成两类 DSH 安装：
+`agent-team install` 完成三类 DSH 安装：
 
 - 把 Codex 同源 Skill 复制到 `$DSH_HOME/skills/agent-team`，供 DSH Origin 使用；
+- 把 `@agent-team/dsh-origin` Bundle 复制到
+  `$DSH_HOME/plugins/agent-team-origin`，由用户显式加入所选 DSH Profile；
 - 用 pnpm 安装精确版本 `@deepseek-ai/dsh@0.1.0-rc.6` 到固定账号状态目录的
   `installed/deepseek-harness-runtime`，供 External Adapter 使用。
 
@@ -79,9 +82,17 @@ Node.js 和 pnpm 是 `agent-team install` 的前提。Codex、Claude Code、Open
 └── sessions/
 ```
 
-Adapter 在 Kickoff 前创建私有 `DSH_HOME`，复制 bundled TUI，并冻结以下 Profile：
+若该 Role 声明 `--role-dsh-plugin ROLE=<workspace-package-directory>`，首次路由到
+它时还会把当时的 Package 内容复制到上述 Profile 的 `node_modules`，将 Package
+Bundle 插入 `dsh.profile.bundles`，并写入不可变的文件 Manifest 与内容 Hash。Role
+直接在自己的受管 DSH 中调用该插件；不从模型 Bash 启动子 DSH，也不把父 DSH 的
+Credential 转交给模型工具进程。
 
-- 只加载 `@deepseek-ai/dsh-base` 与 `@agent-team/dsh-tui`；
+Adapter 在该 Role 首次接收路由前创建私有 `DSH_HOME`，复制 bundled TUI，并冻结以下
+Profile：
+
+- 只加载 `@deepseek-ai/dsh-base`、`@agent-team/dsh-tui`，以及该 Role 显式声明、
+  首次激活时冻结的至多一个 Workspace DSH Bundle；
 - 禁用 HMR、Telemetry、Title LLM 和会话内 Permission 切换；
 - 禁用用户 Profile、Skill、Subagent、Workflow 与 Ralph，避免未受管递归 Worker；
 - Session 使用无压缩私有 JSONL Store；
@@ -110,6 +121,12 @@ dsh --profile agent-team \
 TUI 只渲染公开模型文本、有限 Tool 状态，以及不含正文的 `[thinking]` 标记。它不把
 private reasoning text 输出到 PTY。PTY 字节进入现有 Diagnostic/Raw Retention 路径；
 与其他 Interactive Adapter 一样，Pane 文本不是结构化完成或路由证据。
+
+若首轮 DSH `turn/end` 的结构化原因不是 `completed`（例如 Provider 返回 Quota、认证
+或请求错误），TUI 必须非零退出，使现有 Supervisor/Worker 以技术失败 Fail Closed；
+不得回到 `dsh> ` 后把失败 Turn 留成假性 `RUNNING`。TUI 必须等待该结构化事件，不能
+用 `whenIdle()` 的先后顺序猜测终态；只有首轮正常完成后才保留输入循环。若模型已经
+提交正式 Outbox，Supervisor 仍可在事件到达前按 Outbox 合同终止进程组。
 
 External Turn 获得标准环境：
 
@@ -160,6 +177,16 @@ DSH Origin 继续复用 Codex Skill Source。安装目标由同一 `DSH_HOME` �
 `--origin-harness deepseek-harness`。该变量只选择审计元数据，不授予权限。真实 DSH
 Skill Load 仍是 Resource Root 的权威；`doctor` 只能验证 Agent-Team 安装副本。
 
+DSH 的 model-facing Bash 按设计删除 Credential-shaped 环境变量。若团队包含 DSH
+External Role，Origin 必须使用显式激活的 `agent_team_cli` 工具，而不是 Bash：
+
+- 工具只接受 Agent-Team 公共子命令参数数组，不经过 Shell；
+- Agent-Team 可执行路径在插件生命周期内只解析一次；
+- 每次调用通过 DSH Credential Service 解析 `DEEPSEEK_API_KEY`，仅作为受管
+  Agent-Team 子进程的显式环境项；输出不包含 Credential；
+- Profile 激活由用户执行 `dsh plugin --profile <name> add
+  <DSH_HOME>/plugins/agent-team-origin`，`agent-team install` 不修改用户 Profile。
+
 Origin 内部工具过程不由 Agent-Team 捕获。Full Audit 因此仍要求 Origin 只做控制面，
 所有业务角色使用 External Binding。
 
@@ -184,12 +211,15 @@ Symlink 都阻止清理并进入完整性故障。
 
 发布前必须同时通过：
 
-1. wheel 包含 DSH TUI，`agent-team install` 可从干净状态安装并复验固定 Runtime；
+1. wheel 包含 DSH TUI 与 Origin Bundle，`agent-team install` 可从干净状态安装并
+   复验固定 Runtime；
 2. 配置、Profile、Model、Launch Mode、私有 Home、Session 发现和清理的单元测试；
 3. 真实 DSH 进程完成 Session Create，并由另一个进程 Resume 同一 Session；
 4. 真实 Agent-Team Run 至少两次调度同一个 DSH `resume` Role，通过正式动作完成闭环；
 5. `attach` 可观察 DSH TUI，Transcript/Trace 不把 private reasoning 正文作为公开消息；
 6. Completion 后 Owner、Worker、Runner 和 tmux Runtime 均安全收口。
+7. 真实 DSH Origin 通过 `agent_team_cli` 启动至少一个 DSH External Role，凭据不出现
+   在模型消息、Bash 环境、工具结果或 Agent-Team Trace 中。
 
 Origin 方向的历史证据见
 [`deepseek-harness-origin-v0.1.4-validation-report.md`](validation/deepseek-harness-origin-v0.1.4-validation-report.md)；

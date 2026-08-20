@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from .config import Team
+from .config import Role, Team
 from .errors import AgentTeamError, IntegrityError
 from .processes import process_identity_state, process_start_id
 from .util import atomic_json, path_entry_exists, read_json, rfc3339
@@ -52,6 +54,7 @@ def _run(
     *args: str,
     check: bool = True,
     server: str | None = None,
+    sensitive_values: Iterable[str] = (),
 ) -> subprocess.CompletedProcess[str]:
     server_args = ["-L", server] if server is not None else []
     result = subprocess.run(
@@ -61,9 +64,16 @@ def _run(
         check=False,
     )
     if check and result.returncode != 0:
+        secrets = tuple(value for value in sensitive_values if value)
+
+        def redact(value: str) -> str:
+            for secret in secrets:
+                value = value.replace(secret, "<redacted>")
+            return value
+
         raise AgentTeamError(
             "TMUX_COMMAND_FAILED",
-            f"tmux {' '.join(args)} failed: {result.stderr.strip()}",
+            f"tmux {redact(' '.join(args))} failed: {redact(result.stderr.strip())}",
         )
     return result
 
@@ -135,13 +145,57 @@ def _worker_shell_command(run_dir: Path, role_id: str) -> str:
     return "exec " + shlex.join(argv)
 
 
-def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
-    roles = [
+def _worker_environment_args(
+    run_dir: Path,
+    role: Role,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    from .adapters import get_adapter
+
+    adapter = get_adapter(role.adapter or "")
+    names = adapter.worker_environment_names(
+        run_dir=run_dir,
+        role_id=role.role_id,
+    )
+    arguments: list[str] = []
+    sensitive_values: list[str] = []
+    for name in names:
+        value = os.environ.get(name)
+        if not value:
+            raise AgentTeamError(
+                "HARNESS_ENVIRONMENT_UNAVAILABLE",
+                f"role {role.role_id} requires non-empty environment variable "
+                f"{name!r} for its frozen provider",
+            )
+        arguments.extend(("-e", f"{name}={value}"))
+        sensitive_values.append(value)
+    return tuple(arguments), tuple(sensitive_values)
+
+
+def ensure_workers(
+    run_dir: Path,
+    team: Team,
+    *,
+    role_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    all_roles = [
         role
         for role in sorted(team.roles.values(), key=lambda item: item.role_id)
         if role.binding == "external"
     ]
-    if not roles:
+    requested = (
+        {role.role_id for role in all_roles}
+        if role_ids is None
+        else set(role_ids)
+    )
+    known = {role.role_id for role in all_roles}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise AgentTeamError(
+            "ROLE_NOT_EXTERNAL",
+            f"cannot create Worker for non-External role(s): {', '.join(unknown)}",
+        )
+    roles = [role for role in all_roles if role.role_id in requested]
+    if not all_roles or (not roles and not has_session(team.run_id)):
         return {"session": None, "created": [], "existing": []}
     tmux_executable()
     created: list[str] = []
@@ -263,6 +317,10 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
         for role in roles:
             assert_worker_not_live_without_window(role.role_id)
         first = roles[0]
+        environment_args, sensitive_values = _worker_environment_args(
+            run_dir,
+            first,
+        )
         _run(
             "new-session",
             "-d",
@@ -270,13 +328,15 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
             name,
             "-n",
             first.role_id,
+            *environment_args,
             _worker_shell_command(run_dir, first.role_id),
             server=server_name(team.run_id),
+            sensitive_values=sensitive_values,
         )
         created.append(first.role_id)
         newly_created.add(first.role_id)
     windows = list_windows(team.run_id)
-    unexpected = sorted(set(windows) - {role.role_id for role in roles})
+    unexpected = sorted(set(windows) - known)
     if unexpected:
         raise IntegrityError(
             f"tmux session contains unexpected windows: {unexpected}"
@@ -290,18 +350,28 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
             if validate_existing_worker(role.role_id, window):
                 existing.append(role.role_id)
                 continue
+            environment_args, sensitive_values = _worker_environment_args(
+                run_dir,
+                role,
+            )
             _run(
                 "respawn-pane",
                 "-k",
                 "-t",
                 window["tmux_pane_id"],
+                *environment_args,
                 _worker_shell_command(run_dir, role.role_id),
                 server=server_name(team.run_id),
+                sensitive_values=sensitive_values,
             )
             created.append(role.role_id)
             record_created_worker(role.role_id)
             continue
         assert_worker_not_live_without_window(role.role_id)
+        environment_args, sensitive_values = _worker_environment_args(
+            run_dir,
+            role,
+        )
         _run(
             "new-window",
             "-d",
@@ -309,8 +379,10 @@ def ensure_workers(run_dir: Path, team: Team) -> dict[str, Any]:
             name,
             "-n",
             role.role_id,
+            *environment_args,
             _worker_shell_command(run_dir, role.role_id),
             server=server_name(team.run_id),
+            sensitive_values=sensitive_values,
         )
         created.append(role.role_id)
         record_created_worker(role.role_id)

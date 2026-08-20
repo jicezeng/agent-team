@@ -14,7 +14,8 @@ from agent_team.adapters.base import (
     StreamRecord,
 )
 from agent_team.adapters.opencode import OpenCodeAdapter
-from agent_team.errors import InvalidArgument
+from agent_team.config import Role, make_team
+from agent_team.errors import AgentTeamError, InvalidArgument
 
 from ._support import launch_context, record
 
@@ -40,6 +41,38 @@ def _prepare_adapter(
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/opencode"))
     monkeypatch.setattr(adapter, "executable_version", lambda: "1.18.18")
     monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        "agent_team.adapters.opencode.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"model": "deepseek/deepseek-v4-pro", "provider": {}}),
+            stderr="",
+        ),
+    )
+    team = make_team(
+        run_id="at-adapter-test",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "opencode",
+                "resume",
+                "default",
+                adapter.profile_fingerprint("default", "resume"),
+                "deepseek/deepseek-v4-pro",
+                None,
+                None,
+                "headless",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=60,
+    )
+    (run_dir / "team.json").write_bytes(team.canonical_bytes())
     adapter.prepare_run_state(
         run_dir=run_dir,
         role_id="developer",
@@ -71,10 +104,7 @@ def test_opencode_profiles_are_equivalent_and_do_not_claim_a_shell_sandbox(
     assert "webfetch" not in default
     assert trusted["webfetch"] == "allow"
     assert default["external_directory"] == "deny"
-    assert (
-        default["bash"]["/opt/agent-team/bin/agent-team handoff *"]
-        == "allow"
-    )
+    assert default["bash"]["/opt/agent-team/bin/agent-team handoff *"] == "allow"
     assert full["*"] == "allow"
     assert full["bash"]["/opt/agent-team/bin/agent-team cancel *"] == "deny"
 
@@ -113,6 +143,8 @@ def test_opencode_resolves_qualified_user_model_and_opaque_variant(
     def run(command, **kwargs):
         assert command == ["/bin/opencode", "debug", "config", "--pure"]
         assert kwargs["cwd"] == tmp_path
+        assert kwargs["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+        assert kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
         return subprocess.CompletedProcess(
             command,
             0,
@@ -182,6 +214,8 @@ def test_opencode_headless_start_and_resume_use_stdin_and_frozen_config(
         assert launch.env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
         config = json.loads(launch.env["OPENCODE_CONFIG_CONTENT"])
         assert config["share"] == "disabled"
+        assert config["model"] == "deepseek/deepseek-v4-pro"
+        assert config["small_model"] == "deepseek/deepseek-v4-pro"
         assert config["agent"]["agent-team-runtime"]["model"] == (
             "deepseek/deepseek-v4-pro"
         )
@@ -194,6 +228,149 @@ def test_opencode_headless_start_and_resume_use_stdin_and_frozen_config(
     assert resumed.argv[resumed.argv.index("--session") + 1] == (
         "ses_003ac0a84ffe623SFrcdLywRW1"
     )
+
+
+def test_opencode_freezes_selected_custom_provider_without_copying_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-adapter-test"
+    turn_dir = run_dir / "turns" / "turn-0001"
+    turn_dir.mkdir(parents=True)
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(
+        "agent_team.adapters.opencode.fixed_state_dir",
+        lambda: state_dir,
+    )
+    monkeypatch.setattr(
+        "agent_team.adapters.opencode.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-secret-value")
+    adapter = OpenCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/opencode"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "1.18.18")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "model": "anthropic/doubao-seed-2.0-pro",
+                    "provider": {
+                        "anthropic": {
+                            "options": {
+                                "baseURL": "https://example.invalid/v1",
+                                "apiKey": "test-provider-secret-value",
+                                "headers": {
+                                    "Authorization": (
+                                        "Bearer test-provider-secret-value"
+                                    )
+                                },
+                            },
+                            "models": {"doubao-seed-2.0-pro": {"name": "Doubao"}},
+                        }
+                    },
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_team.adapters.opencode.subprocess.run", run)
+    profile_hash = adapter.profile_fingerprint("full-access", "resume")
+    team = make_team(
+        run_id="at-adapter-test",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "opencode",
+                "resume",
+                "full-access",
+                profile_hash,
+                "anthropic/doubao-seed-2.0-pro",
+                None,
+                None,
+                "headless",
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=60,
+    )
+    (run_dir / "team.json").write_bytes(team.canonical_bytes())
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="headless",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    home = adapter._config_home(run_dir, "developer")
+    snapshot_text = (home / "agent-team-provider.json").read_text(encoding="utf-8")
+    assert "test-provider-secret-value" not in snapshot_text
+    snapshot = json.loads(snapshot_text)
+    provider = snapshot["provider"]
+    assert provider["options"]["apiKey"] == "{env:ANTHROPIC_API_KEY}"
+    assert provider["options"]["headers"]["Authorization"] == (
+        "Bearer {env:ANTHROPIC_API_KEY}"
+    )
+    assert adapter.worker_environment_names(
+        run_dir=run_dir,
+        role_id="developer",
+    ) == ("ANTHROPIC_API_KEY",)
+
+    context = launch_context(
+        adapter=adapter,
+        session_policy="resume",
+        session_ref=None,
+        profile="full-access",
+        model="anthropic/doubao-seed-2.0-pro",
+        workspace=str(workspace),
+        turn_dir=str(turn_dir),
+    )
+    launch = adapter.prepare_launch(context)
+    assert "test-provider-secret-value" not in launch.env["OPENCODE_CONFIG_CONTENT"]
+    inline = json.loads(launch.env["OPENCODE_CONFIG_CONTENT"])
+    assert inline["provider"]["anthropic"] == provider
+    assert inline["model"] == "anthropic/doubao-seed-2.0-pro"
+    assert inline["small_model"] == "anthropic/doubao-seed-2.0-pro"
+    assert "test-provider-secret-value" not in json.dumps(launch.to_json())
+
+    monkeypatch.setattr(
+        "agent_team.adapters.opencode.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("frozen provider was re-resolved"),
+    )
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="headless",
+    )
+
+
+def test_opencode_rejects_literal_provider_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_TEAM_UNSAFE_LITERAL", raising=False)
+    with pytest.raises(AgentTeamError) as raised:
+        OpenCodeAdapter._sanitize_provider_value(
+            {"options": {"apiKey": "not-backed-by-an-environment-variable"}}
+        )
+    assert raised.value.code == "HARNESS_PROVIDER_CREDENTIAL_UNSAFE"
+
+
+def test_opencode_does_not_treat_model_tokenizer_as_a_credential() -> None:
+    value = {"models": {"example": {"tokenizer": "provider-default"}}}
+    assert OpenCodeAdapter._sanitize_provider_value(value) == value
 
 
 def test_opencode_interactive_launch_uses_direct_mode_and_resume_session(
@@ -222,6 +399,8 @@ def test_opencode_interactive_launch_uses_direct_mode_and_resume_session(
     assert launch.expected_session_ref == "ses_003ac0a84ffe623SFrcdLywRW1"
     assert launch.prompt_file == str(turn_dir / "process" / "prompt.md")
     config = json.loads(launch.env["OPENCODE_CONFIG_CONTENT"])
+    assert config["model"] == "deepseek/deepseek-v4-pro"
+    assert config["small_model"] == "deepseek/deepseek-v4-pro"
     assert config["agent"]["agent-team-runtime"]["variant"] == "high"
 
 

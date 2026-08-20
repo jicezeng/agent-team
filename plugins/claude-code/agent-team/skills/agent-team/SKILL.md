@@ -104,6 +104,12 @@ existing Run:
    worktree prerequisite, not another Run permission decision. For
    `full-access`, the Adapter reuses the confirmation from step 5 to suppress
    Claude's separate dangerous-mode prompt.
+   When a DSH role must validate a Workspace bundle produced during the Run,
+   add `--role-dsh-plugin <role>=<workspace-package-directory>`. The directory
+   must exist at `init`; Agent-Team copies and freezes its current contents in
+   that role's private DSH Profile on the first route to the role. Tell the role
+   to call the installed tool directly. Never ask it to launch a nested DSH or
+   manage tmux itself.
 7. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
@@ -112,7 +118,16 @@ existing Run:
 8. Resolve `agent-team` once to its canonical absolute executable path and
    retain that literal path for the entire Origin loop. Substitute it for
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it
-   from `PATH` between turns. Write Request and Protocol outside `.agent-team`,
+   from `PATH` between turns.
+   In a DeepSeek Harness Origin, use the installed `agent_team_cli` tool for
+   every command below, passing the tokens after the executable as its `args`
+   array. Do not invoke Agent-Team through DSH Bash: that environment
+   intentionally scrubs provider credentials needed by DSH External roles.
+   The trusted tool resolves the executable once and forwards the credential
+   in-process without returning it. If that tool is unavailable and the Run
+   contains a DSH External role, stop before `init` and ask the user to activate
+   `$DSH_HOME/plugins/agent-team-origin` in the current DSH Profile.
+   Write Request and Protocol outside `.agent-team`,
    then run:
 
 ```bash
@@ -131,6 +146,11 @@ existing Run:
   --origin-harness claude-code
 "<absolute-agent-team-cli>" start <run-id> --confirm-full-access
 ```
+
+Role specifications stay immutable for the Run, while External Worker
+processes are lazy: Agent-Team creates only the currently routed role and
+retires it after the token moves. Do not pre-launch roles or emulate dynamic
+Agents with nested Harness processes.
 
 Omit `--confirm-full-access` when every External role explicitly uses a
 restricted Profile. The flag asserts that the user confirmation required in

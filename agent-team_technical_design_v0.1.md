@@ -43,7 +43,7 @@ Stage 1 的核心取舍是：
 - 角色 ID、Harness、会话、当前执行权、消息目标等运行时信息使用最小机器结构；
 - 角色职责、动态拓扑、Handoff 条件、退出条件仍保存在自然语言 `PROTOCOL.md` 中，由 Agent 根据共享 Skill 理解并执行；
 - 不开发独立的 LLM Manager，不引入通用工作流引擎，不在第一阶段解析自然语言 Verdict；
-- 使用 tmux 承载各角色 Worker，并通过 Harness 原生 Session Resume 保持每个 Agent 的会话连续性；
+- 使用 tmux 只承载当前 External Role 的惰性 Worker，并通过 Harness 原生 Session Resume 保持角色会话连续性；
 - Agent 主动调用 `agent-team handoff` / `complete` 或对应的 Origin 命令完成正式交接，系统不从终端输出中猜测下一步。
 
 Stage 1 已通过 Codex/Codex、Claude Code/Codex、OpenCode External Role、
@@ -231,7 +231,7 @@ Handoff 应明确区分：
 
 ### 5.8 角色会话与任务状态分离
 
-- tmux 保持 External Worker 进程；
+- tmux 只在 Token 指向 External Role 时承载该 Role 的 Worker 进程；
 - `harness-runner` 在一个业务 Turn 内保持稳定的 Harness 进程组身份；
 - Turn Supervisor 留在该进程组之外负责监控和清理；
 - Harness Session Ref 按 Role 的 Resume / Fresh Policy 保持或轮换会话；
@@ -542,7 +542,7 @@ flowchart TB
 | Observation Projector | CLI 进程内从同一锁内 Snapshot 只读派生 Status、Health、诊断码与技术建议，不保存观测状态 |
 | Workspace State Root | 把 Workspace 与 Run Store 绑定到当前 OS 账号唯一、固定的本机状态目录 |
 | Workspace Ownership | 使用单个持久化原子 Owner 文件声明归属，并用短期 per-workspace 操作锁串行化获取、恢复和删除 |
-| tmux Runtime | 为每个外部角色承载长期 Worker，并可发送 Best-effort `wait-for` 提示 |
+| tmux Runtime | 只为当前 External Role 承载按路由惰性创建的 Worker，并可发送 Best-effort `wait-for` 提示 |
 | Role Worker | 为 External Role 监听 Durable Event、创建 Turn Runtime 并驱动 Turn Supervisor |
 | Turn Supervisor | 留在受管进程组外，监控单个 `harness-runner`，持久化 Harness 原始输出，并在 Runner 进程组清空后报告结果 |
 | Harness Runner | 先在独立 Session / 进程组中自持久化身份，获得唯一启动许可后原地 `exec` Harness |
@@ -880,7 +880,8 @@ Codex 接受布尔值或 `null`，其他 Adapter 必须为 `null`。显式的 ro
 Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用的值。Codex 只读取 `model`、
 `model_reasoning_effort`、`service_tier` 和 `features.fast_mode`；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
-`model` / `effortLevel`。OpenCode 在目标 Workspace 通过 `debug config --pure` 只解析
+`model` / `effortLevel`。OpenCode 在目标 Workspace 禁用 Project Config 后通过
+`debug config --pure` 只解析
 有效 Model；缺失或不是完整 `provider/model` 时要求显式 `--role-model`，不以隔离环境
 重新猜测 Last-used Model。DeepSeek Harness 不读取用户 Profile，缺省冻结
 `deepseek-official/deepseek-v4-flash` 与 `high`。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
@@ -964,8 +965,14 @@ Enterprise Managed Settings 优先级高于命令行且不能由
 边界只描述 Agent-Team 提供的 Mapping。OpenCode 通过每个 Run/Role 私有
 `XDG_CONFIG_HOME`、`OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure` 和
 `OPENCODE_CONFIG_CONTENT` 排除可变 User/Project Permission、MCP、Agent 和 External
-Plugin；认证与 Session Data 仍来自本机 Data Store，Managed Config 的优先级仍高于
-Inline Config。Codex、Claude 与 OpenCode 的 Workspace Profile 都以管理员策略没有增加宿主可写路径、
+Plugin。所选 `provider/model` 若依赖 User Config 中的自定义 Provider，Adapter 在该 Role
+首次激活时只冻结对应 Provider 片段，并把已展开的 Credential 重新表示为 `{env:VAR}`；
+不能安全映射到环境变量或 OpenCode Credential Store 的明文 Credential Fail Closed，
+不得进入 Run State、LaunchSpec 或 Trace。创建该 Role 的 tmux Worker 时，Adapter 从不可变
+Provider 快照枚举实际引用的环境变量名，启动器只把这些变量的当前非空值加入该 Window
+环境；缺失值 Fail Closed。变量值只存在于进程与 tmux 的易失运行时，不写入 Provider
+快照、Run State、LaunchSpec、Journal 或 Trace。认证与 Session Data 仍来自本机 Data Store，
+Managed Config 的优先级仍高于 Inline Config。Codex、Claude 与 OpenCode 的 Workspace Profile 都以管理员策略没有增加宿主可写路径、
 Sandbox Exclusion、宿主执行 Hook 或更高优先级工具权限为前提。这些管理员策略
 都不进入 `launch_profile_sha256`，`doctor` 也不能证明
 其云端或最终有效内容；需要把这条边界作为安全保证时，操作者必须核验相应管理员配置，
@@ -979,7 +986,7 @@ Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交
 `full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言
 职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
-`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。OpenCode Adapter 还把规范化 Inline Config 与隔离环境合同加入第二层长度前缀摘要；DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
+`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。Codex Interactive Adapter 还加入私有 Home 配置合同版本，其中包括按冻结角色 Model 预置原生 Model Availability NUX 状态；OpenCode Adapter 把基础 Inline Config、隔离环境合同、Provider 快照机制版本与“只向 Worker 注入快照所引用环境变量”的桥接合同加入第二层长度前缀摘要；具体 User Provider 内容不属于权限 Profile Hash，而由 Role 私有不可变快照固定并进入逐 Turn LaunchSpec。DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
 Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `workspace` 为工作目录。需要修改多个根目录时必须拆成多个 Run 或等待后续版本，不能只锁其中一个目录。
 
@@ -1122,7 +1129,7 @@ Runner Group 被证明清空后，Worker 生成 Turn Trace Manifest，把其原�
 SHA-256 一次性写入该字段；非空后不可替换。Schema 2 Run 中已经执行且
 `phase=finalized` 的 External Turn 缺少该锚点属于损坏。
 
-每个外部 Worker 在进入事件循环前原子创建或替换 `roles/<role-id>.json`：
+每个被激活的外部 Worker 在进入事件循环前原子创建或替换 `roles/<role-id>.json`：
 
 ```json
 {
@@ -1136,7 +1143,11 @@ SHA-256 一次性写入该字段；非空后不可替换。Schema 2 Run 中已�
 }
 ```
 
-该文件只描述长期 Worker 的技术身份，不参与 Token 或 Run Status 推导。Worker 重建时整文件替换；因此首个 Turn 前、两个 Turn 之间和 tmux 恢复时都有可验证的 Worker 身份。
+该文件只描述当前 Worker 实例的技术身份，不参与 Token 或 Run Status 推导。角色规格
+在 `team.json` 中冻结，但 Worker 实例按 Event 路由动态存在：Handoff 后发送方退出，
+目标 External Role 才创建自己的 tmux Window；再次路由回来时整文件替换并按
+Session Policy 恢复或新建 Harness Session。未激活和已退休角色缺少存活 Worker 是
+正常状态，不得被 Status / Diagnose 误报为 Runtime 丢失。
 
 领取 Kickoff、Handoff 或 Resume Event 时，Runtime 先校验 Event Payload Hash，再把其当前字节原子复制为不可变的 `turns/<turn-id>/input.md`；`input_payload_sha256` 必须等于 Event 中的 `payload_sha256`。因此每个业务 Turn 都有统一的当前输入，不把 Resume 指令降级成仅存在于 Journal 中的附注。
 
@@ -1722,7 +1733,7 @@ RUNNING
 STOPPED
 ```
 
-Worker 只描述是否正在承载 Turn；启动、退出、收口和恢复细节统一记录在 Turn Runtime 的 `phase` 与 `outcome` 中。Blocked Run 的 Worker 保持 `IDLE`，终态 Journal Tail 使所有 Worker 进入 `STOPPED`。
+Worker 只描述是否正在承载 Turn；启动、退出、收口和恢复细节统一记录在 Turn Runtime 的 `phase` 与 `outcome` 中。Worker 在 Token 路由离开或进入 Block 后退休；目标 External Role 由正式 Handoff/Resume 惰性创建。Role 的 Harness Session Store 独立于 Worker 生命周期，因此 `resume` 不依赖常驻 Pane。
 
 ## 16.2 Worker 事件循环
 
@@ -2132,9 +2143,13 @@ Profile Changed fail-closed。
   Managed Hook，属于前述外部管理边界；
 - Headless 的三种 Profile 使用 `--ignore-user-config` 和 `--ignore-rules`。Interactive
   CLI 不接受这两个 Exec-only 参数，因此 Agent-Team 在固定状态目录创建每个
-  Run/Role 独立的 `CODEX_HOME`：只含当前规范化 Workspace `trust_level="trusted"`
-  的不可变最小配置、私有认证副本和独立 Session Store；该 Trust 条目只消除原生
-  TUI 的确认页，不复制用户 Permission、MCP、Hook 或 Plugin。启动前在该 Home 内
+  Run/Role 独立的 `CODEX_HOME`：不可变最小配置只含当前规范化 Workspace
+  `trust_level="trusted"`，以及冻结角色 Model 对应的
+  `[tui.model_availability_nux]` 终态展示计数 `4`；Codex 0.147.0 仅在该计数小于
+  `MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT=4` 时展示提示并递增，因此该预置值防止首个
+  Fresh Turn 正常运行时自行改写 `config.toml`，同时仍可在 Resume 前对整个文件做严格
+  校验。除此之外不复制用户 Permission、
+  MCP、Hook 或 Plugin；启动前在该 Home 内
   再次验证认证；Workspace 自身受信任后可生效的其余项目级配置、Instruction 与
   Extension 仍属于 Workspace 内容，需要由操作者纳入 Workspace 信任判断；
 - Codex 可能无视受管 Umask，为内建缓存显式创建 0755/0644 条目，并在 `tmp/`
@@ -2144,7 +2159,8 @@ Profile Changed fail-closed。
   Fail Closed；
 - 升级前版本可能在一个已由本 Run/Role Marker 精确认领的 UNSTARTED 私有 Home 中
   留下空 `config.toml`。`prepare_run_state()` 只允许把这一种空文件受控替换为当前
-  Trust-only 配置；内容非空、Marker 不匹配或 Run 已启动时都不得迁移或覆盖；
+  最小配置；预置 NUX 的 Model、终态计数、Workspace Trust 或任何其他内容发生变化都严格
+  Fail Closed，内容非空、Marker 不匹配或 Run 已启动时也不得迁移或覆盖；
 - 冻结的 `model` 通过 `--model` 应用于 Start / Resume，Reasoning Effort 通过 `model_reasoning_effort` 覆盖；`fast_mode=true` 同时启用 `features.fast_mode` 并设置 `service_tier="fast"`；
 - 可通过 `-o` 保存最终消息到本 Turn 的 `output.md`，但它只用于诊断，不产生 Handoff、Completion 或正常完成证据。
 - Interactive 使用 `--no-alt-screen` 便于 tmux 保留可观察历史；Fresh Session Ref 从
@@ -2193,10 +2209,17 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
   `Error: Session not found` 只有在 stderr 精确结构出现且执行尚未开始时才进入
   Session-unavailable 降级合同；
 - 每个 Run/Role 在固定账号状态目录下拥有私有 `XDG_CONFIG_HOME` 和 Ownership Marker。
-  Adapter 不复制用户配置或凭据，使用 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure`、
+  Adapter 不复制通用用户配置或明文凭据，使用 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure`、
   `OPENCODE_DISABLE_AUTOUPDATE=1` 与规范化 `OPENCODE_CONFIG_CONTENT` 创建唯一 Primary
   Agent；这隔离 User/Project Config、Instruction、Agent、MCP 与 External Plugin，
   OpenCode 的账号 Data/Auth 和 Session Store 仍保持机器本地可用；
+- Adapter 在 Role 首次激活时从禁用 Project Config 后的有效 User Config 中只抽取所选
+  Model 对应的 Provider 定义，写入私有 Home 的不可变快照，后续 Turn 复用同一快照。
+  Credential 字段只允许 `{env:VAR}` 形式；有效配置已经展开的环境值会被重新引用，
+  无法安全重新引用的明文值在 Harness 启动前 Fail Closed。Provider 快照随后与权限配置
+  一起进入 `OPENCODE_CONFIG_CONTENT`，因此自定义 Endpoint/Model 不会因私有 Home 丢失。
+  tmux Worker 创建边界只枚举并注入该快照实际引用的非空环境变量；明文值不进入任何
+  Run 文件，tmux 失败信息也必须按这些值脱敏；
 - Profile 的根 Permission 与该 Primary Agent Permission 都显式冻结，避免内建 Agent
   Default 重新放宽规则。受限 Profile 只允许 Worktree 内 Read/Edit/Glob/Grep/List/LSP/
   Todo 和精确 Formal Action Bash Pattern；`trusted-workspace` 额外允许 WebFetch/
@@ -2205,8 +2228,10 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
   `--pure` 关闭 External Plugin。Managed OpenCode Config 的优先级高于 Inline Config，
   仍属于本规范不能摘要或覆盖的管理员边界；
 - Model 必须在 `init` 冻结为 `provider/model`。显式值优先；省略时 Adapter 在目标
-  Workspace 执行只读 `opencode debug config --pure`，只抽取 Model，不复制其他配置。
-  缺失或不完整 ID Fail Closed。Reasoning Effort 作为 Provider-specific Variant 冻结：
+  Workspace 禁用 Project Config 后执行只读 `opencode debug config --pure`，只抽取 Model。
+  缺失或不完整 ID Fail Closed。执行时同一冻结值同时进入 CLI `--model`、Primary Agent
+  `model`、顶层 `model` 与 `small_model`；后者约束会在 Primary Agent 前执行的 Title 等
+  Lightweight Agent，避免自定义 Endpoint 先收到无关的内建 Model。Reasoning Effort 作为 Provider-specific Variant 冻结：
   两种 Mode 都使用 `--variant`，Interactive 还把同一值写入隔离 Primary Agent；
   Fast Mode 不支持；
 - `opencode providers list --pure` 没有稳定的机器可读认证 Schema；Adapter 只在命令
@@ -2246,8 +2271,11 @@ Adapter 对 `headless` 在 Kickoff 前返回 `LAUNCH_MODE_UNSUPPORTED`，不降�
 `@deepseek-ai/dsh@0.1.0-rc.6`，校验 npm integrity、Lockfile、Package Version、
 `dsh --version`、Executable 和 Symlink Root，再通过原子 Rename 发布。Runtime 不加入
 `PATH`，也不使用用户的 DSH CLI/Profile。每个 Run/Role 另有私有 `DSH_HOME`，其中只
-加载 `@deepseek-ai/dsh-base` 与 bundled `@agent-team/dsh-tui`；TUI 资产 Manifest、
-Runtime Version 和 Integrity 一并进入 Profile Fingerprint。
+加载 `@deepseek-ai/dsh-base` 与 bundled `@agent-team/dsh-tui`；若 Role 声明
+`--role-dsh-plugin`，首次向它路由前还会复制当时的 Workspace Bundle 到私有 Profile，
+冻结逐文件 Manifest 与内容 Hash。受管 Runtime、bundled TUI 资产 Manifest 和
+Integrity 进入 Profile Fingerprint；Role-local Bundle Hash 进入其不可变 Snapshot 与
+LaunchSpec，不在 `init` 时提前冻结尚待 Developer 修改的源码。
 
 启动合同：
 
@@ -2265,8 +2293,15 @@ Runtime Version 和 Integrity 一并进入 Profile Fingerprint。
   完整 Host Sandbox；
 - 私有 Profile 禁用 HMR、Telemetry、Title LLM、Permission Switching、User Profile、
   Skill、Subagent、Workflow 与 Ralph，并把 Session 保存为私有无压缩 JSONL；
+- 可选 Workspace Bundle 每个 Role 至多一个，必须是 Worktree 内真实目录和可安装的
+  DSH Bundle；首次路由时复制并冻结。该 Role 直接调用已加载工具，不从模型 Bash
+  启动子 DSH，也不把父 DSH Credential 交给工具进程；
 - TUI 保留 `dsh> ` 输入循环，显示公开 Text、有限 Tool 状态和不含正文的
   `[thinking]` 标记，不把 private reasoning text 输出到 PTY；
+- 只有首轮结构化 `turn/end.reason.kind=completed` 才进入 `dsh> ` 输入循环；首轮 Quota、
+  认证、请求等非完成终态由 TUI 非零退出，并由 Supervisor/Worker 作为技术失败
+  Fail Closed，不得停留为假性 `RUNNING`；TUI 等待该结构化事件，不从 `whenIdle()`
+  的时序推断终态；正式 Outbox 已提交时 Supervisor 可先终止进程组；
 - Completion 只由正式 Outbox 与 Session Ref 验证，Pane 文本和 TUI 正常退出都不是
   业务完成证据。
 
@@ -2916,7 +2951,7 @@ Stage 1 对同一规范化 Workspace 隐式采用排他 Ownership，不在 `team
 4. 最终文件不存在时，完整生成 Owner JSON，写入 `workspaces/` 下的同目录临时文件并 `fsync`；
 5. 以原子 `rename` 把临时文件提交为 `workspaces/<hash>.json`，再 `fsync workspaces/`；最终 Owner 文件的出现是唯一 Ownership 提交点；
 6. 最终文件属于同一 Run、Journal 尚无 Kickoff 时，只有 `start` 可以继续提交唯一 Kickoff；`recover` 明确拒绝并提示使用 `start`；
-7. 最终文件属于同一 Run、Journal 已有 Kickoff 时，`start` / `recover` 都按 Journal 状态执行相同收口；只有 Running / Blocked Run 会核对并补建缺失的外部 Worker，终态不创建 Worker；
+7. 最终文件属于同一 Run、Journal 已有 Kickoff 时，`start` / `recover` 都按 Journal 状态执行相同收口；只有 Running 且当前 Token 指向 External Role 时才核对并补建该 Role 的 Worker，Blocked 与终态不创建 Worker；
 8. 最终文件属于其他 Run，或文件存在但元数据损坏时，明确失败，不启动 Worker；
 9. Kickoff 前确定失败时删除精确匹配本 Run 的 Owner 文件并 `fsync` 父目录；Kickoff 后 Worker 创建失败时保留 Ownership 和 Running Journal，返回可由 `start` / `recover` 重试的明确错误；
 10. 未完成 `rename` 的临时文件不代表 Ownership，可在持锁时清理；Worker 已启动或操作确定失败后释放操作锁。操作锁不在 Run 存续期间长期持有。
@@ -2925,7 +2960,7 @@ Stage 1 对同一规范化 Workspace 隐式采用排他 Ownership，不在 `team
 
 Kickoff 提交后、终态安全释放条件满足前，Run 必须始终存在一份完整且精确属于本 Run 的 Owner 及其既有 Workspace 操作锁。普通进程或 tmux 崩溃不会删除这些原子持久状态，因此缺失、损坏或归属改变不是可自动修复的崩溃状态；它直接使 Run 进入 `CORRUPTED`。`start` / `recover` 不得为已有 Kickoff 的 Run 重新获取 Owner、补建锁、重建 Worker 或追加 Block，只能安全清理身份已验证的受管进程并返回诊断。
 
-Ownership 在进程、Pane 或 tmux Server 崩溃后仍保留，避免自动释放造成两个 Run 重叠。Run 进入 Completed / Cancelled，且所有 Supervisor 都已结束、所有已记录 Runner PGID 都已证明清空、没有尚未确认结束的 Origin Turn 后，Runtime 才在操作锁内先对所有已准备的 External Role（包括从未领取 Turn 的 Role）幂等调用 Adapter 私有状态收口，再删除与自身 `run_id` 精确匹配的 Owner 文件并 `fsync` 父目录；这样 Kickoff 前为全体 Interactive Role 执行的认证/隔离预检不会在短路路由或 Cancel 后残留临时 Wrapper。仍存活的 Worker 已由终态 Journal 限制为只退出，且所有写入前仍会校验 Ownership。Origin Role 自己调用 `origin-complete` / `origin-block` 时，其 Runtime 先停在 `exited`，所以不会在 CLI 返回、宿主仍可继续采样时释放 Owner。这里的自动释放只证明 Agent-Team 受管进程组已经结束，并以角色遵守“不主动逃逸进程组”的 Coordination 合同为前提，不声称发现所有系统进程。Cancel 发生在 Origin Turn 运行期间时同样先使 Claim 和后续 Origin 动作失效并保留 Ownership；后续用户 Agent Turn 通过 `wait-origin` 确认后再释放，若原 Session 永久丢失则只能走显式 Unlock。
+Ownership 在进程、Pane 或 tmux Server 崩溃后仍保留，避免自动释放造成两个 Run 重叠。Run 进入 Completed / Cancelled，且所有 Supervisor 都已结束、所有已记录 Runner PGID 都已证明清空、没有尚未确认结束的 Origin Turn 后，Runtime 才在操作锁内对已经实际准备过的 External Role 幂等调用 Adapter 私有状态收口，再删除与自身 `run_id` 精确匹配的 Owner 文件并 `fsync` 父目录。未被路由的 Role 没有 Worker、tmux Window 或 Adapter 私有状态，无需清理。仍存活的 Worker 已由终态 Journal 限制为只退出，且所有写入前仍会校验 Ownership。Origin Role 自己调用 `origin-complete` / `origin-block` 时，其 Runtime 先停在 `exited`，所以不会在 CLI 返回、宿主仍可继续采样时释放 Owner。这里的自动释放只证明 Agent-Team 受管进程组已经结束，并以角色遵守“不主动逃逸进程组”的 Coordination 合同为前提，不声称发现所有系统进程。Cancel 发生在 Origin Turn 运行期间时同样先使 Claim 和后续 Origin 动作失效并保留 Ownership；后续用户 Agent Turn 通过 `wait-origin` 确认后再释放，若原 Session 永久丢失则只能走显式 Unlock。
 
 过期 Ownership 不按时间自动抢占。用户只能显式执行：
 
@@ -2981,13 +3016,16 @@ agent-team doctor [--workspace <path>] [--json]
 - Workspace Run Store 与固定状态目录的 `flock`、同目录原子 `rename` 和 `fsync` 能力；
 - 规范化 Workspace 是否已被其他 Run 持有。
 
-`install` 使用包内四棵资产更新 Codex Skill、Claude Code Plugin、OpenCode Skill 和
-DeepSeek Harness TUI；Codex Skill 同时作为 DSH Origin 的唯一共享源，复制到
+`install` 使用包内五棵资产更新 Codex Skill、Claude Code Plugin、OpenCode Skill、
+DeepSeek Harness TUI 和可信 Origin Bundle；Codex Skill 同时作为 DSH Origin 的唯一共享源，复制到
 `<resolved-dsh-home>/skills/agent-team`，不维护第四份正文。DSH Home 的唯一解析函数
 同时供 `install` 与 `doctor` 调用：当前进程的 `DSH_HOME` 未设置或仅含空白时使用
 `Path.home() / ".dsh"`；设置时只展开当前用户的 `~` 或 `~/...`，拒绝 `~user` 和
 其他相对路径，并只做与 Node `path.resolve` 对齐的词法规范化而不解析符号链接。显式
 DSH `dshHome` 的部署必须给两个命令传相同的绝对 `DSH_HOME`。
+安装在第一次写入前枚举固定状态目录中的 Workspace Owner；任何 Owner 存在时都以
+`ACTIVE_RUNS_PREVENT_INSTALL` 拒绝，包括 Blocked Run 和尚未收口 Origin Exit 的终态
+Run，避免替换共享 Runtime/Integration 与存活 Worker 竞态。
 
 External DSH 使用 `install` 在固定账号状态目录通过 pnpm 原子安装的精确
 `@deepseek-ai/dsh@0.1.0-rc.6`；安装必须验证 npm integrity、Lockfile、Package Version、
@@ -3002,6 +3040,10 @@ Executable。项目 Skill、`customSkillDirs` 或
 解析、不扫描覆盖项，也不声称安装副本是最终加载资源；目标工作区中的真实 DSH Skill
 load 才是来源权威。
 
+Doctor 的 `integration:deepseek_harness_origin` 逐字节验证安装在
+`$DSH_HOME/plugins/agent-team-origin` 的可信控制面 Bundle；它不自动修改或推断用户
+Profile 是否已经激活该 Bundle。
+
 ## 23.2 Run 管理
 
 ```bash
@@ -3014,6 +3056,7 @@ agent-team init \
   [--role-reasoning-effort <role-id>=<effort>] \
   [--role-fast <role-id>] \
   [--role-launch-mode <role-id>=<interactive|headless>] \
+  [--role-dsh-plugin <role-id>=<workspace-package-directory>] \
   --initial-role <role-id> \
   [--origin-harness <harness>] \
   [--max-turns <count>] \
@@ -3201,11 +3244,16 @@ Reference 必须保持逐字节一致。
 DSH 支持 Origin 与 External 两个方向，二者不共享进程或 Session Store：
 
 - Origin：`agent-team install` 将 24.1 的同一 Codex Skill Tree 复制到解析后的
-  `$DSH_HOME/skills/agent-team`。共享 Skill 在 DSH 受管 Bash 中看到
-  `DSH_SHELL=1` 后，为 `init` 显式传 `--origin-harness deepseek-harness`，再复用
-  现有 `start`、`wait-origin` 与 `origin-*` 命令；
-- External：安装时固定受管 DSH Runtime；Kickoff 前为每个 Run/Role 创建私有
-  `DSH_HOME` 并复制 bundled `@agent-team/dsh-tui`，由 17.6 Adapter 通过原生
+  `$DSH_HOME/skills/agent-team`，并把可信 `@agent-team/dsh-origin` Bundle 安装到
+  `$DSH_HOME/plugins/agent-team-origin`。用户显式把它加入所选 Profile 后，共享 Skill
+  使用其 `agent_team_cli` 工具调用现有 `init`、`start`、`wait-origin` 与 `origin-*`
+  命令；工具固定 Agent-Team Executable、不经过 Shell，并只把 DSH Credential
+  Service 解析出的 `DEEPSEEK_API_KEY` 显式传给受管 CLI 子进程。普通 model-facing
+  Bash 的 Credential Scrub 保持不变；`DSH_SHELL=1` 仍只选择
+  `--origin-harness deepseek-harness` 审计元数据；
+- External：安装时固定受管 DSH Runtime；Role 首次接收路由前创建私有
+  `DSH_HOME` 并复制 bundled `@agent-team/dsh-tui` 与可选的冻结 Workspace Bundle，
+  由 17.6 Adapter 通过原生
   `agents.create` / `agents.resume` 在受管 PTY 中交互。
 
 两条方向都复用现有 Journal、正式动作和恢复状态机，不增加 Python SDK Bridge 或
@@ -4015,7 +4063,8 @@ sequenceDiagram
 3. 支持至少两个动态角色；
 4. 支持 Origin Binding，以及 `claude-code`、`codex`、`opencode`、
    `deepseek-harness` 四类 External Binding；
-5. 存在 External Binding 时自动创建 tmux Session；纯 Origin Run 不依赖 tmux；
+5. 当前 Token 指向 External Binding 时按需创建 tmux Session 与该 Role 的 Worker；
+   未激活角色和纯 Origin 阶段不依赖 tmux；
    新建 External Role 默认使用 Interactive Mode；Runner 的 stdin/stdout/stderr
    都是受管 TTY，原生 Codex / Claude Code / DeepSeek Harness TUI 与 OpenCode Direct-interactive Terminal
    可通过只读 Attach 实时查看；显式
@@ -4314,7 +4363,7 @@ sequenceDiagram
     Start / Resume 参数列表不相同时明确失败；Kickoff 后漂移生成不可 Resume 的
     Profile Changed Block，`origin-resume` 拒绝，接受新 Profile 必须创建新 Run；
 30. Origin Binding 不接受 External 字段，不执行 Probe，也不产生 `roles/<role>.json` 或 `sessions/<role>.json`；纯 Origin Run 不依赖 tmux；
-31. 分别在 Owner 临时文件、Owner 原子提交、Kickoff 和 Worker 创建后注入崩溃：临时文件不占有 Workspace，Kickoff 前只能用重复 `start` 继续，Kickoff 后可用 `start` / `recover` 收口，且始终只有一个 Kickoff 和每个 External Role 一个 Worker；
+31. 分别在 Owner 临时文件、Owner 原子提交、Kickoff 和 Worker 创建后注入崩溃：临时文件不占有 Workspace，Kickoff 前只能用重复 `start` 继续，Kickoff 后可用 `start` / `recover` 收口，且始终只有一个 Kickoff、一个当前 Token 和至多一个当前 External Worker；
 32. 正常退出后、After Facts 提交前崩溃时只产生 Recovery Block；After Facts 已冻结且 Hash 匹配时允许补交 Outbox；
 33. Wall Time 在 Kickoff / Handoff / Resume 后、目标 Claim 前到期时不启动 Harness，并由目标 Turn 立即提交 Limit Block；
 34. 目标 External Worker、tmux Window 或 Origin Turn 不在线时提交 Handoff，重建或继续原 Session 后只领取一次；
@@ -4866,9 +4915,10 @@ Origin Codex 不只转发 Completion 文件，而应输出：
 - OpenCode Adapter 默认使用 `run --interactive`，显式 Headless Role 使用 JSON Event
   Stream；两者都使用同一私有 Config Home、显式 Session Start/Resume 与冻结 Permission
   Profile；
-- DeepSeek Harness Adapter 只使用受管 Runtime 和 bundled 交互式 TUI；每个 Run/Role
-  使用私有 `DSH_HOME` 与 Session Store，通过原生 `agents.create` / `agents.resume`
-  保持同一 Session，显式 Headless Role 在 Kickoff 前拒绝；
+- DeepSeek Harness Adapter 只使用受管 Runtime 和 bundled 交互式 TUI；每个已激活的
+  Run/Role 使用私有 `DSH_HOME` 与 Session Store，可选加载首次路由时冻结的一个
+  Workspace Bundle，通过原生 `agents.create` / `agents.resume` 保持同一 Session，
+  显式 Headless Role 在 Kickoff 前拒绝；
 - tmux 承载可 Detach Worker，并在 Interactive Turn 显示 Supervisor PTY 镜像；
   可写 Client 输入通过可恢复的 Raw Relay 到达 Harness；`wait-for` 通知、只读
   `capture-pane` 与 Attach 都不是工作流协议；

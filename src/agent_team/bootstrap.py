@@ -46,6 +46,7 @@ from .util import (
     path_entry_exists,
     read_regular,
     rfc3339,
+    safe_relative,
     sha256_bytes,
 )
 
@@ -86,6 +87,7 @@ def parse_role_spec(
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
     launch_mode: str | None = None,
+    dsh_plugin: str | None = None,
     workspace: Path | None = None,
 ) -> tuple[str, Role]:
     if "=" not in spec:
@@ -103,6 +105,7 @@ def parse_role_spec(
             or reasoning_effort is not None
             or fast_mode is not None
             or launch_mode is not None
+            or dsh_plugin is not None
         ):
             raise InvalidArgument(
                 f"Harness launch options require an External role: {role_id}"
@@ -121,6 +124,22 @@ def parse_role_spec(
     if session_policy not in {"resume", "fresh"}:
         raise InvalidArgument(f"invalid session policy: {session_policy}")
     adapter = get_adapter(adapter_id)
+    plugin_relative: str | None = None
+    if dsh_plugin is not None:
+        if adapter_id != "deepseek-harness":
+            raise InvalidArgument(
+                f"--role-dsh-plugin requires a deepseek-harness role: {role_id}"
+            )
+        if workspace is None:
+            raise InvalidArgument("DSH plugin validation requires a workspace")
+        supplied = Path(dsh_plugin)
+        if not supplied.is_absolute():
+            supplied = workspace / supplied
+        plugin_relative = safe_relative(supplied, workspace)
+        if not supplied.resolve(strict=True).is_dir() or supplied.is_symlink():
+            raise InvalidArgument(
+                f"DSH plugin must be a real directory inside the workspace: {supplied}"
+            )
     effective_launch_mode = launch_mode or "interactive"
     adapter.assert_launch_mode(effective_launch_mode)
     option_values: dict[str, object] = {
@@ -149,6 +168,7 @@ def parse_role_spec(
         options.reasoning_effort,
         options.fast_mode,
         effective_launch_mode,
+        plugin_relative,
     )
 
 
@@ -273,11 +293,13 @@ def _preflight_start(run_dir: Path) -> Team:
                     fast_mode=role.fast_mode,
                 )
             )
-            adapter.prepare_run_state(
-                run_dir=run_dir,
-                role_id=role.role_id,
-                launch_mode=role.launch_mode or "headless",
-            )
+    initial = team.roles[team.initial_role]
+    if initial.binding == "external":
+        get_adapter(initial.adapter or "").prepare_run_state(
+            run_dir=run_dir,
+            role_id=initial.role_id,
+            launch_mode=initial.launch_mode or "headless",
+        )
     return team
 
 
@@ -415,7 +437,15 @@ def start_run(
                 raise IntegrityError("started run has missing or mismatched ownership")
         current_status = scan_journal(run_dir).status
         runtime = (
-            ensure_workers(run_dir, team)
+            ensure_workers(
+                run_dir,
+                team,
+                role_ids=(
+                    (team.initial_role,)
+                    if team.roles[team.initial_role].binding == "external"
+                    else ()
+                ),
+            )
             if current_status in {"RUNNING", "BLOCKED"}
             else {"session": None, "created": [], "existing": []}
         )

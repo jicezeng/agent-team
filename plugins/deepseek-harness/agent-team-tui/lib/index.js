@@ -83,7 +83,11 @@ function userMessage(text) {
 function installRenderer(ctx, sessionId) {
   let reasoningStep
   let textOpen = false
-  return ctx.on('session/event', (session, event) => {
+  let resolveInitialTurn
+  const initialTurnReason = new Promise((resolve) => {
+    resolveInitialTurn = resolve
+  })
+  const dispose = ctx.on('session/event', (session, event) => {
     if (String(session.id) !== sessionId) return
     if (event.type === 'assistant/chunk') {
       const chunk = event.data.chunk
@@ -118,11 +122,25 @@ function installRenderer(ctx, sessionId) {
       if (textOpen) process.stdout.write('\n')
       textOpen = false
       const reason = event.data.reason
+      resolveInitialTurn?.(reason)
+      resolveInitialTurn = undefined
       if (reason.kind !== 'completed') {
         process.stdout.write(`[turn] ${reason.kind}\n`)
       }
     }
   })
+  return {
+    dispose,
+    initialTurnReason,
+  }
+}
+
+function assertInitialTurnCompleted(reason) {
+  if (reason?.kind === 'completed') return
+  const detail = reason?.kind === 'error' && reason.error?.code
+    ? `error (${reason.error.code})`
+    : reason?.kind ?? 'missing terminal reason'
+  fail(`initial agent turn did not complete: ${detail}`)
 }
 
 async function send(agent, sessions, text) {
@@ -162,12 +180,13 @@ async function start(ctx, options) {
       })
   const agent = handle.agent
   await agent.whenIdle()
-  const disposeRenderer = installRenderer(ctx, options.sessionId)
+  const renderer = installRenderer(ctx, options.sessionId)
 
   process.stdout.write(
     `DeepSeek Harness · Agent-Team interactive · ${options.sessionId}\n`,
   )
   await send(agent, sessions, options.prompt)
+  assertInitialTurnCompleted(await renderer.initialTurnReason)
 
   const exit = ctx.get('appExit')
   const input = createInterface({
@@ -196,7 +215,7 @@ async function start(ctx, options) {
   })
   input.on('close', () => {
     void queued.finally(async () => {
-      disposeRenderer()
+      renderer.dispose()
       await sessions.flush(agent.session)
       exit?.(0)
     })

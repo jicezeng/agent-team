@@ -34,7 +34,7 @@ from .supervisor import (
     validate_runner,
     validate_supervisor,
 )
-from .tmux_runtime import session_name, signal_change
+from .tmux_runtime import ensure_workers, session_name, signal_change
 from .trace import finalize_turn_trace, validate_trace_manifest
 from .turns import (
     commit_session,
@@ -1295,7 +1295,22 @@ def run_worker(run_dir: Path, role_id: str) -> int:
                     if owner is None or owner["run_id"] != team.run_id:
                         raise IntegrityError("worker lost exact workspace ownership")
                     if projection.status == "BLOCKED":
-                        pass
+                        logger.write(
+                            "info",
+                            "WORKER_RETIRED",
+                            "run is blocked; inactive Worker retired",
+                        )
+                        return 0
+                    elif (
+                        projection.status == "RUNNING"
+                        and projection.current_role != role_id
+                    ):
+                        logger.write(
+                            "info",
+                            "WORKER_RETIRED",
+                            "execution token moved to another role",
+                        )
+                        return 0
                     elif (
                         projection.status == "RUNNING"
                         and projection.current_role == role_id
@@ -1351,13 +1366,34 @@ def run_worker(run_dir: Path, role_id: str) -> int:
             if event_to_signal and event_to_signal.get("to_role"):
                 target = team.roles[event_to_signal["to_role"]]
                 if target.binding == "external":
+                    if target.role_id != role_id:
+                        ensure_workers(
+                            run_dir,
+                            team,
+                            role_ids=(target.role_id,),
+                        )
                     signal_change(team.run_id, target.role_id)
+                    if target.role_id == role_id:
+                        continue
+                return 0
+            if event_to_signal:
+                return 0
             if runtime_to_launch is not None:
                 event = _launch_turn(run_dir, runtime_to_launch, logger)
                 if event and event.get("to_role"):
                     target = team.roles[event["to_role"]]
                     if target.binding == "external":
+                        if target.role_id != role_id:
+                            ensure_workers(
+                                run_dir,
+                                team,
+                                role_ids=(target.role_id,),
+                            )
                         signal_change(team.run_id, target.role_id)
+                        if target.role_id == role_id:
+                            continue
+                if event is not None:
+                    return 0
                 continue
             time.sleep(0.5)
     finally:

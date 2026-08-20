@@ -439,6 +439,21 @@ class HarnessAdapter(abc.ABC):
 
         self.assert_launch_mode(launch_mode)
 
+    def worker_environment_names(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+    ) -> tuple[str, ...]:
+        """Return environment names that must cross the tmux Worker boundary.
+
+        Values are deliberately resolved by the tmux launcher at Worker
+        creation time.  Adapters must return names only so credentials never
+        become part of durable Run state.
+        """
+
+        return ()
+
     def finalize_run_state(
         self,
         *,

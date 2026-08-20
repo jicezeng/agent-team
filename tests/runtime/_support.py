@@ -114,11 +114,11 @@ def _external_run(
     }
     monkeypatch.setattr(
         "agent_team.bootstrap.ensure_workers",
-        lambda _run_dir, _team: empty_tmux,
+        lambda _run_dir, _team, **_kwargs: empty_tmux,
     )
     monkeypatch.setattr(
         "agent_team.management.ensure_workers",
-        lambda _run_dir, _team: empty_tmux,
+        lambda _run_dir, _team, **_kwargs: empty_tmux,
     )
     monkeypatch.setattr("agent_team.bootstrap.signal_change", lambda *_args: False)
     monkeypatch.setattr("agent_team.management.signal_change", lambda *_args: False)

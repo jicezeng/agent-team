@@ -26,7 +26,7 @@ from .journal import (
 )
 from .ownership import release_terminal_owner_locked
 from .state import locked_run, read_owner
-from .tmux_runtime import signal_change
+from .tmux_runtime import ensure_workers, signal_change
 from .turns import (
     active_runtime,
     commit_technical_block_locked,
@@ -615,11 +615,17 @@ def origin_action(
                 target = team.roles[to_role or ""]
                 if target.binding == "external":
                     try:
-                        get_adapter(target.adapter or "").assert_profile(
+                        adapter = get_adapter(target.adapter or "")
+                        adapter.assert_profile(
                             target.launch_profile or "",
                             target.session_policy or "",
                             target.launch_profile_sha256 or "",
                             target.launch_mode or "headless",
+                        )
+                        adapter.prepare_run_state(
+                            run_dir=run_dir,
+                            role_id=target.role_id,
+                            launch_mode=target.launch_mode or "headless",
                         )
                     except AgentTeamError as exc:
                         after_probe = dt.datetime.now(dt.timezone.utc)
@@ -775,6 +781,7 @@ def origin_action(
         )
         save_runtime(run_dir / "turns" / turn_id, runtime, team=team)
     if event.get("to_role") and team.roles[event["to_role"]].binding == "external":
+        ensure_workers(run_dir, team, role_ids=(event["to_role"],))
         signal_change(team.run_id, event["to_role"])
     if action == "handoff":
         return wait_origin(run_dir, timeout=wait_timeout)
@@ -835,11 +842,17 @@ def origin_resume(
             )
         target = projection.team.roles[to_role]
         if target.binding == "external":
-            get_adapter(target.adapter or "").assert_profile(
+            adapter = get_adapter(target.adapter or "")
+            adapter.assert_profile(
                 target.launch_profile or "",
                 target.session_policy or "",
                 target.launch_profile_sha256 or "",
                 target.launch_mode or "headless",
+            )
+            adapter.prepare_run_state(
+                run_dir=run_dir,
+                role_id=target.role_id,
+                launch_mode=target.launch_mode or "headless",
             )
         allowed, reason = can_create_business_turn(run_dir, projection)
         if not allowed:
@@ -899,5 +912,10 @@ def origin_resume(
             team=projection.team,
         )
     if target.binding == "external":
+        ensure_workers(
+            run_dir,
+            projection.team,
+            role_ids=(to_role,),
+        )
         signal_change(projection.team.run_id, to_role)
     return wait_origin(run_dir, timeout=wait_timeout)

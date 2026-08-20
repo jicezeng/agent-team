@@ -118,7 +118,7 @@ def test_full_access_requires_one_confirmation_before_first_kickoff(
     monkeypatch.setattr(
         bootstrap,
         "ensure_workers",
-        lambda _run_dir, _team: {
+        lambda _run_dir, _team, **_kwargs: {
             "session": "test-session",
             "created": [],
             "existing": [],
@@ -298,7 +298,7 @@ def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
         max_wall_time_seconds=300,
     )
 
-    assert team.config_schema_version == 4
+    assert team.config_schema_version == 5
     assert team.to_json()["roles"]["developer"]["harness_options"] == {
         "model": "gpt-5.6-sol",
         "reasoning_effort": "max",
@@ -334,6 +334,7 @@ def test_legacy_team_schema_has_no_frozen_harness_options(
     value["schema_version"] = 2
     value["roles"]["developer"].pop("harness_options")
     value["roles"]["developer"].pop("launch_mode")
+    value["roles"]["developer"].pop("dsh_plugin")
 
     parsed = parse_team(value)
 

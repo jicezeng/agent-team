@@ -48,13 +48,15 @@ flowchart LR
 
 ## 3. 安装与版本冻结
 
-`agent-team install` 完成三类 DSH 安装：
+`agent-team install` 完成两类 DSH 集成安装：
 
 - 把 Codex 同源 Skill 复制到 `$DSH_HOME/skills/agent-team`，供 DSH Origin 使用；
 - 把 `@agent-team/dsh-origin` Bundle 复制到
-  `$DSH_HOME/plugins/agent-team-origin`，由用户显式加入所选 DSH Profile；
-- 用 pnpm 安装精确版本 `@deepseek-ai/dsh@0.1.0-rc.6` 到固定账号状态目录的
-  `installed/deepseek-harness-runtime`，供 External Adapter 使用。
+  `$DSH_HOME/plugins/agent-team-origin`，由用户显式加入所选 DSH Profile。
+
+只有团队选择 DSH External Role 时，Adapter 才用 pnpm 安装精确版本
+`@deepseek-ai/dsh@0.1.0-rc.6` 到固定账号状态目录的
+`installed/deepseek-harness-runtime`。已有合规 Runtime 直接复用。
 
 受管 Runtime：
 
@@ -65,8 +67,9 @@ flowchart LR
 - 只替换带 Agent-Team Ownership Marker 的旧 Runtime，拒绝覆盖未知目录；
 - 不加入 `PATH`，也不替代用户自行安装的 DSH Origin CLI。
 
-Node.js 和 pnpm 是 `agent-team install` 的前提。Codex、Claude Code、OpenCode CLI 仍由
-用户单独安装；External DSH 不依赖用户的 DSH 安装或 Profile。
+Node.js 和 pnpm 只是 DSH External Role 的按需前提，不是 `agent-team install` 的前提。
+Codex、Claude Code、OpenCode CLI 也只在团队选择对应 Role 时检查；External DSH 不依赖
+用户的 DSH 安装或 Profile。
 
 ## 4. 私有 Profile 与 TUI
 
@@ -211,8 +214,8 @@ Symlink 都阻止清理并进入完整性故障。
 
 发布前必须同时通过：
 
-1. wheel 包含 DSH TUI 与 Origin Bundle，`agent-team install` 可从干净状态安装并
-   复验固定 Runtime；
+1. wheel 包含 DSH TUI 与 Origin Bundle，`agent-team install` 在没有 Node.js、pnpm 或
+   任一 Harness CLI 时仍可完成；首次选择 DSH Role 时才安装并复验固定 Runtime；
 2. 配置、Profile、Model、Launch Mode、私有 Home、Session 发现和清理的单元测试；
 3. 真实 DSH 进程完成 Session Create，并由另一个进程 Resume 同一 Session；
 4. 真实 Agent-Team Run 至少两次调度同一个 DSH `resume` Role，通过正式动作完成闭环；

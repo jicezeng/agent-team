@@ -15,6 +15,7 @@ from agent_team.config import DSH_REASONING_EFFORTS, load_team, valid_dsh_model_
 from agent_team.dsh_runtime import (
     DSH_NPM_INTEGRITY,
     DSH_NPM_VERSION,
+    install_managed_dsh_runtime,
     managed_dsh_executable,
     managed_dsh_runtime,
     managed_dsh_runtime_report,
@@ -221,6 +222,12 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             raise InvalidArgument(
                 "model provider is only supported by the codex adapter"
             )
+
+    def ensure_launch_dependencies(self, options: HarnessLaunchOptions) -> None:
+        """Provision the managed runtime only when a DSH role is selected."""
+
+        super().ensure_launch_dependencies(options)
+        install_managed_dsh_runtime()
 
     @staticmethod
     def _home(run_dir: Path, role_id: str) -> Path:

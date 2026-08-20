@@ -37,10 +37,7 @@ from .config import (
     make_team,
     validate_role_id,
 )
-from .dsh_runtime import (
-    install_managed_dsh_runtime,
-    managed_dsh_runtime_report,
-)
+from .dsh_runtime import managed_dsh_runtime_report
 from .errors import (
     AgentTeamError,
     IntegrityError,
@@ -829,7 +826,6 @@ def _install_skill() -> dict[str, Any]:
             "complete/cancel and finalize every owned Run before replacing "
             f"shared integrations: {summary}",
         )
-    runtime = install_managed_dsh_runtime()
     for target, (_name, source) in unique_targets.items():
         install_tree(source, target)
     return {
@@ -838,7 +834,10 @@ def _install_skill() -> dict[str, Any]:
             name: {"source": str(source), "target": str(target)}
             for name, (source, target) in integrations.items()
         },
-        "deepseek_harness_runtime": runtime,
+        "deepseek_harness_runtime": {
+            "installation": "on-demand",
+            "trigger": "first deepseek-harness role",
+        },
         "deepseek_harness_tui": {
             "source": str(tui_source),
             "installation": "private per Run and role",

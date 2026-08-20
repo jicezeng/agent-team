@@ -8,13 +8,15 @@ tests.
 
 ## Installation and upgrades
 
-Agent-Team requires Python 3.11 or newer, `uv`, Git, tmux, Node.js, and pnpm.
-Install and authenticate Codex CLI, Claude Code CLI, and/or OpenCode CLI
-separately. `agent-team install` installs the pinned DeepSeek Harness runtime
-used by External roles; install a user-facing `dsh` separately only when DSH
-itself will be the Origin. Runs require macOS or Linux, a local filesystem with `flock`,
-atomic same-directory rename and `fsync`, and exactly one normal Git worktree
-root. Sparse checkout and Gitlinks are not supported in v0.1.
+Agent-Team itself requires Python 3.11 or newer, `uv`, Git, and tmux. Installation
+does not require or probe Codex, Claude Code, OpenCode, DeepSeek Harness, or
+their credentials. Install and authenticate only the Harness CLIs selected by a
+team. A DeepSeek Harness External role additionally requires Node.js, pnpm, and
+`DEEPSEEK_API_KEY`; Agent-Team provisions its pinned DSH runtime on first use.
+Install a user-facing `dsh` separately only when DSH itself will be the Origin.
+Runs require macOS or Linux, a local filesystem with `flock`, atomic
+same-directory rename and `fsync`, and exactly one normal Git worktree root.
+Sparse checkout and Gitlinks are not supported in v0.1.
 
 Install Agent-Team separately for each OS account that will run it.
 
@@ -64,15 +66,17 @@ uv run agent-team doctor --workspace /path/to/worktree --json
 - DeepSeek Harness skill: `$DSH_HOME/skills/agent-team`, defaulting to
   `~/.dsh/skills/agent-team`
 - DeepSeek Harness Origin bundle: `$DSH_HOME/plugins/agent-team-origin`
-- managed DeepSeek Harness `0.1.0-rc.6`: `installed/deepseek-harness-runtime`
-  under the fixed account state directory
 
-The managed DSH runtime is not added to `PATH` and does not reuse a user's DSH
-profiles. For each DSH External role, Agent-Team also creates a private
-Run/Role `DSH_HOME`, installs its bundled minimal interactive TUI there, and
-uses environment credentials such as `DEEPSEEK_API_KEY`. That private TUI is
-the External Adapter surface; a separately installed `dsh` remains the Origin
-surface.
+These integration copies do not require the corresponding Harness executables.
+When a team first selects a DSH External role, Agent-Team uses pnpm to install
+the pinned managed DeepSeek Harness `0.1.0-rc.6` under
+`installed/deepseek-harness-runtime` in the fixed account state directory. It
+is reused after its version and integrity are verified, is not added to `PATH`,
+and does not reuse a user's DSH profiles. For each DSH External role, Agent-Team
+also creates a private Run/Role `DSH_HOME`, installs its bundled minimal
+interactive TUI there, and uses environment credentials such as
+`DEEPSEEK_API_KEY`. That private TUI is the External Adapter surface; a
+separately installed `dsh` remains the Origin surface.
 
 Agent-Team does not modify an existing DSH Profile. When a DSH Origin must
 control a Run that itself contains DSH External roles, activate the installed
@@ -102,9 +106,9 @@ automatic installation contract.
 The account state directory is `~/Library/Application Support/agent-team` on
 macOS and `~/.local/state/agent-team` on Linux. It is not configurable.
 
-After upgrading the package, run `agent-team install` again. Do not upgrade the
-runtime or integrations during an active Run; complete or cancel and safely
-finalize it first. `install` refuses while any Workspace Owner exists, including
+After upgrading the package, run `agent-team install` again. Do not replace the
+integrations during an active Run; complete or cancel and safely finalize it
+first. `install` refuses while any Workspace Owner exists, including
 a Blocked Run or a terminal Run whose Origin exit is not finalized. Do not copy
 `.agent-team/` or the fixed account state to
 another machine to resume a Run: Harness Sessions, process identities, tmux

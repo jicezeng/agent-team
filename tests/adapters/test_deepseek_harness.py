@@ -91,6 +91,27 @@ def test_dsh_adapter_is_interactive_only_and_has_frozen_defaults() -> None:
         )
 
 
+def test_dsh_runtime_is_provisioned_only_when_launch_dependencies_are_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = DeepSeekHarnessAdapter()
+    installs: list[str] = []
+    monkeypatch.setattr(
+        "agent_team.adapters.deepseek_harness.install_managed_dsh_runtime",
+        lambda: installs.append("managed-runtime"),
+    )
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+
+    adapter.ensure_launch_dependencies(
+        HarnessLaunchOptions(
+            model="deepseek-official/deepseek-v4-flash",
+            reasoning_effort="high",
+        )
+    )
+
+    assert installs == ["managed-runtime"]
+
+
 def test_dsh_interactive_launch_prepares_private_tui_and_resumes_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

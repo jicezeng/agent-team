@@ -206,8 +206,11 @@ v0.1 不承诺：
 - Python 包必须包含 CLI、Codex/DeepSeek Harness 共享 Skill、OpenCode Skill、
   Claude Code Plugin 和 DeepSeek Harness 交互式 TUI Plugin；
 - 支持从源码或平台无关 wheel 安装；
-- `agent-team install` 安装当前账号的集成副本、由同一解析器确定的
-  `$DSH_HOME/skills/agent-team`，以及带版本和 npm integrity 固定的受管 DSH Runtime；
+- `agent-team install` 只安装当前账号的集成副本和由同一解析器确定的
+  `$DSH_HOME/skills/agent-team`，不得因任一未选择的 Harness、认证或 DSH 的 Node.js /
+  pnpm 前提缺失而失败；
+- External Role 选择对应 Harness 时才检查其可执行文件与认证；首次选择 DSH Role 时按
+  版本和 npm integrity 固定值按需安装受管 DSH Runtime；
 - `doctor` 检查 Harness、认证可见性、Profile、Resume、Git/tmux、文件系统能力、
   集成一致性、状态目录权限和 Workspace Owner；DSH External Adapter 检查受管 Runtime
   与 TUI 合同，DSH Origin 的独立 CLI 仍是可选项，Doctor 不声称证明 Origin 最终加载来源；

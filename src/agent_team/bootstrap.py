@@ -53,7 +53,6 @@ from .util import (
 
 def _assert_external_capability(role: Role) -> None:
     adapter = get_adapter(role.adapter or "")
-    report = adapter.probe()
     options = HarnessLaunchOptions(
         model=role.model,
         reasoning_effort=role.reasoning_effort,
@@ -61,6 +60,11 @@ def _assert_external_capability(role: Role) -> None:
         model_provider=role.model_provider,
         model_provider_config=role.model_provider_config,
     )
+    # A Harness may provision an Agent-Team-owned optional dependency here.
+    # This boundary runs only after the user has selected that Harness for a
+    # role; package/integration installation remains Harness-independent.
+    adapter.ensure_launch_dependencies(options)
+    report = adapter.probe()
     if (
         report.authenticated is False
         and adapter.authentication_required(options)
@@ -277,7 +281,6 @@ def _preflight_start(run_dir: Path) -> Team:
             current_identity()
             tmux_executable()
             adapter = get_adapter(role.adapter or "")
-            report = adapter.probe()
             options = HarnessLaunchOptions(
                 model=role.model,
                 reasoning_effort=role.reasoning_effort,
@@ -285,6 +288,8 @@ def _preflight_start(run_dir: Path) -> Team:
                 model_provider=role.model_provider,
                 model_provider_config=role.model_provider_config,
             )
+            adapter.ensure_launch_dependencies(options)
+            report = adapter.probe()
             if (
                 report.authenticated is False
                 and adapter.authentication_required(options)

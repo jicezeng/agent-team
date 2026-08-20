@@ -389,6 +389,11 @@ class HarnessAdapter(abc.ABC):
         """Validate immutable launch options without reading mutable defaults."""
         raise NotImplementedError
 
+    def ensure_launch_dependencies(self, options: HarnessLaunchOptions) -> None:
+        """Provision optional, Agent-Team-owned dependencies for a selected role."""
+
+        self.assert_launch_options(options)
+
     def assert_launch_prerequisites(self, options: HarnessLaunchOptions) -> None:
         """Validate role-specific authentication and launch prerequisites."""
 

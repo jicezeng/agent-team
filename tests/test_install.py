@@ -68,16 +68,9 @@ def test_install_replaces_exact_integration_trees_with_private_modes(
     monkeypatch.setattr(cli, "installed_dsh_skill", lambda: dsh_target)
     monkeypatch.setattr(cli, "installed_dsh_origin", lambda: dsh_origin_target)
     monkeypatch.setattr(cli, "fixed_state_dir", lambda: tmp_path / "state")
-    monkeypatch.setattr(
-        cli,
-        "install_managed_dsh_runtime",
-        lambda: {
-            "installed": False,
-            "root": "/managed/dsh",
-            "version": "test",
-        },
-    )
-
+    # Integration installation is pure file deployment. No Harness, Node.js,
+    # or package-manager executable may be required at this boundary.
+    monkeypatch.setenv("PATH", "")
     result = cli._install_skill()
 
     assert result["code"] == "INTEGRATIONS_INSTALLED"
@@ -113,7 +106,10 @@ def test_install_replaces_exact_integration_trees_with_private_modes(
         "source": str(codex_source),
         "target": str(dsh_target),
     }
-    assert result["deepseek_harness_runtime"]["root"] == "/managed/dsh"
+    assert result["deepseek_harness_runtime"] == {
+        "installation": "on-demand",
+        "trigger": "first deepseek-harness role",
+    }
     assert result["deepseek_harness_tui"]["source"] == str(tui_source)
     for root in (
         codex_target,
@@ -127,7 +123,7 @@ def test_install_replaces_exact_integration_trees_with_private_modes(
             assert stat.S_IMODE(path.stat().st_mode) == expected
 
 
-def test_install_refuses_to_replace_shared_runtime_while_a_run_owns_workspace(
+def test_install_refuses_to_replace_shared_integrations_while_a_run_owns_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -165,18 +161,30 @@ def test_install_refuses_to_replace_shared_runtime_while_a_run_owns_workspace(
             lambda index=index: target_root / str(index),
         )
     monkeypatch.setattr(cli, "fixed_state_dir", lambda: state)
-    monkeypatch.setattr(
-        cli,
-        "install_managed_dsh_runtime",
-        lambda: pytest.fail("active ownership must prevent runtime replacement"),
-    )
-
     with pytest.raises(AgentTeamError) as rejected:
         cli._install_skill()
 
     assert rejected.value.code == "ACTIVE_RUNS_PREVENT_INSTALL"
     assert "at-active" in rejected.value.message
     assert not target_root.exists()
+
+
+def test_public_installer_does_not_require_an_optional_harness() -> None:
+    installer = (Path(__file__).parents[1] / "install.sh").read_text(
+        encoding="utf-8"
+    )
+
+    for harness_probe in (
+        "command -v codex",
+        "command -v claude",
+        "command -v opencode",
+        "command -v dsh",
+        "require_command node",
+        "require_command pnpm",
+    ):
+        assert harness_probe not in installer
+    assert "require_command git" in installer
+    assert "require_command tmux" in installer
 
 
 def test_install_rejects_non_object_workspace_owner(

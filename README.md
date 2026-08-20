@@ -68,8 +68,10 @@ integrity, and fail-closed recovery.
 
 ## Requirements
 
-- macOS or Linux, Python 3.11+, `uv`, Git, tmux, Node.js, and pnpm
-- An authenticated Codex, Claude Code, or OpenCode CLI, and/or `DEEPSEEK_API_KEY`
+- macOS or Linux, Python 3.11+, `uv`, Git, and tmux
+- Only the Harnesses selected by a team: an authenticated Codex, Claude Code,
+  or OpenCode CLI; DeepSeek Harness roles require Node.js, pnpm, and
+  `DEEPSEEK_API_KEY`
 - One normal Git worktree root per Run
 
 ## Install
@@ -89,8 +91,9 @@ Then verify the target worktree and installed Harnesses:
 agent-team doctor --workspace /path/to/worktree --json
 ```
 
-Agent-Team installs its Skills/plugin, trusted DSH Origin tool bundle, and pinned
-DSH runtime/TUI; other Harness CLIs remain separate. DSH Profile activation is
+Installation does not require or probe any Harness CLI. Agent-Team installs its
+Skills/plugin and trusted DSH Origin tool bundle; the pinned DSH runtime is
+provisioned only when a team first selects a DSH role. DSH Profile activation is
 explicit. See the [user guide](docs/user-guide.md#installation-and-upgrades).
 
 ## Quick start

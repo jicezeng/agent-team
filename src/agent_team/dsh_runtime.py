@@ -71,7 +71,8 @@ def _validate_runtime_root(root: Path) -> dict[str, Any]:
     except OSError as exc:
         raise AgentTeamError(
             "DEEPSEEK_HARNESS_RUNTIME_NOT_INSTALLED",
-            "DeepSeek Harness runtime is not installed; run `agent-team install`",
+            "DeepSeek Harness runtime is not installed; it is provisioned when "
+            "a deepseek-harness role is selected",
         ) from exc
     if root.is_symlink() or not stat.S_ISDIR(info.st_mode):
         raise IntegrityError(f"DeepSeek Harness runtime root is unsafe: {root}")

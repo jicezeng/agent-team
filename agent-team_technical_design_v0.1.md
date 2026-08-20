@@ -3051,15 +3051,19 @@ DeepSeek Harness TUI 和可信 Origin Bundle；Codex Skill 同时作为 DSH Orig
 `Path.home() / ".dsh"`；设置时只展开当前用户的 `~` 或 `~/...`，拒绝 `~user` 和
 其他相对路径，并只做与 Node `path.resolve` 对齐的词法规范化而不解析符号链接。显式
 DSH `dshHome` 的部署必须给两个命令传相同的绝对 `DSH_HOME`。
+`install` 不探测或要求 Codex、Claude Code、OpenCode、用户级 DSH、Node.js、pnpm 或
+Harness Credential；这些都是所选 Role 的 Adapter 前提，而不是 Agent-Team 安装前提。
 安装在第一次写入前枚举固定状态目录中的 Workspace Owner；任何 Owner 存在时都以
 `ACTIVE_RUNS_PREVENT_INSTALL` 拒绝，包括 Blocked Run 和尚未收口 Origin Exit 的终态
-Run，避免替换共享 Runtime/Integration 与存活 Worker 竞态。
+Run，避免替换共享 Integration 与存活 Worker 竞态。
 
-External DSH 使用 `install` 在固定账号状态目录通过 pnpm 原子安装的精确
-`@deepseek-ai/dsh@0.1.0-rc.6`；安装必须验证 npm integrity、Lockfile、Package Version、
+首次为 External DSH Role 执行 Adapter Launch Dependency Preparation 时，才在固定账号状态目录
+通过 pnpm 原子安装精确的 `@deepseek-ai/dsh@0.1.0-rc.6`；该边界发生在用户已为团队
+选择 DSH 之后。按需安装必须验证 npm integrity、Lockfile、Package Version、
 Executable、`dsh --version` 和 Symlink Root，并拒绝覆盖没有 Agent-Team Marker 的
-未知目录。Doctor 读取该受管 Runtime、bundled TUI Contract、`DEEPSEEK_API_KEY`
-可见性和仅 Interactive 的 Profile Mapping；它不调用模型或证明认证有效。
+未知目录。已有合规 Runtime 直接复用。Doctor 读取该受管 Runtime、bundled TUI
+Contract、`DEEPSEEK_API_KEY` 可见性和仅 Interactive 的 Profile Mapping；它不调用模型
+或证明认证有效。
 
 Doctor 的 `integration:deepseek_harness_skill` 只逐字节比较 DSH Origin 安装副本与
 bundled Codex Skill。用户级 DSH CLI 只是可选 Origin，不是 External Adapter 的
@@ -3347,7 +3351,10 @@ Bootstrap 在提交 Kickoff Event 时，把普通非符号链接的原始 `REQUE
 
 ## 26.1 Harness 未安装或未认证
 
-Bootstrap 前只对 External Binding 运行 Adapter Probe。失败时最多保留有效 State Root 和未提交临时目录，不出现最终 Run 目录，直接返回 Origin；纯 Origin 团队不执行伪造的 Harness Probe。
+Bootstrap 前只对 External Binding 运行 Adapter 前提检查和 Probe。普通 Harness 在此时
+检查可执行文件与认证；DSH 还在此时按需安装或验证受管 Runtime。失败时最多保留有效
+State Root 和未提交临时目录，不出现最终 Run 目录，直接返回 Origin；纯 Origin 团队
+不执行伪造的 Harness Probe，也不要求安装任何 Harness。
 
 ## 26.2 Harness Turn 启动失败
 

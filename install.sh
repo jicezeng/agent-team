@@ -44,10 +44,6 @@ require_command uv
 require_command git
 require_command tmux
 
-if ! command -v codex >/dev/null 2>&1 && ! command -v claude >/dev/null 2>&1; then
-  fail 'Codex CLI and/or Claude Code CLI must already be installed'
-fi
-
 AGENT_TEAM_OWNER_DIR="$HOME/Library/Application Support/agent-team/workspaces"
 if [ -d "$AGENT_TEAM_OWNER_DIR" ]; then
   for agent_team_owner in "$AGENT_TEAM_OWNER_DIR"/*; do

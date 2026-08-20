@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760" role="img" aria-labelledby="title desc">
+  <title id="title">Agent-Team Run state machine</title>
+  <desc id="desc">Kickoff starts a Run. Handoff keeps it running with the next role. Complete ends successfully, Block pauses for explicit user action, Resume returns a blocked Run to running, and Cancel ends either a running or blocked Run.</desc>
+
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B0E13"/>
+      <stop offset="0.55" stop-color="#10151C"/>
+      <stop offset="1" stop-color="#090D12"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#181E27"/>
+      <stop offset="1" stop-color="#11171E"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#FFFFFF" stroke-opacity="0.026" stroke-width="1"/>
+    </pattern>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#62D8FF"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#61E294"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#F6C85F"/>
+    </marker>
+    <marker id="arrowCoral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF725C"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="760" rx="32" fill="url(#canvas)"/>
+  <rect width="1600" height="760" rx="32" fill="url(#grid)"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="72" y="62" fill="#62D8FF" font-size="15" font-weight="700" letter-spacing="3.6">RUN STATE MACHINE</text>
+    <text x="72" y="118" fill="#F5F7FA" font-size="42" font-weight="760">Few events. One unambiguous state.</text>
+    <text x="72" y="154" fill="#9EABB9" font-size="19">Only validated Journal events can move a Run; terminal text and notifications cannot.</text>
+
+    <!-- Immutable start inputs -->
+    <rect x="72" y="254" width="292" height="196" rx="25" fill="url(#panel)" stroke="#455361" stroke-width="1.5"/>
+    <circle cx="108" cy="291" r="7" fill="#A78BFA"/>
+    <text x="130" y="298" fill="#F0ECFF" font-size="17" font-weight="730">READY TO START</text>
+    <text x="108" y="330" fill="#7F8E9B" font-size="13">IMMUTABLE RUN CONTRACT</text>
+    <rect x="108" y="352" width="220" height="34" rx="17" fill="#1B222B"/>
+    <text x="218" y="374" text-anchor="middle" fill="#B7C2CC" font-size="13" font-family="SFMono-Regular, Menlo, monospace">REQUEST.md</text>
+    <rect x="108" y="398" width="220" height="34" rx="17" fill="#1B222B"/>
+    <text x="218" y="420" text-anchor="middle" fill="#B7C2CC" font-size="13" font-family="SFMono-Regular, Menlo, monospace">PROTOCOL.md</text>
+
+    <line x1="364" y1="352" x2="500" y2="352" stroke="#62D8FF" stroke-width="2.4" marker-end="url(#arrowCyan)"/>
+    <rect x="395" y="326" width="78" height="30" rx="15" fill="#112630" stroke="#2F7186"/>
+    <text x="434" y="346" text-anchor="middle" fill="#62D8FF" font-size="11" font-weight="740">KICKOFF</text>
+
+    <!-- Running state -->
+    <rect x="520" y="245" width="360" height="216" rx="30" fill="#142129" stroke="#4A7180" stroke-width="1.8"/>
+    <rect x="520" y="245" width="8" height="216" rx="4" fill="#62D8FF"/>
+    <circle cx="575" cy="300" r="25" fill="#15333E" stroke="#62D8FF" stroke-width="1.5" filter="url(#softGlow)"/>
+    <path d="M 564 300 H 586 M 575 289 V 311" stroke="#62D8FF" stroke-width="2.2" stroke-linecap="round"/>
+    <text x="618" y="296" fill="#F2F7FA" font-size="25" font-weight="760">RUNNING</text>
+    <text x="618" y="323" fill="#8FA1AF" font-size="14">exactly one active role Turn</text>
+    <line x1="557" y1="350" x2="843" y2="350" stroke="#344B56"/>
+    <text x="557" y="382" fill="#C3CDD5" font-size="15" font-weight="650">Handoff</text>
+    <text x="650" y="382" fill="#7F909D" font-size="14">names the next role</text>
+    <text x="557" y="412" fill="#C3CDD5" font-size="15" font-weight="650">Worker</text>
+    <text x="650" y="412" fill="#7F909D" font-size="14">resumes its preserved Session</text>
+    <text x="557" y="442" fill="#C3CDD5" font-size="15" font-weight="650">Journal</text>
+    <text x="650" y="442" fill="#7F909D" font-size="14">records the transition</text>
+
+    <!-- Handoff self-loop -->
+    <path d="M 607 245 C 607 190 793 190 793 245" fill="none" stroke="#A78BFA" stroke-width="2.3" marker-end="url(#arrowCyan)"/>
+    <rect x="642" y="184" width="116" height="32" rx="16" fill="#181627" stroke="#66558A"/>
+    <text x="700" y="205" text-anchor="middle" fill="#B9A7F2" font-size="11" font-weight="740">HANDOFF</text>
+    <text x="700" y="234" text-anchor="middle" fill="#766D89" font-size="11">RUNNING → RUNNING</text>
+
+    <!-- Terminal / paused state rail -->
+    <rect x="1116" y="193" width="412" height="420" rx="28" fill="url(#panel)" stroke="#455361" stroke-width="1.5"/>
+    <text x="1152" y="231" fill="#EEF3F6" font-size="17" font-weight="730">OUTCOMES</text>
+    <text x="1425" y="231" fill="#6F8190" font-size="12" font-weight="700" letter-spacing="1.1">EXPLICIT EVENTS</text>
+
+    <rect x="1152" y="258" width="340" height="88" rx="20" fill="#12231C" stroke="#39785A" stroke-width="1.3"/>
+    <circle cx="1192" cy="302" r="18" fill="#173127" stroke="#61E294"/>
+    <path d="M 1184 302 L 1190 308 L 1201 294" fill="none" stroke="#61E294" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1228" y="296" fill="#E3F9EC" font-size="20" font-weight="740">COMPLETED</text>
+    <text x="1228" y="321" fill="#7FA691" font-size="13">completion authority accepted</text>
+    <rect x="1404" y="282" width="64" height="34" rx="17" fill="#173127"/>
+    <text x="1436" y="304" text-anchor="middle" fill="#61E294" font-size="10" font-weight="740">FINAL</text>
+
+    <rect x="1152" y="370" width="340" height="88" rx="20" fill="#211C12" stroke="#806A31" stroke-width="1.3"/>
+    <circle cx="1192" cy="414" r="18" fill="#2B2414" stroke="#F6C85F"/>
+    <path d="M 1192 403 V 416 M 1192 423 V 424" stroke="#F6C85F" stroke-width="2.2" stroke-linecap="round"/>
+    <text x="1228" y="408" fill="#FFF4D4" font-size="20" font-weight="740">BLOCKED</text>
+    <text x="1228" y="433" fill="#AA9A70" font-size="13">waits for explicit user instruction</text>
+    <rect x="1400" y="394" width="68" height="34" rx="17" fill="#2B2414"/>
+    <text x="1434" y="416" text-anchor="middle" fill="#F6C85F" font-size="10" font-weight="740">PAUSED</text>
+
+    <rect x="1152" y="482" width="340" height="88" rx="20" fill="#201512" stroke="#794239" stroke-width="1.3"/>
+    <circle cx="1192" cy="526" r="18" fill="#2A1815" stroke="#FF725C"/>
+    <path d="M 1185 519 L 1199 533 M 1199 519 L 1185 533" stroke="#FF725C" stroke-width="2" stroke-linecap="round"/>
+    <text x="1228" y="520" fill="#FFE9E5" font-size="20" font-weight="740">CANCELLED</text>
+    <text x="1228" y="545" fill="#A77D75" font-size="13">processes stop; audit store remains</text>
+    <rect x="1404" y="506" width="64" height="34" rx="17" fill="#2A1815"/>
+    <text x="1436" y="528" text-anchor="middle" fill="#FF806B" font-size="10" font-weight="740">FINAL</text>
+
+    <!-- Complete -->
+    <path d="M 880 290 H 1000 C 1030 290 1048 302 1088 302 H 1136" fill="none" stroke="#61E294" stroke-width="2.4" marker-end="url(#arrowGreen)"/>
+    <rect x="942" y="266" width="90" height="30" rx="15" fill="#13241E" stroke="#39785A"/>
+    <text x="987" y="286" text-anchor="middle" fill="#61E294" font-size="11" font-weight="740">COMPLETE</text>
+
+    <!-- Block -->
+    <path d="M 880 353 H 1010 C 1044 353 1050 414 1136 414" fill="none" stroke="#F6C85F" stroke-width="2.4" marker-end="url(#arrowAmber)"/>
+    <rect x="948" y="347" width="72" height="30" rx="15" fill="#251F13" stroke="#806A31"/>
+    <text x="984" y="367" text-anchor="middle" fill="#F6C85F" font-size="11" font-weight="740">BLOCK</text>
+
+    <!-- Resume -->
+    <path d="M 1152 446 H 1040 C 978 446 962 509 878 438" fill="none" stroke="#62D8FF" stroke-width="2.2" stroke-dasharray="7 6" marker-end="url(#arrowCyan)"/>
+    <rect x="961" y="466" width="82" height="30" rx="15" fill="#112630" stroke="#2F7186"/>
+    <text x="1002" y="486" text-anchor="middle" fill="#62D8FF" font-size="11" font-weight="740">RESUME</text>
+
+    <!-- Cancel from Running or Blocked -->
+    <path d="M 880 428 C 978 480 1015 526 1136 526" fill="none" stroke="#FF725C" stroke-width="2.2" marker-end="url(#arrowCoral)"/>
+    <rect x="955" y="508" width="82" height="30" rx="15" fill="#251714" stroke="#794239"/>
+    <text x="996" y="528" text-anchor="middle" fill="#FF806B" font-size="11" font-weight="740">CANCEL</text>
+    <path d="M 1322 458 V 466" fill="none" stroke="#FF725C" stroke-width="2.2" marker-end="url(#arrowCoral)"/>
+
+    <!-- Journal strip -->
+    <rect x="72" y="650" width="1456" height="62" rx="20" fill="#141C22" stroke="#364752"/>
+    <circle cx="108" cy="681" r="7" fill="#61E294" filter="url(#softGlow)"/>
+    <text x="130" y="686" fill="#EAF7EF" font-size="15" font-weight="720">APPEND-ONLY JOURNAL</text>
+    <line x1="326" y1="681" x2="400" y2="681" stroke="#536471"/>
+    <text x="430" y="686" fill="#8B9AA6" font-size="13">each accepted event is validated, persisted, then reduced into the next state</text>
+    <rect x="1215" y="663" width="277" height="36" rx="18" fill="#1A252C"/>
+    <text x="1354" y="686" text-anchor="middle" fill="#9FB0BC" font-size="12" font-weight="650">PANE TEXT HAS NO STATE AUTHORITY</text>
+  </g>
+</svg>

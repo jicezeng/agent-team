@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Agent-Team event-sourced runtime architecture</title>
+  <desc id="desc">Natural-language collaboration rules enter through Skills and plugins, become immutable request and protocol files, and are executed by a small event-sourced core. An append-only journal is the source of truth, while tmux hosts native Codex, Claude Code, OpenCode, and DeepSeek Harness sessions.</desc>
+
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B0E13"/>
+      <stop offset="0.55" stop-color="#10151C"/>
+      <stop offset="1" stop-color="#090D12"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#181E27"/>
+      <stop offset="1" stop-color="#11171E"/>
+    </linearGradient>
+    <linearGradient id="journalPanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#15231F"/>
+      <stop offset="1" stop-color="#101A18"/>
+    </linearGradient>
+    <linearGradient id="tmuxPanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#142026"/>
+      <stop offset="1" stop-color="#10171C"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#FFFFFF" stroke-opacity="0.026" stroke-width="1"/>
+    </pattern>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#62D8FF"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#61E294"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#A78BFA"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" rx="32" fill="url(#canvas)"/>
+  <rect width="1600" height="900" rx="32" fill="url(#grid)"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="72" y="62" fill="#62D8FF" font-size="15" font-weight="700" letter-spacing="3.6">AGENT-TEAM RUNTIME</text>
+    <text x="72" y="118" fill="#F5F7FA" font-size="42" font-weight="760">Native agents. Durable coordination.</text>
+    <text x="72" y="154" fill="#9EABB9" font-size="19">A small protocol and state machine coordinate interactive Harnesses without becoming another agent.</text>
+
+    <!-- Integration layer -->
+    <rect x="72" y="190" width="365" height="540" rx="27" fill="url(#panel)" stroke="#455361" stroke-width="1.5"/>
+    <circle cx="108" cy="229" r="7" fill="#A78BFA" filter="url(#softGlow)"/>
+    <text x="130" y="236" fill="#F1EDFF" font-size="18" font-weight="730">INTEGRATION LAYER</text>
+    <text x="108" y="262" fill="#7F8E9B" font-size="13">PLUGIN-SHAPED · HUMAN-READABLE</text>
+
+    <rect x="108" y="292" width="293" height="88" rx="18" fill="#111A22" stroke="#32667A"/>
+    <rect x="132" y="317" width="28" height="32" rx="4" fill="none" stroke="#62D8FF" stroke-width="1.7"/>
+    <path d="M 138 326 H 154 M 138 333 H 154 M 138 340 H 150" stroke="#62D8FF" stroke-width="1.4" stroke-linecap="round"/>
+    <text x="180" y="326" fill="#EAF6FA" font-size="16" font-weight="700">Natural-language task</text>
+    <text x="180" y="351" fill="#8595A3" font-size="13">team rules + limits</text>
+
+    <line x1="254" y1="392" x2="254" y2="420" stroke="#A78BFA" stroke-width="2" marker-end="url(#arrowPurple)"/>
+
+    <rect x="108" y="433" width="293" height="102" rx="18" fill="#171521" stroke="#65558A"/>
+    <circle cx="146" cy="468" r="16" fill="#A78BFA" fill-opacity="0.14" stroke="#A78BFA"/>
+    <path d="M 138 468 H 154 M 146 460 V 476" stroke="#A78BFA" stroke-width="2" stroke-linecap="round"/>
+    <text x="178" y="464" fill="#F0ECFF" font-size="16" font-weight="700">Skill / Claude plugin</text>
+    <text x="178" y="489" fill="#9186A8" font-size="13">derives roles + topology</text>
+    <rect x="132" y="506" width="244" height="18" rx="9" fill="#1E1C2B"/>
+    <text x="254" y="519" text-anchor="middle" fill="#958AAD" font-size="11">Codex · OpenCode · DSH · Claude</text>
+
+    <line x1="254" y1="547" x2="254" y2="575" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+    <rect x="108" y="588" width="293" height="104" rx="18" fill="#111A22" stroke="#3E5967"/>
+    <circle cx="140" cy="622" r="7" fill="#61E294"/>
+    <text x="160" y="627" fill="#EFF5F7" font-size="16" font-weight="700">Immutable Run inputs</text>
+    <rect x="132" y="647" width="112" height="25" rx="12.5" fill="#19242C"/>
+    <text x="188" y="664" text-anchor="middle" fill="#B7C3CC" font-size="11" font-family="SFMono-Regular, Menlo, monospace">REQUEST.md</text>
+    <rect x="254" y="647" width="122" height="25" rx="12.5" fill="#19242C"/>
+    <text x="315" y="664" text-anchor="middle" fill="#B7C3CC" font-size="11" font-family="SFMono-Regular, Menlo, monospace">PROTOCOL.md</text>
+
+    <!-- Event-sourced core -->
+    <rect x="475" y="190" width="635" height="540" rx="27" fill="url(#panel)" stroke="#50606E" stroke-width="1.5"/>
+    <circle cx="511" cy="229" r="7" fill="#61E294" filter="url(#softGlow)"/>
+    <text x="533" y="236" fill="#E8FAEF" font-size="18" font-weight="730">EVENT-SOURCED CORE</text>
+    <rect x="921" y="210" width="153" height="37" rx="18.5" fill="#173127" stroke="#3E9B6B"/>
+    <text x="998" y="234" text-anchor="middle" fill="#76E8A5" font-size="13" font-weight="750">FAIL-CLOSED</text>
+
+    <path d="M 437 640 H 456 V 355 H 497" fill="none" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+    <text x="456" y="622" text-anchor="middle" fill="#7596A4" font-size="11">START</text>
+
+    <rect x="511" y="278" width="563" height="154" rx="22" fill="url(#journalPanel)" stroke="#477261" stroke-width="1.5"/>
+    <rect x="511" y="278" width="7" height="154" rx="3.5" fill="#61E294"/>
+    <circle cx="555" cy="321" r="20" fill="#173127" stroke="#61E294"/>
+    <path d="M 546 315 H 564 M 546 322 H 564 M 546 329 H 559" stroke="#61E294" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="590" y="318" fill="#61E294" font-size="23" font-weight="760">Event Journal</text>
+    <text x="590" y="346" fill="#F0F6F3" font-size="17" font-weight="650">durable source of truth</text>
+    <text x="547" y="384" fill="#8DA397" font-size="14">append-only · hash-chained · ownership-checked · replayable</text>
+    <rect x="547" y="398" width="490" height="21" rx="10.5" fill="#18251F"/>
+    <circle cx="566" cy="408.5" r="4" fill="#61E294"/>
+    <text x="580" y="413" fill="#80988B" font-size="11" font-family="SFMono-Regular, Menlo, monospace">Kickoff → Handoff → Handoff → Complete / Block / Cancel</text>
+
+    <line x1="646" y1="444" x2="646" y2="470" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+    <rect x="511" y="482" width="270" height="106" rx="19" fill="#111A22" stroke="#3C5967"/>
+    <circle cx="545" cy="517" r="13" fill="#62D8FF" fill-opacity="0.13" stroke="#62D8FF"/>
+    <path d="M 539 517 H 551 M 545 511 V 523" stroke="#62D8FF" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="571" y="518" fill="#EAF6FA" font-size="17" font-weight="700">State reducer</text>
+    <text x="535" y="549" fill="#8495A3" font-size="13">replay events → Run snapshot</text>
+    <text x="535" y="570" fill="#6F8190" font-size="12">deterministic recovery</text>
+
+    <line x1="793" y1="535" x2="823" y2="535" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+    <rect x="836" y="482" width="238" height="106" rx="19" fill="#151722" stroke="#65558A"/>
+    <circle cx="870" cy="517" r="13" fill="#A78BFA" fill-opacity="0.13" stroke="#A78BFA"/>
+    <path d="M 864 521 C 864 513 876 513 876 521 M 870 509 V 514" fill="none" stroke="#A78BFA" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="896" y="518" fill="#F0ECFF" font-size="17" font-weight="700">Role Worker</text>
+    <text x="860" y="549" fill="#9287A9" font-size="13">claims one eligible Turn</text>
+    <text x="860" y="570" fill="#756C87" font-size="12">resumes preserved Session</text>
+
+    <rect x="511" y="621" width="563" height="69" rx="18" fill="#121920" stroke="#344651"/>
+    <text x="539" y="649" fill="#F0F4F6" font-size="14" font-weight="700">MECHANICAL INVARIANTS</text>
+    <text x="539" y="673" fill="#81909E" font-size="13">identity · lease · nonce · state version · trace integrity</text>
+
+    <!-- Harness / tmux layer -->
+    <rect x="1148" y="190" width="380" height="540" rx="27" fill="url(#panel)" stroke="#455361" stroke-width="1.5"/>
+    <circle cx="1184" cy="229" r="7" fill="#62D8FF" filter="url(#softGlow)"/>
+    <text x="1206" y="236" fill="#EAF6FA" font-size="18" font-weight="730">HARNESS SESSIONS</text>
+    <text x="1184" y="262" fill="#7F8E9B" font-size="13">NATIVE INTERACTIVE CLIs</text>
+
+    <line x1="1074" y1="535" x2="1172" y2="535" stroke="#A78BFA" stroke-width="2.2" marker-end="url(#arrowPurple)"/>
+    <text x="1123" y="519" text-anchor="middle" fill="#9C8FC1" font-size="11" font-weight="700">TURN INPUT</text>
+
+    <rect x="1184" y="286" width="308" height="326" rx="22" fill="url(#tmuxPanel)" stroke="#4C6870" stroke-width="1.5"/>
+    <rect x="1184" y="286" width="7" height="326" rx="3.5" fill="#61E294"/>
+    <text x="1216" y="324" fill="#61E294" font-size="22" font-weight="760">tmux</text>
+    <text x="1277" y="324" fill="#F2F5F8" font-size="17" font-weight="680">process host</text>
+    <text x="1216" y="348" fill="#7F919E" font-size="12">SESSION LIFETIME · TERMINAL I/O</text>
+
+    <rect x="1216" y="372" width="244" height="45" rx="13" fill="#101B23" stroke="#315F70"/>
+    <circle cx="1240" cy="394.5" r="8" fill="#62D8FF" fill-opacity="0.16" stroke="#62D8FF"/>
+    <text x="1258" y="400" fill="#EAF6FA" font-size="15" font-weight="700">Codex</text>
+    <text x="1428" y="400" text-anchor="end" fill="#607B88" font-size="11">TUI</text>
+
+    <rect x="1216" y="429" width="244" height="45" rx="13" fill="#171521" stroke="#54477C"/>
+    <circle cx="1240" cy="451.5" r="8" fill="#A78BFA" fill-opacity="0.16" stroke="#A78BFA"/>
+    <text x="1258" y="457" fill="#F0ECFF" font-size="15" font-weight="700">Claude Code</text>
+    <text x="1428" y="457" text-anchor="end" fill="#7E7395" font-size="11">TUI</text>
+
+    <rect x="1216" y="486" width="244" height="45" rx="13" fill="#1A1812" stroke="#6D5B31"/>
+    <circle cx="1240" cy="508.5" r="8" fill="#F6C85F" fill-opacity="0.16" stroke="#F6C85F"/>
+    <text x="1258" y="514" fill="#FFF7E2" font-size="15" font-weight="700">OpenCode</text>
+    <text x="1428" y="514" text-anchor="end" fill="#887A59" font-size="11">TUI</text>
+
+    <rect x="1216" y="543" width="244" height="45" rx="13" fill="#111D1C" stroke="#376B66"/>
+    <circle cx="1240" cy="565.5" r="8" fill="#5DD6C0" fill-opacity="0.16" stroke="#5DD6C0"/>
+    <text x="1258" y="571" fill="#E5FAF6" font-size="15" font-weight="700">DeepSeek Harness</text>
+    <text x="1428" y="571" text-anchor="end" fill="#608A83" font-size="11">TUI</text>
+
+    <rect x="1184" y="638" width="308" height="54" rx="17" fill="#121920" stroke="#344651"/>
+    <path d="M 1210 660 H 1225 M 1217.5 653 V 667" stroke="#8FA0AD" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="1240" y="658" fill="#C5CFD7" font-size="13" font-weight="700">PRESERVED SESSIONS</text>
+    <text x="1240" y="677" fill="#728290" font-size="12">resume context across Turns</text>
+
+    <!-- Formal action returns from the native Harness to the Journal. -->
+    <path d="M 1184 385 H 1088" fill="none" stroke="#61E294" stroke-width="2.1" stroke-dasharray="7 6" marker-end="url(#arrowGreen)"/>
+    <rect x="1098" y="351" width="77" height="27" rx="13.5" fill="#13241E" stroke="#39785A"/>
+    <text x="1136.5" y="369" text-anchor="middle" fill="#61E294" font-size="9" font-weight="700">ROLE ACTION</text>
+
+    <!-- Observability is derived, not authoritative. -->
+    <rect x="72" y="762" width="1456" height="83" rx="23" fill="#151C24" stroke="#3B4855" stroke-width="1.3"/>
+    <circle cx="108" cy="803" r="7" fill="#62D8FF"/>
+    <text x="130" y="800" fill="#EEF4F7" font-size="16" font-weight="720">OBSERVE</text>
+    <text x="130" y="822" fill="#758592" font-size="12">derived views</text>
+
+    <rect x="255" y="785" width="98" height="36" rx="18" fill="#1B252E"/>
+    <text x="304" y="808" text-anchor="middle" fill="#B8C5CE" font-size="13">status</text>
+    <rect x="365" y="785" width="98" height="36" rx="18" fill="#1B252E"/>
+    <text x="414" y="808" text-anchor="middle" fill="#B8C5CE" font-size="13">watch</text>
+    <rect x="475" y="785" width="118" height="36" rx="18" fill="#1B252E"/>
+    <text x="534" y="808" text-anchor="middle" fill="#B8C5CE" font-size="13">transcript</text>
+    <rect x="605" y="785" width="98" height="36" rx="18" fill="#1B252E"/>
+    <text x="654" y="808" text-anchor="middle" fill="#B8C5CE" font-size="13">trace</text>
+    <rect x="715" y="785" width="108" height="36" rx="18" fill="#1B252E"/>
+    <text x="769" y="808" text-anchor="middle" fill="#B8C5CE" font-size="13">diagnose</text>
+
+    <line x1="855" y1="803" x2="927" y2="803" stroke="#536471" stroke-width="1.6" stroke-dasharray="5 5"/>
+    <text x="951" y="798" fill="#8FA0AD" font-size="13">tmux attach</text>
+    <text x="951" y="818" fill="#657581" font-size="12">read-only process visibility</text>
+    <rect x="1240" y="782" width="244" height="42" rx="21" fill="#12211C" stroke="#39785A"/>
+    <text x="1362" y="808" text-anchor="middle" fill="#75E7A4" font-size="13" font-weight="720">JOURNAL REMAINS AUTHORITATIVE</text>
+
+    <text x="800" y="878" text-anchor="middle" fill="#73838F" font-size="13">No permanent manager Agent · no compiled workflow engine · no Pane-scraping control loop</text>
+  </g>
+</svg>

@@ -20,7 +20,9 @@ Start with the work scenario, not an abstract graph template. The Skill derives
 the roles, handoff route, feedback loop, and completion authority that make that
 specific job effective:
 
-![Four common Agent-Team collaboration scenarios](docs/assets/collaboration-scenarios.webp)
+<p align="center">
+  <img src="docs/assets/dynamic-collaboration.svg" width="100%" alt="Agent-Team derives a task-specific collaboration graph, illustrated by compact software delivery, multimedia production, research, and incident-response loops." />
+</p>
 
 | Scenario | High-value, common collaboration pattern | Typical completion authority |
 | --- | --- | --- |
@@ -37,18 +39,9 @@ Fan-out/Join, keeping one shared worktree deterministic.
 
 ## A small, inspectable core
 
-```mermaid
-flowchart TB
-    Task[Natural-language task] --> Integration[Codex / OpenCode / DSH Skill / Claude plugin]
-    Integration --> Inputs[Immutable REQUEST.md + PROTOCOL.md]
-    Inputs --> Journal[(Append-only Event Journal)]
-    Journal --> Worker[Role Worker]
-    Worker --> Harness[Codex / Claude Code / OpenCode / DSH Session]
-    Harness --> Action[Formal role action]
-    Action --> Journal
-    Worker -. native interactive terminal / diagnostics .-> Tmux[tmux window]
-    Tmux -. read-only visibility .-> User[User]
-```
+<p align="center">
+  <img src="docs/assets/runtime-architecture.svg" width="100%" alt="Agent-Team runtime architecture: Skills and plugins create immutable Run inputs, an append-only Event Journal drives a small event-sourced core, and tmux hosts native interactive Harness sessions." />
+</p>
 
 The plugin layer turns each task into a readable protocol instead of compiled
 workflow code. Immutable files, hashed payloads, and the Event Journal are the
@@ -58,16 +51,9 @@ rescan the Journal, so losing a tmux notification never loses a Handoff.
 
 Only a small set of formal events changes business state:
 
-```mermaid
-flowchart LR
-    K((Kickoff)) --> Running
-    Running -- Handoff to next role --> Running
-    Running -- Complete --> Completed
-    Running -- Block --> Blocked
-    Blocked -- Resume after user instruction --> Running
-    Running -- Cancel --> Cancelled
-    Blocked -- Cancel --> Cancelled
-```
+<p align="center">
+  <img src="docs/assets/run-state-machine.svg" width="100%" alt="Agent-Team Run state machine showing Kickoff, Handoff, Complete, Block, Resume, and Cancel transitions." />
+</p>
 
 The result is deliberately local and mechanically simple: no permanent manager
 Agent, compiled workflow engine, database, or Pane-scraping control loop.

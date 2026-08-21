@@ -53,6 +53,41 @@ def _write_codex_team(
     (run_dir / "team.json").write_bytes(team.canonical_bytes())
 
 
+def _write_claude_team(
+    run_dir: Path,
+    workspace: Path,
+    *,
+    model_provider: str | None = None,
+    model_provider_config: dict[str, object] | None = None,
+) -> None:
+    team = make_team(
+        run_id=run_dir.name,
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "claude-code",
+                "resume",
+                "full-access",
+                "0" * 64,
+                "opus",
+                "high",
+                None,
+                "interactive",
+                None,
+                model_provider,
+                model_provider_config,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=60,
+    )
+    (run_dir / "team.json").write_bytes(team.canonical_bytes())
+
+
 def test_codex_interactive_custom_provider_does_not_copy_openai_auth(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -489,18 +524,8 @@ def test_claude_interactive_run_state_requires_pretrusted_workspace(
         ),
         encoding="utf-8",
     )
-    (run_dir / "team.json").write_text(
-        json.dumps(
-            {
-                "roles": {
-                    "developer": {
-                        "launch_profile": "full-access",
-                    }
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_claude_team(run_dir, workspace)
+    monkeypatch.setattr(adapter, "authentication_status", lambda: True)
 
     adapter.prepare_run_state(
         run_dir=run_dir,
@@ -536,6 +561,63 @@ def test_claude_interactive_run_state_requires_pretrusted_workspace(
     assert latest.read_text(encoding="utf-8") == "session\n"
     assert debug_dir.stat().st_mode & 0o077 == 0
     assert debug_log.stat().st_mode & 0o077 == 0
+
+
+def test_claude_external_provider_does_not_copy_claude_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-claude-gateway"
+    run_dir.mkdir(parents=True)
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    (config_dir / ".config.json").write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(workspace): {"hasTrustDialogAccepted": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    credentials = config_dir / ".credentials.json"
+    credentials.write_text('{"token":"must-not-be-copied"}\n', encoding="utf-8")
+    credentials.chmod(0o600)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "gateway-secret")
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.fixed_state_dir",
+        lambda: tmp_path / "state",
+    )
+    provider_config = {
+        "settings": {
+            "base_url": "https://gateway.example.test/anthropic",
+        },
+        "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+    }
+    _write_claude_team(
+        run_dir,
+        workspace,
+        model_provider="gateway",
+        model_provider_config=provider_config,
+    )
+    adapter = ClaudeCodeAdapter()
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+
+    home = adapter._runtime_home(run_dir, "developer")
+    assert not (home / ".credentials.json").exists()
+    assert adapter.worker_environment_names(
+        run_dir=run_dir,
+        role_id="developer",
+    ) == ("ANTHROPIC_AUTH_TOKEN",)
 
 
 @pytest.mark.parametrize(

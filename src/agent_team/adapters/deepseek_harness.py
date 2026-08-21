@@ -220,7 +220,8 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             or options.model_provider_config is not None
         ):
             raise InvalidArgument(
-                "model provider is only supported by the codex adapter"
+                "deepseek-harness encodes its Provider in --role-model "
+                "ROLE=provider/model; --role-model-provider is not accepted"
             )
 
     def ensure_launch_dependencies(self, options: HarnessLaunchOptions) -> None:

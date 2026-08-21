@@ -872,8 +872,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="ROLE=PROVIDER",
         help=(
-            "override one Codex role's model provider; otherwise inherit its "
-            "user default"
+            "override one Codex or Claude Code role's model provider; otherwise "
+            "inherit its user default"
         ),
     )
     init.add_argument(

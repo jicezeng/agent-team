@@ -21,6 +21,22 @@ from agent_team.errors import AgentTeamError, InvalidArgument
 from ._support import launch_context
 
 
+def _clear_claude_provider_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_MANTLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_launch_spec_reads_legacy_headless_schema() -> None:
     legacy = {
         "adapter_id": "codex",
@@ -337,13 +353,39 @@ def test_codex_custom_provider_can_require_codex_account_authentication(
     assert rejected.value.code == "HARNESS_NOT_AUTHENTICATED"
 
 
-def test_model_provider_option_is_codex_only() -> None:
-    with pytest.raises(InvalidArgument, match="only supported by the codex"):
+def test_claude_rejects_unknown_model_provider() -> None:
+    with pytest.raises(InvalidArgument, match="must be one of"):
         ClaudeCodeAdapter().resolve_launch_options(
             model="opus",
             reasoning_effort="high",
             fast_mode=None,
             model_provider="company_proxy",
+        )
+
+
+@pytest.mark.parametrize(
+    ("adapter", "model", "effort"),
+    [
+        (OpenCodeAdapter(), "openai/gpt-5", "high"),
+        (
+            DeepSeekHarnessAdapter(),
+            "deepseek-official/deepseek-v4-flash",
+            "high",
+        ),
+    ],
+)
+def test_provider_model_harnesses_reject_a_duplicate_provider_option(
+    adapter: HarnessAdapter,
+    model: str,
+    effort: str,
+) -> None:
+    with pytest.raises(InvalidArgument, match="provider/model"):
+        adapter.assert_launch_options(
+            HarnessLaunchOptions(
+                model=model,
+                reasoning_effort=effort,
+                model_provider="duplicate-provider",
+            )
         )
 
 
@@ -366,6 +408,7 @@ def test_claude_resolves_environment_over_user_model_and_effort_defaults(
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
     monkeypatch.setenv("ANTHROPIC_MODEL", "opus")
     monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
+    _clear_claude_provider_environment(monkeypatch)
 
     options = ClaudeCodeAdapter().resolve_launch_options(
         model=None,
@@ -381,11 +424,179 @@ def test_claude_resolves_environment_over_user_model_and_effort_defaults(
     assert options == HarnessLaunchOptions(
         model="opus",
         reasoning_effort="max",
+        model_provider="anthropic",
+        model_provider_config={
+            "settings": {},
+            "credential_environment_names": [],
+        },
     )
     assert overridden == HarnessLaunchOptions(
         model="haiku",
         reasoning_effort="low",
+        model_provider="anthropic",
+        model_provider_config={
+            "settings": {},
+            "credential_environment_names": [],
+        },
     )
+
+
+def test_claude_freezes_gateway_route_without_persisting_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_claude_provider_environment(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.test/anthropic")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "must-not-be-persisted")
+
+    options = ClaudeCodeAdapter().resolve_launch_options(
+        model="gateway-model",
+        reasoning_effort="high",
+        fast_mode=None,
+    )
+
+    assert options.model_provider == "gateway"
+    assert options.model_provider_config == {
+        "settings": {
+            "base_url": "https://gateway.example.test/anthropic",
+        },
+        "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+    }
+    assert "must-not-be-persisted" not in json.dumps(
+        options.model_provider_config,
+        sort_keys=True,
+    )
+
+
+def test_claude_infers_and_freezes_bedrock_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_claude_provider_environment(monkeypatch)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    monkeypatch.setenv("AWS_PROFILE", "agent-team-test")
+
+    options = ClaudeCodeAdapter().resolve_launch_options(
+        model="global.anthropic.claude-opus-4-6-v1",
+        reasoning_effort="high",
+        fast_mode=None,
+    )
+
+    assert options.model_provider == "bedrock"
+    assert options.model_provider_config == {
+        "settings": {"region": "us-west-2"},
+        "credential_environment_names": ["AWS_PROFILE"],
+    }
+
+
+def test_claude_rejects_conflicting_inferred_provider_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_claude_provider_environment(monkeypatch)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "true")
+
+    with pytest.raises(InvalidArgument, match="conflicting model providers"):
+        ClaudeCodeAdapter().resolve_launch_options(
+            model="opus",
+            reasoning_effort="high",
+            fast_mode=None,
+        )
+
+
+def test_claude_provider_prerequisite_rejects_missing_frozen_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options = HarnessLaunchOptions(
+        model="gateway-model",
+        reasoning_effort="high",
+        model_provider="gateway",
+        model_provider_config={
+            "settings": {
+                "base_url": "https://gateway.example.test/anthropic",
+            },
+            "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+        },
+    )
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+    with pytest.raises(AgentTeamError) as rejected:
+        ClaudeCodeAdapter().assert_launch_prerequisites(options)
+
+    assert rejected.value.code == "HARNESS_ENVIRONMENT_UNAVAILABLE"
+    assert "ANTHROPIC_AUTH_TOKEN" in rejected.value.message
+
+
+@pytest.mark.parametrize(
+    ("provider", "settings", "expected"),
+    [
+        (
+            "anthropic",
+            {},
+            {
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                "CLAUDE_CODE_USE_BEDROCK": "0",
+            },
+        ),
+        (
+            "bedrock",
+            {
+                "region": "us-west-2",
+                "base_url": "https://bedrock.example.test",
+                "skip_auth": True,
+            },
+            {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "AWS_REGION": "us-west-2",
+                "ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.example.test",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "1",
+            },
+        ),
+        (
+            "vertex",
+            {
+                "region": "us-east5",
+                "project_id": "agent-team-test",
+                "base_url": "https://vertex.example.test",
+            },
+            {
+                "CLAUDE_CODE_USE_VERTEX": "1",
+                "CLOUD_ML_REGION": "us-east5",
+                "ANTHROPIC_VERTEX_PROJECT_ID": "agent-team-test",
+                "ANTHROPIC_VERTEX_BASE_URL": "https://vertex.example.test",
+            },
+        ),
+        (
+            "foundry",
+            {
+                "resource": "agent-team-test",
+                "base_url": "https://foundry.example.test",
+            },
+            {
+                "CLAUDE_CODE_USE_FOUNDRY": "1",
+                "ANTHROPIC_FOUNDRY_RESOURCE": "agent-team-test",
+                "ANTHROPIC_FOUNDRY_BASE_URL": "https://foundry.example.test",
+            },
+        ),
+    ],
+)
+def test_claude_provider_routes_map_to_native_environment(
+    provider: str,
+    settings: dict[str, object],
+    expected: dict[str, str],
+) -> None:
+    options = HarnessLaunchOptions(
+        model="provider-model",
+        reasoning_effort="high",
+        model_provider=provider,
+        model_provider_config={
+            "settings": settings,
+            "credential_environment_names": [],
+        },
+    )
+
+    environment = ClaudeCodeAdapter._provider_environment(options)
+
+    assert environment.items() >= expected.items()
 
 
 def test_claude_rejects_codex_fast_mode() -> None:

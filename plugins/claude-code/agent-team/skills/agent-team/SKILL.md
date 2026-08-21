@@ -84,12 +84,16 @@ existing Run:
    `--role-model-provider <role>=<provider>`, or `--role-fast <role>` only for
    choices the user explicitly made. Do not infer these choices from role names
    or task complexity. Omit each unspecified option so `init` snapshots that
-   Harness user's default for the field. `--role-model-provider` and
-   `--role-fast` are Codex-only. A selected custom Codex Provider must already
+   Harness user's default for the field. `--role-model-provider` applies only
+   to Codex and Claude Code; `--role-fast` is Codex-only. A selected custom Codex Provider must already
    exist in that user's Codex `config.toml`; pass only its Provider ID. Never
    put an endpoint credential, token, header value, or environment value in the
    Agent-Team CLI, Request, or Protocol. Agent-Team freezes the safe Provider
-   structure and referenced environment variable names itself.
+   structure and referenced environment variable names itself. For Claude
+   Code, pass only `anthropic`, `bedrock`, `vertex`, `foundry`, or `gateway`;
+   the corresponding native Claude environment must already be present in the
+   shell that runs `init` and `start`. Omit an unspecified Claude Route so
+   `init` detects and freezes that environment.
    OpenCode Model IDs must resolve to `provider/model`; its reasoning-effort
    value is a provider-specific Variant. Supply an explicit OpenCode Model when
    Doctor reports an absent or unqualified user default.

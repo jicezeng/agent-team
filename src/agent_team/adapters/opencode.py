@@ -333,7 +333,8 @@ class OpenCodeAdapter(HarnessAdapter):
             or options.model_provider_config is not None
         ):
             raise InvalidArgument(
-                "model provider is only supported by the codex adapter"
+                "opencode encodes its Provider in --role-model "
+                "ROLE=provider/model; --role-model-provider is not accepted"
             )
 
     @staticmethod

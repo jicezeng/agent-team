@@ -68,11 +68,15 @@ External business Turn inside an existing Run:
    `--role-model-provider ROLE=PROVIDER` only for choices the user made.
    OpenCode models use `provider/model`; its reasoning-effort option maps to a
    provider-specific variant. DSH models also use `provider/model`, with effort
-   `off`, `high`, or `max`. `--role-model-provider` and `--role-fast` are
-   Codex-only. A custom Codex Provider must already exist in the user's Codex
+   `off`, `high`, or `max`; neither accepts a separate Provider option.
+   `--role-model-provider` applies to Codex and Claude Code, while
+   `--role-fast` is Codex-only. A custom Codex Provider must already exist in the user's Codex
    `config.toml`; pass only its ID, never a secret, endpoint credential, header
    value, or environment value. Omit an unspecified Provider so `init` freezes
-   the Codex user default. External roles
+   the Codex user default. For Claude Code, pass only `anthropic`, `bedrock`,
+   `vertex`, `foundry`, or `gateway`; its native Route environment must already
+   be present for `init` and `start`, and omission lets `init` detect and freeze
+   that environment. External roles
    default to native `interactive` execution. Add
    `--role-launch-mode ROLE=headless` only for Codex, Claude Code, or OpenCode
    when explicitly requested; DSH External roles are interactive-only.

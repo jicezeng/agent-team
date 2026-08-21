@@ -298,7 +298,7 @@ def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
         max_wall_time_seconds=300,
     )
 
-    assert team.config_schema_version == 6
+    assert team.config_schema_version == 7
     assert team.to_json()["roles"]["developer"]["harness_options"] == {
         "model": "gpt-5.6-sol",
         "reasoning_effort": "max",
@@ -432,9 +432,87 @@ def test_team_rejects_incomplete_codex_model_provider_contract(
         parse_team(value)
 
 
-def test_team_rejects_model_provider_for_non_codex_role(workspace: Path) -> None:
-    value = make_team(
+def test_team_schema_preserves_frozen_claude_model_provider(
+    workspace: Path,
+) -> None:
+    provider_config = {
+        "settings": {
+            "base_url": "https://gateway.example.test/anthropic",
+        },
+        "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+    }
+    team = make_team(
         run_id="at-test-claude-model-provider",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "claude-code",
+                "resume",
+                "default",
+                "0" * 64,
+                "gateway-model",
+                "high",
+                None,
+                "interactive",
+                None,
+                "gateway",
+                provider_config,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    )
+
+    parsed = parse_team(team.to_json())
+
+    assert parsed.roles["reviewer"].model_provider == "gateway"
+    assert parsed.roles["reviewer"].model_provider_config == provider_config
+
+
+@pytest.mark.parametrize(
+    ("provider_config", "message"),
+    [
+        (
+            {
+                "settings": {
+                    "base_url": "https://token@gateway.example.test/anthropic",
+                },
+                "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+            },
+            "without credentials",
+        ),
+        (
+            {
+                "settings": {
+                    "base_url": "https://gateway.example.test/anthropic",
+                    "api_key": "plaintext-secret",
+                },
+                "credential_environment_names": [],
+            },
+            "unsupported fields",
+        ),
+        (
+            {
+                "settings": {
+                    "base_url": "https://gateway.example.test/anthropic",
+                },
+                "credential_environment_names": ["UNSAFE_CUSTOM_TOKEN"],
+            },
+            "unsupported names",
+        ),
+    ],
+)
+def test_team_rejects_unsafe_claude_model_provider_config(
+    workspace: Path,
+    provider_config: dict[str, object],
+    message: str,
+) -> None:
+    value = make_team(
+        run_id="at-test-unsafe-claude-provider",
         workspace=workspace,
         origin_harness="codex",
         roles={
@@ -452,12 +530,75 @@ def test_team_rejects_model_provider_for_non_codex_role(workspace: Path) -> None
         max_wall_time_seconds=300,
     ).to_json()
     options = value["roles"]["reviewer"]["harness_options"]
+    options["model_provider"] = "gateway"
+    options["model_provider_config"] = provider_config
+
+    with pytest.raises(IntegrityError, match=message):
+        parse_team(value)
+
+
+def test_team_schema_v6_claude_route_remains_direct_anthropic(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-schema-v6-claude",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "claude-code",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["schema_version"] = 6
+    options = value["roles"]["reviewer"]["harness_options"]
+    options["model_provider"] = None
+    options["model_provider_config"] = None
+
+    parsed = parse_team(value)
+
+    assert parsed.config_schema_version == 6
+    assert parsed.roles["reviewer"].model_provider is None
+    assert parsed.roles["reviewer"].model_provider_config is None
+
+
+def test_team_rejects_separate_model_provider_for_opencode_role(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-opencode-model-provider",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "opencode",
+                "resume",
+                "default",
+                "0" * 64,
+                "openai/gpt-5",
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    options = value["roles"]["reviewer"]["harness_options"]
     options["model_provider"] = "company_proxy"
     options["model_provider_config"] = {
         "base_url": "https://proxy.example.test/v1"
     }
 
-    with pytest.raises(IntegrityError, match="only supported for Codex"):
+    with pytest.raises(IntegrityError, match="not a separate option"):
         parse_team(value)
 
 

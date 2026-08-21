@@ -84,8 +84,8 @@ v0.1 不承诺：
 - 保存用户原始请求为 `REQUEST.md`；
 - 生成可读的自然语言 `PROTOCOL.md`，明确角色、路由、循环、Completion Authority、
   Block/Resume 规则、假设和安全上限；
-- 生成 Schema 6 `team.json`，冻结 Role Binding、Session Policy、Launch Mode、
-  Launch Profile、role-scoped Model / Reasoning Effort / Codex Model Provider /
+- 生成 Schema 7 `team.json`，冻结 Role Binding、Session Policy、Launch Mode、
+  Launch Profile、role-scoped Model / Reasoning Effort / Codex 或 Claude Provider /
   Codex Fast Mode、可选 DSH Plugin、Wall Time、最大 Turn 数和 Observability
   Policy；
 - `init` 必须原子创建完整 UNSTARTED Run，`start` 才获取 Workspace Ownership 并
@@ -142,13 +142,17 @@ v0.1 不承诺：
   Formal Action；Codex 显式冻结空的额外 `writable_roots`，共享 Workspace Lock / Owner
   目录不作为 Harness 通用可写根；
 - Codex、Claude Code、OpenCode 与 DeepSeek Harness External Role 都可显式选择 Model 和 Reasoning Effort，
-  Codex 还可显式选择 Model Provider 或启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
+  Codex 与 Claude Code 还可显式选择 Model Provider，Codex 可启用 Fast Mode；未显式选择的每个字段继承并冻结用户级 Harness
   默认值，但不得同时载入用户 Permission、MCP、Hook 等其他配置；新建 Codex Role
   把未启用 Fast Mode 的有效结果明确冻结为 `false`，不留给后续 Harness 默认值漂移；
   Codex 自定义 Provider 只冻结安全结构和 Credential 环境变量名，拒绝明文 Token、
   静态 Header/Query 与可执行 Auth；仅把实际引用的非空环境变量值注入对应 tmux
   Worker，不写入 Run State、LaunchSpec、Journal 或 Trace。Start 与 Resume 必须显式
   重放同一 Provider；
+  Claude Provider 限于 `anthropic|bedrock|vertex|foundry|gateway`，只冻结 Route 所需的
+  Endpoint/Region/Project/Resource 等非秘密结构与 Credential 环境变量名；省略显式
+  选择时从 Claude 原生 Route 环境识别，冲突 Fail Closed。未选 Route 和未冻结凭据在
+  每次启动时显式清空，外部 Route 不复制 Claude 私有登录凭据；
   Claude 托管策略仍可能在执行时覆盖冻结的请求 Model，产品不得把请求值误报为已证明
   的最终有效 Model；
   OpenCode Model 必须冻结为 `provider/model`，Reasoning Effort 映射为不透明的

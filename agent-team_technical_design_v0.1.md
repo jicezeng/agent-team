@@ -814,7 +814,7 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "run_id": "at-20260725-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -836,8 +836,11 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
         "model": null,
         "reasoning_effort": null,
         "fast_mode": null,
-        "model_provider": null,
-        "model_provider_config": null
+        "model_provider": "anthropic",
+        "model_provider_config": {
+          "settings": {},
+          "credential_environment_names": []
+        }
       },
       "dsh_plugin": null
     }
@@ -881,9 +884,10 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 Provider-specific Variant 字符串或 `null`；DeepSeek Harness Model 必须是非空
 `provider/model`，Reasoning Effort 必须是 `off|high|max`。`fast_mode` 的 Schema 对
 Codex 接受布尔值或 `null`，其他 Adapter 必须为 `null`。
-`model_provider` 与 `model_provider_config` 仅允许 Codex Role 使用。Schema 6 Codex
-Role 的前者必须是非空 Provider ID；后者是由 Adapter 解析并冻结的闭合结构，调用方
-不能直接提供。省略
+`model_provider` 与 `model_provider_config` 是 Codex 与 Claude Code 的独立 Route
+字段；OpenCode 与 DeepSeek Harness 继续把 Provider 编码在 `provider/model` 中，二者
+必须为 `null`。Schema 7 Codex Role 的前者必须是非空 Provider ID；后者是由 Adapter
+解析并冻结的闭合结构，调用方不能直接提供。省略
 `--role-model-provider` 时，`init` 读取 Codex 用户配置中的有效 `model_provider`，缺失
 则冻结为内建 `openai`。显式选择自定义 Provider 时，该 ID 必须已存在于同一用户的
 Codex `config.toml`。内建 Provider 不允许附加定义；自定义 Provider 必须冻结非空
@@ -892,19 +896,31 @@ HTTP(S) `base_url`，并且只允许 `name`、`env_key`、`env_http_headers`、
 阅读的 `env_key_instructions`，拒绝明文 Bearer Token、静态 Header/Query、可执行 Auth
 Command、未知字段，以及含凭据、Query 或 Fragment 的 URL。
 
+Schema 7 Claude Code Role 的 `model_provider` 必须为
+`anthropic|bedrock|vertex|foundry|gateway`，`model_provider_config` 必须精确包含
+`settings` 与排序去重的 `credential_environment_names`。`settings` 只允许该 Route
+所需的非秘密结构值：Gateway Base URL，或云 Route 的 Region、Project、Resource、
+Base URL 与 Skip-Auth 布尔值；URL 必须是无 Credential、Query 和 Fragment 的
+HTTP(S) URL。Credential 字段只保存 Adapter Allowlist 中当前实际引用的环境变量名，
+不得保存值。省略显式 Provider 时，Adapter 依次识别 Claude 原生 Bedrock、Vertex、
+Foundry 开关，再把非默认 `ANTHROPIC_BASE_URL` 识别为 `gateway`，否则冻结为
+`anthropic`；冲突开关 Fail Closed。显式 Provider 覆盖 Ambient Route 选择，但仍从
+当前环境解析、验证并冻结对应的安全结构。
+
 显式的 role-scoped CLI 参数优先；未显式提供的每个字段由 `init` 从用户级
 Harness 默认值独立解析，并冻结 Agent-Team 随后请求 Harness 使用的值。Codex 只读取 `model`、
 `model_reasoning_effort`、`service_tier`、`features.fast_mode`、`model_provider` 及所选
 Provider 的安全定义；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
-`model` / `effortLevel`。OpenCode 在目标 Workspace 禁用 Project Config 后通过
+`model` / `effortLevel`，Provider Route 只从显式选项和当前进程的原生 Route 环境解析，
+不从被禁用的 Setting Sources 继承。OpenCode 在目标 Workspace 禁用 Project Config 后通过
 `debug config --pure` 只解析
 有效 Model；缺失或不是完整 `provider/model` 时要求显式 `--role-model`，不以隔离环境
 重新猜测 Last-used Model。DeepSeek Harness 不读取用户 Profile，缺省冻结
 `deepseek-official/deepseek-v4-flash` 与 `high`。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
 Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
 冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
-CLI 新建 Schema 6 Codex Role 时则把 Fast
+CLI 新建 Schema 7 Codex Role 时则把 Fast
 Mode 冻结为有效布尔值：用户配置的 `service_tier="fast"` 且
 `features.fast_mode` 未显式关闭时为 `true`，其他情况为 `false`；`null` 只保留为
 Schema 兼容值，表示不增加 Fast Mode 启动覆盖。不得为了继承这些选择而加载用户
@@ -929,7 +945,8 @@ Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_s
 `Decision rationale` 与 `Evidence`。Schema 1 的历史 Run 继续按
 `redaction=none, raw_retention=keep` 读取；Schema 1/2 External Role 的
 Harness Options 继续按未冻结的历史语义读取，Schema 3–5 的 Codex Role 没有冻结
-Provider 合同；这些历史 Run 都不就地改写 `team.json`。
+Provider 合同；Schema 6 Claude Role 的空 Provider 字段按直连 Anthropic 兼容执行，
+但不就地改写 `team.json`。这些历史 Run 都不就地迁移。
 
 外部 Binding 的 `launch_profile` 是 Adapter 自己定义并由 Capability Probe 返回的闭集标识，只描述 Harness 的技术启动权限，不表达 Reviewer、Developer 等业务角色。Codex、Claude Code、OpenCode 与 DeepSeek Harness 当前都提供 `default | trusted-workspace | full-access`：
 
@@ -1004,7 +1021,7 @@ Skill 或其他 Bootstrap 调用方在用户没有选择受限 Profile 时提交
 `full-access` 只适用于其文件、凭据和网络均可暴露给 Agent 的受控机器或 VM；自然语言
 职责和 Formal Action 规则在该模式下不是 Host Containment Boundary。
 
-`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。Codex Adapter 加入“冻结 Provider 定义、只桥接其环境变量引用”的合同版本；Interactive Adapter 还加入私有 Home 配置合同版本，其中包括按冻结角色 Model 预置原生 Model Availability NUX 状态。OpenCode Adapter 把基础 Inline Config、隔离环境合同、Provider 快照机制版本与“只向 Worker 注入快照所引用环境变量”的桥接合同加入第二层长度前缀摘要。具体 User Provider 内容不属于权限 Profile Hash，而由 Role 私有不可变快照固定并进入逐 Turn LaunchSpec。DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
+`launch_profile_sha256` 是对 Adapter 标识与版本、Harness 可执行文件真实路径与版本、以及该 Session Policy 实际需要的规范化 Start / Resume 权限映射做长度前缀编码后的 SHA-256。Codex Adapter 加入“冻结 Provider 定义、只桥接其环境变量引用”的合同版本；Interactive Adapter 还加入私有 Home 配置合同版本，其中包括按冻结角色 Model 预置原生 Model Availability NUX 状态。OpenCode Adapter 把基础 Inline Config、隔离环境合同、Provider 快照机制版本与“只向 Worker 注入快照所引用环境变量”的桥接合同加入第二层长度前缀摘要。具体 Codex、Claude 或 OpenCode Provider 内容不属于权限 Profile Hash，而由不可变 `team.json`、Role 私有快照和逐 Turn LaunchSpec 固定；Claude 的 Route 与安全结构直接冻结在 Role Harness Options。DeepSeek Harness Adapter 则加入受管 Runtime 版本、npm integrity 和 bundled TUI 逐文件 Manifest。Hash 只覆盖 Agent-Team 提交给 Harness 的 Mapping，不声称摘要 Harness 无法覆盖的 Codex Admin Requirements、Claude Enterprise Managed Settings 或 OpenCode Managed Config。`init` 由 Probe 生成，`start` 和每个 External Turn 在启动前重新计算并要求完全相等。Kickoff 前不一致直接拒绝；Kickoff 后不静默采用新映射，由已创建 Turn 提交不可 Resume 的 `block_reason=profile_changed`。系统 Payload 记录 Profile 名称、冻结 / 当前 Hash、Adapter 与 Harness 版本，用户只能取消旧 Run 并用新 Run 接受新 Profile 含义。
 
 Stage 1 不接受 per-role CWD；所有外部 Harness 都以规范化后的 `workspace` 为工作目录。需要修改多个根目录时必须拆成多个 Run 或等待后续版本，不能只锁其中一个目录。
 
@@ -2093,6 +2110,16 @@ v0.1 实现：
 - 冻结的请求 `model` 通过 `--model` 同时传给 Start / Resume，冻结的 Reasoning Effort
   通过 `CLAUDE_CODE_EFFORT_LEVEL` 传给受支持版本；Enterprise Managed Settings 对
   Model 的更高优先级仍按前述边界生效；
+- `init` 把显式 `--role-model-provider` 或从 Claude 原生环境识别出的 Route 冻结为
+  `anthropic|bedrock|vertex|foundry|gateway`。Adapter 只保存 13.1 定义的安全结构值和
+  Credential 环境变量名；创建 tmux Worker 时验证并桥接这些名字对应的非空值，值不
+  进入 Run Store。每个 Turn 都显式关闭未选 Route，清空未冻结的 Route Credential 和
+  结构环境，并通过同一 LaunchSpec Environment 向 Start / Resume 重放冻结 Route；
+- `anthropic` Route 使用 Anthropic 官方 Base URL；存在冻结的 Anthropic Credential
+  环境变量时使用该环境认证，否则要求 Claude Login。`gateway` 使用冻结的
+  `ANTHROPIC_BASE_URL`；Bedrock、Vertex 与 Foundry 映射回各自 Claude 原生开关和
+  Region/Project/Resource/Base-URL 环境变量。外部 Route 不要求 Claude Login，也不把
+  用户 `.credentials.json` 复制进私有 `CLAUDE_CONFIG_DIR`；
 - Headless Prompt 通过 stdin 传入；Interactive 只把引用不可变 Prompt 文件的短
   Bootstrap Prompt 作为最后一个 argv 参数传入，不通过 Shell 字符串拼接。
 - Interactive Start/Resume 去掉 `-p` 与 Stream JSON 参数，保持同一 Profile、Plugin、
@@ -3541,7 +3568,7 @@ Status/Diagnose/Watch 的共同信封为：
         "launch_profile": "full-access",
         "launch_profile_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "model": null,
-        "model_provider": null,
+        "model_provider": "anthropic",
         "reasoning_effort": null,
         "fast_mode": null,
         "dsh_plugin": null,
@@ -4248,7 +4275,7 @@ sequenceDiagram
 - Run ID 和 Role ID；
 - `team.json` 的 Run 目录、State Root Workspace、非空 Roles、Initial Role 和固定 Origin Mode 交叉校验；
 - Schema 1/2 兼容语义、Schema 3 Harness Options、Schema 4 Launch Mode、Schema 5
-  DSH Plugin，以及 Schema 6 Codex Model Provider；Audit Mode、Redaction、Byte Limit、
+  DSH Plugin、Schema 6 Codex Model Provider，以及 Schema 7 Claude Provider Route；Audit Mode、Redaction、Byte Limit、
   Raw Retention、Required Payload Sections 和 Full Audit External-only 约束；
 - Protocol 模板区分宿主/Agent-Team 指令层级与事实证据层级；
 - 不可变 Event 原子提交；
@@ -4736,7 +4763,7 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "run_id": "at-feature-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -4758,8 +4785,11 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
         "model": null,
         "reasoning_effort": null,
         "fast_mode": null,
-        "model_provider": null,
-        "model_provider_config": null
+        "model_provider": "anthropic",
+        "model_provider_config": {
+          "settings": {},
+          "credential_environment_names": []
+        }
       },
       "dsh_plugin": null
     }

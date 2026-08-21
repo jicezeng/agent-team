@@ -169,6 +169,49 @@ def test_codex_worker_environment_uses_only_frozen_provider_references(
     assert not tuple(run_dir.iterdir())
 
 
+def test_claude_worker_environment_uses_only_frozen_provider_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    role = Role(
+        "reviewer",
+        "external",
+        "claude-code",
+        "resume",
+        "full-access",
+        "0" * 64,
+        "gateway-model",
+        "high",
+        None,
+        "interactive",
+        None,
+        "gateway",
+        {
+            "settings": {
+                "base_url": "https://gateway.example.test/anthropic",
+            },
+            "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+        },
+    )
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "gateway-secret")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-forwarded")
+
+    arguments, sensitive_values = tmux_runtime._worker_environment_args(
+        run_dir,
+        role,
+    )
+
+    assert arguments == (
+        "-e",
+        "ANTHROPIC_AUTH_TOKEN=gateway-secret",
+    )
+    assert "must-not-be-forwarded" not in arguments
+    assert sensitive_values == ("gateway-secret",)
+    assert not tuple(run_dir.iterdir())
+
+
 def test_tmux_failure_redacts_injected_environment_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -32,6 +32,7 @@ TEAM_V3_REQUIRED = TEAM_V2_REQUIRED
 TEAM_V4_REQUIRED = TEAM_V3_REQUIRED
 TEAM_V5_REQUIRED = TEAM_V4_REQUIRED
 TEAM_V6_REQUIRED = TEAM_V5_REQUIRED
+TEAM_V7_REQUIRED = TEAM_V6_REQUIRED
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
 REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
@@ -62,6 +63,68 @@ CODEX_REASONING_EFFORTS = frozenset(
 CLAUDE_REASONING_EFFORTS = frozenset(
     {"auto", "low", "medium", "high", "xhigh", "max"}
 )
+CLAUDE_MODEL_PROVIDERS = frozenset(
+    {"anthropic", "bedrock", "vertex", "foundry", "gateway"}
+)
+CLAUDE_PROVIDER_SETTING_FIELDS = {
+    "anthropic": frozenset(),
+    "gateway": frozenset({"base_url"}),
+    "bedrock": frozenset({"region", "base_url", "skip_auth"}),
+    "vertex": frozenset({"region", "project_id", "base_url", "skip_auth"}),
+    "foundry": frozenset({"resource", "base_url", "skip_auth"}),
+}
+CLAUDE_PROVIDER_CREDENTIAL_ENVIRONMENTS = {
+    "anthropic": frozenset(
+        {
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        }
+    ),
+    "gateway": frozenset(
+        {
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        }
+    ),
+    "bedrock": frozenset(
+        {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_PROFILE",
+            "AWS_CONFIG_FILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_ROLE_ARN",
+            "AWS_ROLE_SESSION_NAME",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+        }
+    ),
+    "vertex": frozenset(
+        {
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_CLOUD_PROJECT",
+            "CLOUDSDK_AUTH_ACCESS_TOKEN",
+        }
+    ),
+    "foundry": frozenset(
+        {
+            "ANTHROPIC_FOUNDRY_API_KEY",
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_CLIENT_CERTIFICATE_PATH",
+        }
+    ),
+}
 DSH_REASONING_EFFORTS = frozenset({"off", "high", "max"})
 EXTERNAL_ADAPTER_IDS = (
     "codex",
@@ -111,8 +174,20 @@ class Role:
         if self.binding == "origin":
             return {"binding": "origin"}
         model_provider = self.model_provider
+        model_provider_config = self.model_provider_config
         if self.adapter == "codex" and model_provider is None:
             model_provider = "openai"
+        elif self.adapter == "claude-code" and model_provider is None:
+            model_provider = "anthropic"
+        if (
+            self.adapter == "claude-code"
+            and model_provider == "anthropic"
+            and model_provider_config is None
+        ):
+            model_provider_config = {
+                "settings": {},
+                "credential_environment_names": [],
+            }
         return {
             "binding": "external",
             "adapter": self.adapter,
@@ -127,7 +202,7 @@ class Role:
                 "reasoning_effort": self.reasoning_effort,
                 "fast_mode": self.fast_mode,
                 "model_provider": model_provider,
-                "model_provider_config": self.model_provider_config,
+                "model_provider_config": model_provider_config,
             },
             "dsh_plugin": self.dsh_plugin,
         }
@@ -143,11 +218,11 @@ class Team:
     max_turns: int
     max_wall_time_seconds: int
     observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
-    config_schema_version: int = 6
+    config_schema_version: int = 7
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 6,
+            "schema_version": 7,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -291,6 +366,86 @@ def codex_model_provider_config_error(value: object) -> str | None:
     return None
 
 
+def claude_model_provider_config_error(
+    provider: object,
+    value: object,
+) -> str | None:
+    """Return why a frozen Claude provider route is unsafe or malformed."""
+
+    if not isinstance(provider, str) or provider not in CLAUDE_MODEL_PROVIDERS:
+        return "provider must be one of: " + ", ".join(
+            sorted(CLAUDE_MODEL_PROVIDERS)
+        )
+    if not isinstance(value, dict):
+        return "must be an object"
+    if set(value) != {"settings", "credential_environment_names"}:
+        return (
+            "must contain exactly settings and credential_environment_names"
+        )
+    settings = value["settings"]
+    if not isinstance(settings, dict) or not all(
+        isinstance(key, str) for key in settings
+    ):
+        return "settings must be an object with string field names"
+    allowed_settings = CLAUDE_PROVIDER_SETTING_FIELDS[provider]
+    unknown = set(settings) - allowed_settings
+    if unknown:
+        return "settings contains unsupported fields: " + ", ".join(
+            sorted(unknown)
+        )
+    if provider == "gateway" and "base_url" not in settings:
+        return "gateway settings must contain base_url"
+    for field_name, item in settings.items():
+        if field_name == "skip_auth":
+            if not isinstance(item, bool):
+                return "settings.skip_auth must be a boolean"
+            continue
+        if (
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or len(item) > MAX_MODEL_ID_LENGTH
+            or any(ord(char) < 32 or ord(char) == 127 for char in item)
+        ):
+            return (
+                f"settings.{field_name} must be a non-empty printable string "
+                f"of at most {MAX_MODEL_ID_LENGTH} characters"
+            )
+        if field_name == "base_url":
+            try:
+                parsed_url = urlsplit(item)
+                hostname = parsed_url.hostname
+            except ValueError:
+                return "settings.base_url is invalid"
+            if (
+                parsed_url.scheme not in {"http", "https"}
+                or not parsed_url.netloc
+                or hostname is None
+                or parsed_url.username is not None
+                or parsed_url.password is not None
+                or parsed_url.query
+                or parsed_url.fragment
+            ):
+                return (
+                    "settings.base_url must be an HTTP(S) URL without "
+                    "credentials, query, or fragment"
+                )
+    credential_names = value["credential_environment_names"]
+    if (
+        not isinstance(credential_names, list)
+        or not all(isinstance(name, str) for name in credential_names)
+        or credential_names != sorted(set(credential_names))
+    ):
+        return "credential_environment_names must be a sorted unique string list"
+    allowed_credentials = CLAUDE_PROVIDER_CREDENTIAL_ENVIRONMENTS[provider]
+    unsupported_credentials = set(credential_names) - allowed_credentials
+    if unsupported_credentials:
+        return "credential_environment_names contains unsupported names: " + ", ".join(
+            sorted(unsupported_credentials)
+        )
+    return None
+
+
 def valid_opencode_model_id(value: object) -> bool:
     """Validate OpenCode's provider/model selector without guessing providers."""
 
@@ -344,7 +499,7 @@ def _require_exact(
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
     schema_version = require_schema_version(
         value,
-        (1, 2, 3, 4, 5, 6),
+        (1, 2, 3, 4, 5, 6, 7),
         subject="team.json",
     )
     if schema_version == 1:
@@ -359,6 +514,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_V5_REQUIRED, "team.json")
     elif schema_version == 6:
         _require_exact(value, TEAM_V6_REQUIRED, "team.json")
+    elif schema_version == 7:
+        _require_exact(value, TEAM_V7_REQUIRED, "team.json")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise IntegrityError("team.json run_id is invalid")
@@ -542,13 +699,34 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                         raise IntegrityError(
                             f"custom model provider has no definition for {role_id}"
                         )
+                elif adapter == "claude-code" and schema_version >= 7:
+                    if fast_mode is not None:
+                        raise IntegrityError(
+                            f"fast mode is not supported for {role_id}"
+                        )
+                    if model_provider not in CLAUDE_MODEL_PROVIDERS:
+                        supported = ", ".join(sorted(CLAUDE_MODEL_PROVIDERS))
+                        raise IntegrityError(
+                            f"Claude model provider for {role_id} must be one of: "
+                            f"{supported}"
+                        )
+                    provider_error = claude_model_provider_config_error(
+                        model_provider,
+                        model_provider_config,
+                    )
+                    if provider_error is not None:
+                        raise IntegrityError(
+                            f"invalid Claude model provider config for {role_id}: "
+                            f"{provider_error}"
+                        )
                 elif fast_mode is not None:
                     raise IntegrityError(
                         f"fast mode is not supported for {role_id}"
                     )
                 elif model_provider is not None or model_provider_config is not None:
                     raise IntegrityError(
-                        f"model provider is only supported for Codex role {role_id}"
+                        "model provider is not a separate option for "
+                        f"{adapter} role {role_id}"
                     )
             roles[role_id] = Role(
                 role_id,
@@ -749,7 +927,7 @@ def make_team(
         max_turns,
         max_wall_time_seconds,
         observability or ObservabilityPolicy(),
-        6,
+        7,
     )
     try:
         return parse_team(team.to_json())

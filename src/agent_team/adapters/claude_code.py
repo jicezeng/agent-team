@@ -9,7 +9,13 @@ import uuid
 from pathlib import Path
 
 from agent_team.assets import effective_agent_team_cli, effective_claude_plugin
-from agent_team.config import CLAUDE_REASONING_EFFORTS, valid_model_id
+from agent_team.config import (
+    CLAUDE_MODEL_PROVIDERS,
+    CLAUDE_PROVIDER_CREDENTIAL_ENVIRONMENTS,
+    CLAUDE_REASONING_EFFORTS,
+    claude_model_provider_config_error,
+    valid_model_id,
+)
 from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 from agent_team.state import fixed_state_dir
 from agent_team.util import (
@@ -33,6 +39,19 @@ from .base import (
     StreamRecord,
     TurnLaunchContext,
     workspace_from_run_dir,
+)
+
+_ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
+_CLAUDE_PROVIDER_FLAGS = {
+    "bedrock": "CLAUDE_CODE_USE_BEDROCK",
+    "vertex": "CLAUDE_CODE_USE_VERTEX",
+    "foundry": "CLAUDE_CODE_USE_FOUNDRY",
+}
+_CLAUDE_ROUTE_FLAGS = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
 )
 
 
@@ -180,6 +199,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
     def probe(self) -> CapabilityReport:
         report = super().probe()
         details = dict(report.details)
+        details["model_provider_routes"] = {
+            "supported": sorted(CLAUDE_MODEL_PROVIDERS),
+            "selection": "explicit role option or frozen native environment",
+            "credentials": "environment names only; values remain ephemeral",
+        }
         details["runtime_isolation"] = {
             "interactive_config": "private per Run and role",
             "user_state": (
@@ -383,6 +407,39 @@ class ClaudeCodeAdapter(HarnessAdapter):
         return profile
 
     @classmethod
+    def _role_launch_options(
+        cls,
+        run_dir: Path,
+        role_id: str,
+    ) -> HarnessLaunchOptions:
+        team = read_json(run_dir / "team.json")
+        roles = team.get("roles")
+        role = roles.get(role_id) if isinstance(roles, dict) else None
+        adapter = role.get("adapter") if isinstance(role, dict) else None
+        options = role.get("harness_options") if isinstance(role, dict) else None
+        if adapter != cls.adapter_id:
+            raise IntegrityError(
+                f"Claude runtime state has an invalid role: {role_id}"
+            )
+        if not isinstance(options, dict):
+            return HarnessLaunchOptions()
+        launch_options = HarnessLaunchOptions(
+            model=options.get("model"),
+            reasoning_effort=options.get("reasoning_effort"),
+            fast_mode=options.get("fast_mode"),
+            model_provider=options.get("model_provider"),
+            model_provider_config=options.get("model_provider_config"),
+        )
+        try:
+            cls().assert_launch_options(launch_options)
+        except InvalidArgument as exc:
+            raise IntegrityError(
+                f"Claude runtime state has invalid launch options for {role_id}: "
+                f"{exc.message}"
+            ) from exc
+        return launch_options
+
+    @classmethod
     def _private_runtime_state(
         cls,
         *,
@@ -417,6 +474,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         role_id: str,
         workspace: Path,
         profile: str,
+        requires_claude_auth: bool,
     ) -> Path:
         home = cls._runtime_home(run_dir, role_id)
         try:
@@ -453,6 +511,12 @@ class ClaudeCodeAdapter(HarnessAdapter):
             raise IntegrityError(
                 "Claude Code private full-access confirmation is invalid"
             )
+        if not requires_claude_auth and path_entry_exists(
+            home / ".credentials.json"
+        ):
+            raise IntegrityError(
+                "Claude Code external Provider state contains Claude credentials"
+            )
         return home
 
     def prepare_run_state(
@@ -470,6 +534,9 @@ class ClaudeCodeAdapter(HarnessAdapter):
         if launch_mode == "interactive":
             workspace = workspace_from_run_dir(run_dir)
             self._assert_interactive_workspace_trusted(workspace)
+        options = self._role_launch_options(run_dir, role_id)
+        self.assert_launch_prerequisites(options)
+        if launch_mode == "interactive":
             profile = self._role_profile(run_dir, role_id)
             for directory in self._runtime_hierarchy(run_dir, role_id):
                 ensure_dir(directory)
@@ -497,7 +564,9 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 ),
             )
             source_credentials = self._source_config_home() / ".credentials.json"
-            if path_entry_exists(source_credentials):
+            if self.authentication_required(options) and path_entry_exists(
+                source_credentials
+            ):
                 try:
                     source_info = source_credentials.lstat()
                 except OSError as exc:
@@ -568,6 +637,124 @@ class ClaudeCodeAdapter(HarnessAdapter):
         for directory in self._runtime_hierarchy(run_dir, role_id):
             directory.chmod(0o700)
 
+    @staticmethod
+    def _boolean_environment(name: str) -> bool | None:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return None
+        normalized = raw.strip().casefold()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise AgentTeamError(
+            "HARNESS_PROVIDER_CONFIG_INVALID",
+            f"Claude Code Provider flag {name!r} must be a boolean value",
+        )
+
+    @classmethod
+    def _selected_model_provider(cls, explicit: str | None) -> str:
+        if explicit is not None:
+            if explicit not in CLAUDE_MODEL_PROVIDERS:
+                supported = ", ".join(sorted(CLAUDE_MODEL_PROVIDERS))
+                raise InvalidArgument(
+                    f"claude-code model provider must be one of: {supported}"
+                )
+            return explicit
+        selected = [
+            provider
+            for provider, name in _CLAUDE_PROVIDER_FLAGS.items()
+            if cls._boolean_environment(name) is True
+        ]
+        if cls._boolean_environment("CLAUDE_CODE_USE_MANTLE") is True:
+            raise InvalidArgument(
+                "Claude Code Mantle routing is not supported; choose one of "
+                + ", ".join(sorted(CLAUDE_MODEL_PROVIDERS))
+            )
+        if len(selected) > 1:
+            raise InvalidArgument(
+                "Claude Code environment enables conflicting model providers: "
+                + ", ".join(selected)
+            )
+        if selected:
+            return selected[0]
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+        if base_url and base_url.rstrip("/") != _ANTHROPIC_API_BASE_URL:
+            return "gateway"
+        return "anthropic"
+
+    @classmethod
+    def _frozen_provider_config(cls, provider: str) -> dict[str, object]:
+        settings: dict[str, object] = {}
+        if provider == "gateway":
+            base_url = os.environ.get("ANTHROPIC_BASE_URL")
+            if base_url:
+                settings["base_url"] = base_url
+        elif provider == "bedrock":
+            region = os.environ.get("AWS_REGION") or os.environ.get(
+                "AWS_DEFAULT_REGION"
+            )
+            if region:
+                settings["region"] = region
+            base_url = os.environ.get("ANTHROPIC_BEDROCK_BASE_URL")
+            if base_url:
+                settings["base_url"] = base_url
+            if cls._boolean_environment("CLAUDE_CODE_SKIP_BEDROCK_AUTH") is True:
+                settings["skip_auth"] = True
+        elif provider == "vertex":
+            region = os.environ.get("CLOUD_ML_REGION")
+            project_id = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+            base_url = os.environ.get("ANTHROPIC_VERTEX_BASE_URL")
+            if region:
+                settings["region"] = region
+            if project_id:
+                settings["project_id"] = project_id
+            if base_url:
+                settings["base_url"] = base_url
+            if cls._boolean_environment("CLAUDE_CODE_SKIP_VERTEX_AUTH") is True:
+                settings["skip_auth"] = True
+        elif provider == "foundry":
+            resource = os.environ.get("ANTHROPIC_FOUNDRY_RESOURCE")
+            base_url = os.environ.get("ANTHROPIC_FOUNDRY_BASE_URL")
+            if resource:
+                settings["resource"] = resource
+            if base_url:
+                settings["base_url"] = base_url
+            if cls._boolean_environment("CLAUDE_CODE_SKIP_FOUNDRY_AUTH") is True:
+                settings["skip_auth"] = True
+        credential_names = sorted(
+            name
+            for name in CLAUDE_PROVIDER_CREDENTIAL_ENVIRONMENTS[provider]
+            if os.environ.get(name)
+        )
+        config: dict[str, object] = {
+            "settings": settings,
+            "credential_environment_names": credential_names,
+        }
+        error = claude_model_provider_config_error(provider, config)
+        if error is not None:
+            raise InvalidArgument(
+                f"invalid Claude Code {provider!r} Provider configuration: {error}"
+            )
+        return config
+
+    @staticmethod
+    def _effective_provider_options(
+        options: HarnessLaunchOptions,
+    ) -> HarnessLaunchOptions:
+        if options.model_provider is not None:
+            return options
+        return HarnessLaunchOptions(
+            model=options.model,
+            reasoning_effort=options.reasoning_effort,
+            fast_mode=options.fast_mode,
+            model_provider="anthropic",
+            model_provider_config={
+                "settings": {},
+                "credential_environment_names": [],
+            },
+        )
+
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
         if options.model is not None and not valid_model_id(options.model):
             raise InvalidArgument("claude-code model must be a non-empty model id")
@@ -581,13 +768,16 @@ class ClaudeCodeAdapter(HarnessAdapter):
             )
         if options.fast_mode is not None:
             raise InvalidArgument("fast mode is only supported by the codex adapter")
-        if (
-            options.model_provider is not None
-            or options.model_provider_config is not None
-        ):
-            raise InvalidArgument(
-                "model provider is only supported by the codex adapter"
-            )
+        if options.model_provider is None and options.model_provider_config is None:
+            # Schema v6 Runs predate explicit Claude Provider routes and are
+            # interpreted as the direct Anthropic route during recovery.
+            return
+        error = claude_model_provider_config_error(
+            options.model_provider,
+            options.model_provider_config,
+        )
+        if error is not None:
+            raise InvalidArgument(f"invalid Claude Code model provider: {error}")
 
     @staticmethod
     def _user_settings_path() -> Path:
@@ -705,9 +895,10 @@ class ClaudeCodeAdapter(HarnessAdapter):
             model=model,
             reasoning_effort=reasoning_effort,
             fast_mode=fast_mode,
-            model_provider=model_provider,
         )
         self.assert_launch_options(explicit)
+        provider = self._selected_model_provider(model_provider)
+        provider_config = self._frozen_provider_config(provider)
         defaults = (
             self._user_launch_options(
                 include_model=model is None,
@@ -723,9 +914,131 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 if reasoning_effort is not None
                 else defaults.reasoning_effort
             ),
+            model_provider=provider,
+            model_provider_config=provider_config,
         )
         self.assert_launch_options(options)
         return options
+
+    @classmethod
+    def _provider_environment(
+        cls,
+        options: HarnessLaunchOptions,
+    ) -> dict[str, str]:
+        selected = cls._effective_provider_options(options)
+        cls().assert_launch_options(selected)
+        provider = selected.model_provider or "anthropic"
+        config = selected.model_provider_config or {}
+        settings = config.get("settings", {})
+        if not isinstance(settings, dict):
+            raise InvalidArgument("invalid Claude Code Provider settings")
+        env = {name: "0" for name in _CLAUDE_ROUTE_FLAGS}
+        env.update(
+            {
+                "ANTHROPIC_BASE_URL": "",
+                "ANTHROPIC_BEDROCK_BASE_URL": "",
+                "ANTHROPIC_VERTEX_BASE_URL": "",
+                "ANTHROPIC_FOUNDRY_BASE_URL": "",
+                "AWS_REGION": "",
+                "AWS_DEFAULT_REGION": "",
+                "CLOUD_ML_REGION": "",
+                "ANTHROPIC_VERTEX_PROJECT_ID": "",
+                "ANTHROPIC_FOUNDRY_RESOURCE": "",
+                "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "0",
+                "CLAUDE_CODE_SKIP_VERTEX_AUTH": "0",
+                "CLAUDE_CODE_SKIP_FOUNDRY_AUTH": "0",
+            }
+        )
+        referenced_credentials = set(
+            cls._provider_environment_names(selected)
+        )
+        for name in set().union(
+            *CLAUDE_PROVIDER_CREDENTIAL_ENVIRONMENTS.values()
+        ) - referenced_credentials:
+            env[name] = ""
+        if provider == "anthropic":
+            env["ANTHROPIC_BASE_URL"] = _ANTHROPIC_API_BASE_URL
+        elif provider == "gateway":
+            env["ANTHROPIC_BASE_URL"] = str(settings["base_url"])
+        elif provider == "bedrock":
+            env[_CLAUDE_PROVIDER_FLAGS[provider]] = "1"
+            if "region" in settings:
+                env["AWS_REGION"] = str(settings["region"])
+                env["AWS_DEFAULT_REGION"] = str(settings["region"])
+            if "base_url" in settings:
+                env["ANTHROPIC_BEDROCK_BASE_URL"] = str(settings["base_url"])
+            if settings.get("skip_auth") is True:
+                env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
+        elif provider == "vertex":
+            env[_CLAUDE_PROVIDER_FLAGS[provider]] = "1"
+            if "region" in settings:
+                env["CLOUD_ML_REGION"] = str(settings["region"])
+            if "project_id" in settings:
+                env["ANTHROPIC_VERTEX_PROJECT_ID"] = str(settings["project_id"])
+            if "base_url" in settings:
+                env["ANTHROPIC_VERTEX_BASE_URL"] = str(settings["base_url"])
+            if settings.get("skip_auth") is True:
+                env["CLAUDE_CODE_SKIP_VERTEX_AUTH"] = "1"
+        elif provider == "foundry":
+            env[_CLAUDE_PROVIDER_FLAGS[provider]] = "1"
+            if "resource" in settings:
+                env["ANTHROPIC_FOUNDRY_RESOURCE"] = str(settings["resource"])
+            if "base_url" in settings:
+                env["ANTHROPIC_FOUNDRY_BASE_URL"] = str(settings["base_url"])
+            if settings.get("skip_auth") is True:
+                env["CLAUDE_CODE_SKIP_FOUNDRY_AUTH"] = "1"
+        return env
+
+    @staticmethod
+    def authentication_required(options: HarnessLaunchOptions) -> bool:
+        return (
+            options.model_provider in {None, "anthropic"}
+            and not ClaudeCodeAdapter._provider_environment_names(options)
+        )
+
+    @staticmethod
+    def _provider_environment_names(
+        options: HarnessLaunchOptions,
+    ) -> tuple[str, ...]:
+        config = options.model_provider_config
+        if not isinstance(config, dict):
+            return ()
+        names = config.get("credential_environment_names")
+        if not isinstance(names, list):
+            return ()
+        return tuple(name for name in names if isinstance(name, str))
+
+    def assert_launch_prerequisites(self, options: HarnessLaunchOptions) -> None:
+        self.assert_launch_options(options)
+        selected = self._effective_provider_options(options)
+        for name in self._provider_environment_names(selected):
+            if not os.environ.get(name):
+                raise AgentTeamError(
+                    "HARNESS_ENVIRONMENT_UNAVAILABLE",
+                    f"Claude Code model provider {selected.model_provider!r} "
+                    f"requires non-empty environment variable {name!r}",
+                )
+        if (
+            self.authentication_required(selected)
+            and self.authentication_status() is False
+        ):
+            raise AgentTeamError(
+                "HARNESS_NOT_AUTHENTICATED",
+                "claude-code is not authenticated for the selected model provider",
+            )
+
+    def worker_environment_names(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        options: HarnessLaunchOptions | None = None,
+    ) -> tuple[str, ...]:
+        selected = self._effective_provider_options(
+            options or self._role_launch_options(run_dir, role_id)
+        )
+        self.assert_launch_options(selected)
+        return self._provider_environment_names(selected)
 
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
         self.assert_launch_mode(context.launch_mode)
@@ -743,6 +1056,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             model_provider_config=context.model_provider_config,
         )
         self.assert_launch_options(options)
+        options = self._effective_provider_options(options)
         runtime_home: Path | None = None
         if context.launch_mode == "interactive":
             # Recheck on every Turn so a revoked or corrupted trust decision
@@ -755,6 +1069,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 role_id=context.role_id,
                 workspace=workspace,
                 profile=context.launch_profile,
+                requires_claude_auth=self.authentication_required(options),
             )
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
@@ -805,6 +1120,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             env["CLAUDE_CODE_EFFORT_LEVEL"] = options.reasoning_effort
         if runtime_home is not None:
             env["CLAUDE_CONFIG_DIR"] = str(runtime_home)
+        env.update(self._provider_environment(options))
         return LaunchSpec(
             adapter_id=self.adapter_id,
             argv=argv,

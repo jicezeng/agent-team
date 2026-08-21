@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_team.adapters.base import (
+    HarnessLaunchOptions,
     LaunchSpec,
 )
 from agent_team.adapters.claude_code import ClaudeCodeAdapter
@@ -304,3 +305,59 @@ def test_claude_launch_applies_model_and_effort_to_start_and_resume(
     for launch in (adapter.prepare_launch(context) for context in contexts):
         assert launch.argv[launch.argv.index("--model") + 1] == "opus"
         assert launch.env["CLAUDE_CODE_EFFORT_LEVEL"] == "xhigh"
+
+
+def test_claude_launch_freezes_gateway_route_for_start_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = ClaudeCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/claude"))
+    monkeypatch.setattr(adapter, "executable_version", lambda: "2.1.111")
+    monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.effective_agent_team_cli",
+        lambda: Path("/opt/agent-team/bin/agent-team"),
+    )
+    monkeypatch.setattr(
+        "agent_team.adapters.claude_code.claude_internal_tmpdir",
+        lambda: Path("/tmp/claude-501"),
+    )
+    provider_config = {
+        "settings": {
+            "base_url": "https://gateway.example.test/anthropic",
+        },
+        "credential_environment_names": ["ANTHROPIC_AUTH_TOKEN"],
+    }
+    contexts = [
+        launch_context(
+            adapter=adapter,
+            session_policy="resume",
+            session_ref=session_ref,
+            model="gateway-model",
+            reasoning_effort="high",
+            model_provider="gateway",
+            model_provider_config=provider_config,
+        )
+        for session_ref in (None, "550e8400-e29b-41d4-a716-446655440000")
+    ]
+
+    for launch in (adapter.prepare_launch(context) for context in contexts):
+        assert launch.env["ANTHROPIC_BASE_URL"] == (
+            "https://gateway.example.test/anthropic"
+        )
+        assert launch.env["CLAUDE_CODE_USE_BEDROCK"] == "0"
+        assert launch.env["CLAUDE_CODE_USE_VERTEX"] == "0"
+        assert launch.env["CLAUDE_CODE_USE_FOUNDRY"] == "0"
+        assert "ANTHROPIC_AUTH_TOKEN" not in launch.env
+        assert "must-not-be-persisted" not in json.dumps(launch.to_json())
+    options = HarnessLaunchOptions(
+        model="gateway-model",
+        reasoning_effort="high",
+        model_provider="gateway",
+        model_provider_config=provider_config,
+    )
+    assert adapter.worker_environment_names(
+        run_dir=Path("/unused"),
+        role_id="developer",
+        options=options,
+    ) == ("ANTHROPIC_AUTH_TOKEN",)

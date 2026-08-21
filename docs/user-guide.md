@@ -225,25 +225,30 @@ a Session for each Turn. External roles default to `interactive` launch and
 --role-dsh-plugin ROLE=<workspace-package-directory>
 ```
 
-Omitted model, Codex Provider, and effort values inherit the relevant Harness
-default at `init`, then Agent-Team freezes the requested result in `team.json`.
-`--role-model-provider` is Codex-only and accepts a Provider ID already defined
-in the user's Codex `config.toml`; it never accepts a URL or credential.
-OpenCode models must resolve to `provider/model`; its effort value is passed as the
-provider-specific model Variant. If the effective OpenCode default is absent
-or unqualified, supply `--role-model ROLE=provider/model` explicitly. The same
-frozen OpenCode model is used for its primary agent and lightweight title
-generation so a custom endpoint never receives an unrelated catalog model.
+Omitted model, Provider, and effort values inherit the relevant Harness default
+at `init`, then Agent-Team freezes the requested result in `team.json`.
+`--role-model-provider` applies to Codex and Claude Code. For Codex it accepts a
+Provider ID already defined in the user's `config.toml`; it never accepts a URL
+or credential. For Claude Code it accepts one of `anthropic`, `bedrock`,
+`vertex`, `foundry`, or `gateway`.
+
+OpenCode and DSH keep their native route form: the Provider is the prefix of
+`--role-model ROLE=provider/model`, so they do not accept a separate
+`--role-model-provider`. OpenCode effort is passed as the provider-specific
+model Variant. If its effective default is absent or unqualified, supply the
+full model explicitly. The same frozen OpenCode model is used for its primary
+agent and lightweight title generation so a custom endpoint never receives an
+unrelated catalog model.
 For interactive Codex roles, the private `CODEX_HOME` model-availability NUX
 table is preseeded for the frozen model at Codex's terminal shown-count (`4`).
 This suppresses native tooltip bookkeeping from rewriting the managed
 `config.toml`; a different model, count, Workspace trust entry, or any other
 config drift still fails closed.
-DSH models also use `provider/model`; its default is
+DSH's default route is
 `deepseek-official/deepseek-v4-flash`, and effort is `off`, `high`, or `max`.
 `--role-fast` is Codex-only. DSH External roles support only `interactive`;
 requesting `headless` fails before Kickoff. Launch mode, Profile, model, Codex
-Provider, effort, and fast mode cannot change after Kickoff.
+or Claude Provider Route, effort, and fast mode cannot change after Kickoff.
 
 For a custom Codex Provider, Agent-Team freezes only its safe structural
 definition: display name, HTTP(S) base URL, Responses wire API, retry/timeout
@@ -272,6 +277,35 @@ wire_api = "responses"
 Then export `COMPANY_PROXY_API_KEY` in the shell that starts Agent-Team and add
 both `--role-model reviewer=proxy-model` and
 `--role-model-provider reviewer=company_proxy` to `agent-team init`.
+
+Claude Code Provider Routes are derived from its native environment contract.
+When the option is omitted, Agent-Team detects the enabled Bedrock, Vertex, or
+Foundry flag; otherwise a non-default `ANTHROPIC_BASE_URL` selects `gateway`,
+and the fallback is direct `anthropic`. An explicit Route overrides conflicting
+ambient Route flags. Safe endpoint, region, project, and resource values are
+validated and frozen; Start and Resume receive the same normalized environment.
+Only allowlisted credential environment-variable names are stored, and their
+current non-empty values are bridged to the role Worker without entering
+`team.json`, a LaunchSpec, Journal, or trace. External Routes do not copy
+Claude's private `.credentials.json` into the Run-owned `CLAUDE_CONFIG_DIR`.
+
+For example, configure a Claude-compatible gateway in the shell that creates
+and starts the Run:
+
+```bash
+export ANTHROPIC_BASE_URL=https://gateway.example.com/anthropic
+export ANTHROPIC_AUTH_TOKEN='...'
+
+agent-team init ... \
+  --role reviewer=claude-code:resume \
+  --role-model reviewer=company-model \
+  --role-model-provider reviewer=gateway
+```
+
+Bedrock, Vertex, and Foundry use their normal Claude Code environment variables,
+such as `CLAUDE_CODE_USE_BEDROCK=1` plus `AWS_REGION`. Pass only the Route ID and
+model on the Agent-Team command line; never put tokens, headers, or endpoint
+credentials in the Request, Protocol, or CLI.
 
 `--role-dsh-plugin` is DSH-only and declares one installable bundle directory
 inside the Run worktree. Agent-Team does not snapshot it at `init`: when that

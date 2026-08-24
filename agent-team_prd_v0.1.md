@@ -157,9 +157,10 @@ v0.1 不承诺：
   的最终有效 Model；
   OpenCode Model 必须冻结为 `provider/model`，Reasoning Effort 映射为不透明的
   Provider-specific Variant；未显式给 Model 时从目标 Workspace 的有效配置解析，
-  无法解析为完整 ID 时在 `init` Fail Closed；DeepSeek Harness Model 同样使用
-  `provider/model`，缺省冻结为 `deepseek-official/deepseek-v4-flash`，Reasoning
-  Effort 限于 `off|high|max`；
+  无法解析为完整 ID 时在 `init` Fail Closed；DeepSeek Harness 的显式 Model 同样使用
+  `provider/model`，Reasoning Effort 限于 `off|high|max`；两者省略时 Agent-Team
+  保持 `null`，由 DSH 私有 Profile 的原生 `agentDefaultModel` 服务选择，不增加
+  Agent-Team 自定义环境变量或回退值；
 - Handoff、Complete、Block 只能通过正式 CLI 动作提交；
 - Event Journal 是 Token Owner 和 Run Status 的唯一业务转换来源；
 - tmux Pane、普通输出或自然语言完成声明不能改变 Run 状态。

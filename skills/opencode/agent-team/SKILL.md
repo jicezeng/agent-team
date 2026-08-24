@@ -79,7 +79,10 @@ External business Turn inside an existing Run:
    the Codex user default. For Claude Code, pass only `anthropic`, `bedrock`,
    `vertex`, `foundry`, or `gateway`; its native Route environment must already
    be present for `init` and `start`, and omission lets `init` detect and freeze
-   that environment. External roles
+   that environment. Explicit DSH models use `provider/model` and explicit
+   efforts use `off`, `high`, or `max`; leave omitted values unspecified so
+   DSH's native default-model services own the choice. Never invent a DSH model
+   environment variable or Agent-Team fallback. External roles
    default to native `interactive` execution. Add
    `--role-launch-mode ROLE=headless` only for Codex, Claude Code, or OpenCode
    when explicitly requested; DSH External roles are interactive-only.

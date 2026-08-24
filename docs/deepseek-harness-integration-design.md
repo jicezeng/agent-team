@@ -148,10 +148,12 @@ Supervisor 验证 Outbox、Session Ref 和进程结果后终止整个受管进�
 
 ## 6. Model、认证与权限
 
-DSH Model 使用 `provider/model`：
+DSH 的显式 Model 使用 `provider/model`：
 
-- 默认：`deepseek-official/deepseek-v4-flash`；
-- Reasoning Effort：`off`、`high` 或 `max`，默认 `high`；
+- 省略 Model 时不传 `--provider/--model`，bundled TUI 调用 DSH 原生
+  `agentDefaultModel.currentSelection()`；
+- Reasoning Effort 的显式值为 `off`、`high` 或 `max`，省略时不增加覆盖；
+- Agent-Team 不定义 DSH 模型环境变量或内置默认模型；
 - Fast Mode 不支持；
 - 认证状态以非空 `DEEPSEEK_API_KEY` 为可判定前提，真实请求仍 Fail Closed。
 

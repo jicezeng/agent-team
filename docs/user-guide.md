@@ -247,8 +247,11 @@ table is preseeded for the frozen model at Codex's terminal shown-count (`4`).
 This suppresses native tooltip bookkeeping from rewriting the managed
 `config.toml`; a different model, count, Workspace trust entry, or any other
 config drift still fails closed.
-DSH's default route is
-`deepseek-official/deepseek-v4-flash`, and effort is `off`, `high`, or `max`.
+An explicit DSH route uses `provider/model`, and an explicit effort is `off`,
+`high`, or `max`. When either value is omitted, Agent-Team passes no override
+and the private DSH Profile resolves it through DSH's native default-model
+services. Agent-Team does not define a DSH model environment variable or a
+fallback model.
 `--role-fast` is Codex-only. DSH External roles support only `interactive`;
 requesting `headless` fails before Kickoff. Launch mode, Profile, model, Codex
 or Claude Provider Route, effort, and fast mode cannot change after Kickoff.

@@ -717,10 +717,36 @@ def test_team_accepts_frozen_deepseek_harness_route_and_effort(
     assert team.roles["developer"].reasoning_effort == "max"
 
 
-@pytest.mark.parametrize("effort", [None, "medium", "xhigh"])
+def test_team_accepts_native_deepseek_harness_defaults(workspace: Path) -> None:
+    value = make_team(
+        run_id="at-test-dsh-native-defaults",
+        workspace=workspace,
+        origin_harness="deepseek-harness",
+        roles={
+            "developer": Role(
+                "developer",
+                "external",
+                "deepseek-harness",
+                "resume",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+
+    parsed = parse_team(value)
+
+    assert parsed.roles["developer"].model is None
+    assert parsed.roles["developer"].reasoning_effort is None
+
+
+@pytest.mark.parametrize("effort", ["medium", "xhigh"])
 def test_team_rejects_invalid_deepseek_harness_effort(
     workspace: Path,
-    effort: str | None,
+    effort: str,
 ) -> None:
     value = make_team(
         run_id="at-test-dsh-invalid-effort",

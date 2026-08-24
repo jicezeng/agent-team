@@ -881,8 +881,9 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 
 `harness_options.model` 与 `reasoning_effort` 对 Codex、Claude Code 可为字符串或
 `null`；OpenCode Model 必须是非空 `provider/model`，Reasoning Effort 可为
-Provider-specific Variant 字符串或 `null`；DeepSeek Harness Model 必须是非空
-`provider/model`，Reasoning Effort 必须是 `off|high|max`。`fast_mode` 的 Schema 对
+Provider-specific Variant 字符串或 `null`；DeepSeek Harness Model 可为 `null`，显式值
+必须是非空 `provider/model`，Reasoning Effort 可为 `null`，显式值必须是
+`off|high|max`。`fast_mode` 的 Schema 对
 Codex 接受布尔值或 `null`，其他 Adapter 必须为 `null`。
 `model_provider` 与 `model_provider_config` 是 Codex 与 Claude Code 的独立 Route
 字段；OpenCode 与 DeepSeek Harness 继续把 Provider 编码在 `provider/model` 中，二者
@@ -918,8 +919,10 @@ Provider 的安全定义；Claude Code 先读取
 Provider 显式声明该 Model 时补全为 `provider/model`，否则要求显式 `--role-model`，不以
 隔离环境重新猜测 Last-used Model。补全或显式选择后的 Model 还必须出现在同一有效配置下
 `opencode models <provider>` 的本地 Catalog 中，未知 Provider/Model 在创建 Run 前拒绝。
-DeepSeek Harness 不读取用户 Profile，缺省冻结
-`deepseek-official/deepseek-v4-flash` 与 `high`。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
+DeepSeek Harness 不读取用户 Profile；省略 Model 或 Reasoning Effort 时在
+`team.json` 中保持 `null`，启动参数不增加对应覆盖，由固定私有 Profile 的原生
+`agentDefaultModel` 与 Model Adapter 选择。Agent-Team 不为 DSH 发明模型环境变量或
+回退值。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时同样保持 `null`，由
 Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
 冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
 CLI 新建 Schema 7 Codex Role 时则把 Fast
@@ -2343,9 +2346,10 @@ LaunchSpec，不在 `init` 时提前冻结尚待 Developer 修改的源码。
   DSH 原生 `agents.create`；
 - Resume 在新受管进程中调用 `agents.resume`，启动前要求私有 JSONL Store 含相同
   Session ID，且 Session Header 的 `cwd` 精确等于冻结 Workspace；
-- Model 必须是 `provider/model`，缺省
-  `deepseek-official/deepseek-v4-flash`；Reasoning Effort 为 `off|high|max`，缺省
-  `high`；Fast Mode 不支持；
+- 显式 Model 必须是 `provider/model`，显式 Reasoning Effort 必须为
+  `off|high|max`；任一字段省略时 Adapter 不传对应启动参数，bundled TUI 通过 DSH
+  原生 `agentDefaultModel` 与 Model Adapter 解析默认值；Agent-Team 不定义 DSH
+  模型环境变量或内置回退；Fast Mode 不支持；
 - `DEEPSEEK_API_KEY` 非空时 Probe 报告认证可见，真实认证和网络结果仍由启动 Fail Closed；
 - `default` 与 `trusted-workspace` 都映射到 `workspace-write`，`full-access` 映射到
   `danger-full-access`，三者都固定 `approval=never`；

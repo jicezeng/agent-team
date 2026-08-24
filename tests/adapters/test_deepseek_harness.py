@@ -58,7 +58,7 @@ def _stub_runtime(
     return state, runtime
 
 
-def test_dsh_adapter_is_interactive_only_and_has_frozen_defaults() -> None:
+def test_dsh_adapter_is_interactive_only_and_defers_omitted_defaults() -> None:
     adapter = DeepSeekHarnessAdapter()
 
     options = adapter.resolve_launch_options(
@@ -67,10 +67,8 @@ def test_dsh_adapter_is_interactive_only_and_has_frozen_defaults() -> None:
         fast_mode=None,
     )
 
-    assert options == HarnessLaunchOptions(
-        model="deepseek-official/deepseek-v4-flash",
-        reasoning_effort="high",
-    )
+    assert options == HarnessLaunchOptions()
+    adapter.assert_launch_options(options)
     mappings = adapter.profile_mappings("interactive")
     assert set(mappings) == {"default", "trusted-workspace", "full-access"}
     assert all(mapping["start"] == mapping["resume"] for mapping in mappings.values())
@@ -212,6 +210,40 @@ def test_dsh_interactive_launch_prepares_private_tui_and_resumes_session(
     )
     assert stat.S_IMODE(generated.stat().st_mode) == 0o600
     assert stat.S_IMODE(session_log.stat().st_mode) == 0o600
+
+
+def test_dsh_launch_omits_model_flags_for_native_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-native-default-test"
+    turn_dir = run_dir / "turns" / "turn-0001"
+    turn_dir.mkdir(parents=True)
+    adapter = DeepSeekHarnessAdapter()
+    _stub_runtime(monkeypatch, tmp_path, adapter)
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+
+    launch = adapter.prepare_launch(
+        launch_context(
+            adapter=adapter,
+            session_policy="fresh",
+            session_ref=None,
+            model=None,
+            reasoning_effort=None,
+            launch_mode="interactive",
+            workspace=str(workspace),
+            turn_dir=str(turn_dir),
+        )
+    )
+
+    assert "--provider" not in launch.argv
+    assert "--model" not in launch.argv
+    assert "--reasoning-effort" not in launch.argv
 
 
 def test_dsh_role_installs_and_freezes_workspace_bundle_on_activation(
@@ -385,6 +417,9 @@ def test_bundled_dsh_tui_never_renders_private_reasoning() -> None:
     assert "resolveInitialTurn?.(reason)" in source
     assert "assertInitialTurnCompleted(await renderer.initialTurnReason)" in source
     assert "initial agent turn did not complete" in source
+    assert "'agentDefaultModel'" in source
+    assert "defaultModel.currentSelection()" in source
+    assert "--provider and --model must be supplied together" in source
     assert "session-persistence-jsonl" in patch
     assert "compression: none" in patch
     assert "tool-subagent" in patch

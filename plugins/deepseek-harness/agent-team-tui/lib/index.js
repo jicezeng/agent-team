@@ -11,7 +11,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 export const name = 'agent-team-tui'
-export const inject = ['cmdlineArgs', 'agents', 'sessions']
+export const inject = ['cmdlineArgs', 'agents', 'sessions', 'agentDefaultModel']
 
 function fail(message) {
   throw new Error(`agent-team-tui: ${message}`)
@@ -50,8 +50,8 @@ function parseArgs(argv) {
   }
   const provider = values.get('--provider')
   const model = values.get('--model')
-  if (provider === undefined || model === undefined) {
-    fail('--provider and --model are required')
+  if ((provider === undefined) !== (model === undefined)) {
+    fail('--provider and --model must be supplied together')
   }
   const prompt = positional.join(' ')
   if (prompt.trim() === '') fail('a prompt is required')
@@ -69,7 +69,7 @@ function parseArgs(argv) {
 function usage() {
   process.stdout.write(
     'Usage: dsh --profile agent-team (--session-id ID | --resume ID) '
-      + '--provider PROVIDER --model MODEL [--reasoning-effort LEVEL] PROMPT\n',
+      + '[--provider PROVIDER --model MODEL] [--reasoning-effort LEVEL] PROMPT\n',
   )
 }
 
@@ -153,11 +153,14 @@ async function start(ctx, options) {
   await ctx.get('loader')?.await()
   const agents = ctx.get('agents')
   const sessions = ctx.get('sessions')
-  if (agents === undefined || sessions === undefined) return
+  const defaultModel = ctx.get('agentDefaultModel')
+  if (agents === undefined || sessions === undefined || defaultModel === undefined) return
 
+  const selected = options.provider === undefined
+    ? defaultModel.currentSelection()
+    : { provider: options.provider, model: options.model }
   const current = {
-    provider: options.provider,
-    model: options.model,
+    ...selected,
     ...(options.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: options.reasoningEffort }),
@@ -169,13 +172,13 @@ async function start(ctx, options) {
   const handle = options.resume
     ? await agents.resume({
         resumeSessionId: identity,
-        agentOptions: { provider: options.provider, model: options.model },
+        agentOptions: { provider: current.provider, model: current.model },
         setup,
       })
     : await agents.create({
         sessionId: identity,
         meta: { cwd: process.cwd() },
-        agentOptions: { provider: options.provider, model: options.model },
+        agentOptions: { provider: current.provider, model: current.model },
         setup,
       })
   const agent = handle.agent

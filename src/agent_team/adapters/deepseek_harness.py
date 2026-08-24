@@ -46,8 +46,6 @@ from .base import (
     TurnLaunchContext,
 )
 
-_DEFAULT_MODEL = "deepseek-official/deepseek-v4-flash"
-_DEFAULT_REASONING_EFFORT = "high"
 _SESSION_NAMESPACE = uuid.UUID("a02f363b-039e-4a17-af70-639179544261")
 _PROFILE_NAME = "agent-team"
 _PLUGIN_PACKAGE = "@agent-team/dsh-tui"
@@ -196,8 +194,8 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
     ) -> HarnessLaunchOptions:
         del workspace
         options = HarnessLaunchOptions(
-            model=model or _DEFAULT_MODEL,
-            reasoning_effort=reasoning_effort or _DEFAULT_REASONING_EFFORT,
+            model=model,
+            reasoning_effort=reasoning_effort,
             fast_mode=fast_mode,
             model_provider=model_provider,
         )
@@ -205,11 +203,14 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         return options
 
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
-        if not valid_dsh_model_id(options.model):
+        if options.model is not None and not valid_dsh_model_id(options.model):
             raise InvalidArgument(
-                "deepseek-harness requires a model in provider/model form"
+                "an explicit deepseek-harness model must use provider/model form"
             )
-        if options.reasoning_effort not in DSH_REASONING_EFFORTS:
+        if (
+            options.reasoning_effort is not None
+            and options.reasoning_effort not in DSH_REASONING_EFFORTS
+        ):
             raise InvalidArgument(
                 "deepseek-harness reasoning effort must be one of: off, high, max"
             )
@@ -680,9 +681,6 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         )
         self.assert_launch_options(options)
         home = self._assert_home(context)
-        model_selector = options.model
-        assert model_selector is not None
-        provider, model = model_selector.split("/", 1)
         session_ref = (
             context.session_ref
             if context.session_policy == "resume" and context.session_ref
@@ -699,19 +697,18 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                     f"DeepSeek Harness Session cannot be resumed: {session_ref}",
                 )
         session_option = "--session-id" if starts_new else "--resume"
-        argv = (
+        argv = [
             str(self.executable()),
             "--profile",
             _PROFILE_NAME,
             session_option,
             session_ref,
-            "--provider",
-            provider,
-            "--model",
-            model,
-            "--reasoning-effort",
-            options.reasoning_effort or _DEFAULT_REASONING_EFFORT,
-        )
+        ]
+        if options.model is not None:
+            provider, model = options.model.split("/", 1)
+            argv.extend(("--provider", provider, "--model", model))
+        if options.reasoning_effort is not None:
+            argv.extend(("--reasoning-effort", options.reasoning_effort))
         permission_mode = (
             "danger-full-access"
             if context.launch_profile == "full-access"
@@ -737,7 +734,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             ]
         return LaunchSpec(
             adapter_id=self.adapter_id,
-            argv=argv,
+            argv=tuple(argv),
             cwd=context.workspace,
             env=env,
             stdin=context.prompt,

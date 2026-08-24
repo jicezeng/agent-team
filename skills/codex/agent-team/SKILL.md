@@ -99,8 +99,11 @@ existing Run:
    user default only when exactly one configured Provider declares it, then
    verifies the qualified Model against the effective OpenCode catalog. Supply
    an explicit OpenCode Model when the default is absent or ambiguous.
-   DeepSeek Harness Model IDs also use `provider/model`; its effort is `off`,
-   `high`, or `max`. Launch mode is separate: every new External role defaults
+   Explicit DeepSeek Harness Model IDs also use `provider/model`; explicit
+   effort is `off`, `high`, or `max`. When either is omitted, leave it
+   unspecified so the private DSH Profile uses DSH's native default-model
+   services. Never invent a DSH model environment variable or Agent-Team
+   fallback. Launch mode is separate: every new External role defaults
    to native `interactive` PTY execution in its tmux Pane. For Codex, Claude
    Code, or OpenCode, add
    `--role-launch-mode <role>=headless` only when the user explicitly requests

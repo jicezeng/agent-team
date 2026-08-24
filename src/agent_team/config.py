@@ -640,7 +640,11 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                     raise IntegrityError(
                         f"opencode model for {role_id} must use provider/model"
                     )
-                if adapter == "deepseek-harness" and not valid_dsh_model_id(model):
+                if (
+                    adapter == "deepseek-harness"
+                    and model is not None
+                    and not valid_dsh_model_id(model)
+                ):
                     raise IntegrityError(
                         f"deepseek-harness model for {role_id} must use provider/model"
                     )
@@ -652,10 +656,7 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                     valid_effort = reasoning_effort in DSH_REASONING_EFFORTS
                 else:
                     valid_effort = valid_opencode_variant(reasoning_effort)
-                if (
-                    reasoning_effort is not None
-                    or adapter == "deepseek-harness"
-                ) and not valid_effort:
+                if reasoning_effort is not None and not valid_effort:
                     raise IntegrityError(
                         f"invalid reasoning effort for {role_id}"
                     )

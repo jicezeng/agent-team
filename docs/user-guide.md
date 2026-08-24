@@ -235,8 +235,11 @@ or credential. For Claude Code it accepts one of `anthropic`, `bedrock`,
 OpenCode and DSH keep their native route form: the Provider is the prefix of
 `--role-model ROLE=provider/model`, so they do not accept a separate
 `--role-model-provider`. OpenCode effort is passed as the provider-specific
-model Variant. If its effective default is absent or unqualified, supply the
-full model explicitly. The same frozen OpenCode model is used for its primary
+model Variant. An unqualified default is completed automatically only when
+exactly one configured Provider declares that model; otherwise supply the full
+model explicitly. Agent-Team verifies the resulting qualified model against
+OpenCode's effective local catalog before creating the Run. The same frozen
+OpenCode model is used for its primary
 agent and lightweight title generation so a custom endpoint never receives an
 unrelated catalog model.
 For interactive Codex roles, the private `CODEX_HOME` model-availability NUX
@@ -560,6 +563,7 @@ process from editing the same files. Avoid concurrent manual edits.
 
 ## Verification evidence
 
-Real Codex, mixed Claude Code/Codex, OpenCode, and DSH validation reports are indexed in
+Real single- and mixed-Harness loops, the four-Harness interactive relay, and
+the DSH self-hosted plugin case are indexed in
 [`docs/validation`](validation/README.md). Reports are historical evidence;
 the technical design and current tests define the latest contract.

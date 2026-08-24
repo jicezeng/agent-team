@@ -286,10 +286,69 @@ class OpenCodeAdapter(HarnessAdapter):
             )
         return value
 
+    @staticmethod
+    def _qualify_configured_model(
+        config: dict[str, Any],
+        model: str,
+    ) -> str:
+        if valid_opencode_model_id(model):
+            return model
+        providers = config.get("provider")
+        if not isinstance(providers, dict):
+            return model
+        matches: list[str] = []
+        for provider_id, provider in providers.items():
+            if not isinstance(provider_id, str) or not provider_id:
+                continue
+            models = provider.get("models") if isinstance(provider, dict) else None
+            if isinstance(models, dict) and model in models:
+                matches.append(provider_id)
+        if len(matches) == 1:
+            return f"{matches[0]}/{model}"
+        return model
+
     def _resolved_user_model(self, workspace: Path | None) -> str | None:
         value = self._resolved_user_config(workspace)
         model = value.get("model") if isinstance(value, dict) else None
-        return model if isinstance(model, str) and model else None
+        if not isinstance(model, str) or not model:
+            return None
+        return self._qualify_configured_model(value, model)
+
+    def _assert_model_available(
+        self,
+        model: str,
+        workspace: Path | None,
+    ) -> None:
+        provider_id = model.partition("/")[0]
+        cwd = workspace or Path.cwd()
+        env = os.environ.copy()
+        env["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+        env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        try:
+            result = subprocess.run(
+                [str(self.executable()), "models", provider_id],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AgentTeamError(
+                "HARNESS_MODEL_PROBE_FAILED",
+                f"cannot verify OpenCode model {model!r}",
+            ) from exc
+        available = {
+            _ANSI_ESCAPE_RE.sub("", line).strip()
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
+        if result.returncode != 0 or model not in available:
+            raise InvalidArgument(
+                f"OpenCode model {model!r} is not available from Provider "
+                f"{provider_id!r} in the effective user configuration"
+            )
 
     def resolve_launch_options(
         self,
@@ -310,6 +369,8 @@ class OpenCodeAdapter(HarnessAdapter):
             model_provider=model_provider,
         )
         self.assert_launch_options(options)
+        assert options.model is not None
+        self._assert_model_available(options.model, workspace)
         return options
 
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None:
@@ -699,6 +760,16 @@ class OpenCodeAdapter(HarnessAdapter):
             current.chmod(0o700)
         for directory in self._home_hierarchy(run_dir, role_id):
             directory.chmod(0o700)
+
+    def has_prepared_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> bool:
+        self.assert_launch_mode(launch_mode)
+        return path_entry_exists(self._config_home(run_dir, role_id))
 
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
         self.assert_launch_mode(context.launch_mode)

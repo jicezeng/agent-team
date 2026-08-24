@@ -169,6 +169,45 @@ def test_install_refuses_to_replace_shared_integrations_while_a_run_owns_workspa
     assert not target_root.exists()
 
 
+def test_install_ignores_released_workspace_owner_archives(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "asset").write_text("asset\n", encoding="utf-8")
+    target = tmp_path / "target"
+    state = tmp_path / "state"
+    owners = state / "workspaces"
+    owners.mkdir(parents=True)
+    (owners / ("a" * 64 + ".json.released-at-old-run-20260729T2002")).write_text(
+        '{"run_id":"at-old","workspace_realpath":"/tmp/workspace"}\n',
+        encoding="utf-8",
+    )
+    for name in (
+        "codex_skill_source",
+        "claude_plugin_source",
+        "opencode_skill_source",
+        "dsh_origin_source",
+        "dsh_tui_source",
+    ):
+        monkeypatch.setattr(cli, name, lambda: source)
+    for name in (
+        "installed_codex_skill",
+        "installed_claude_plugin",
+        "installed_opencode_skill",
+        "installed_dsh_skill",
+        "installed_dsh_origin",
+    ):
+        monkeypatch.setattr(cli, name, lambda: target)
+    monkeypatch.setattr(cli, "fixed_state_dir", lambda: state)
+
+    result = cli._install_skill()
+
+    assert result["code"] == "INTEGRATIONS_INSTALLED"
+    assert (target / "asset").read_text(encoding="utf-8") == "asset\n"
+
+
 def test_public_installer_does_not_require_an_optional_harness() -> None:
     installer = (Path(__file__).parents[1] / "install.sh").read_text(
         encoding="utf-8"

@@ -822,6 +822,16 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         for directory in self._home_hierarchy(run_dir, role_id):
             directory.chmod(0o700)
 
+    def has_prepared_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> bool:
+        self.assert_launch_mode(launch_mode)
+        return path_entry_exists(self._home(run_dir, role_id))
+
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None:
         del record
         return None

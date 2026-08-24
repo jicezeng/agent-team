@@ -54,6 +54,32 @@ loop. It covers the managed runtime and bundled TUI, native cross-process
 Session Resume, formal actions, bounded traces, private Run/Role state, a
 permission defect found by the first run, and the successful fixed recheck.
 
+## Four-Harness interactive regression
+
+[`four-harness-interactive-v0.1.5-validation-report.md`](four-harness-interactive-v0.1.5-validation-report.md)
+records a real five-Turn Codex → Claude Code → OpenCode → DeepSeek Harness →
+resumed Codex relay. It covers all four interactive External Adapters in one
+Run, frozen models and Provider configuration, private role Sessions,
+same-Codex Session Resume, formal actions, Full Audit traces, process cleanup,
+and the final fixed recheck. Its retained
+[request](four-harness-interactive-v0.1.5-request.md) and
+[protocol](four-harness-interactive-v0.1.5-protocol.md) are the immutable Run
+inputs.
+
+## DeepSeek Harness self-hosted plugin
+
+[`deepseek-harness-self-plugin-v0.1.5-validation-report.md`](deepseek-harness-self-plugin-v0.1.5-validation-report.md)
+records the continuation chain in which independent DSH Developer, Reviewer,
+and fresh Validator roles completed and reviewed a new
+`@deepseek-ai/dsh-worktree-status` plugin, then used Agent-Team to freeze and
+install it into the Validator's private Profile for a real model-visible tool
+call. It covers lazy role activation, Reviewer findings returned to Developer,
+an assembled keyless snapshot, frozen bundle identity, direct DSH plugin load
+and invocation, durable tool evidence, and the successful final Run. Its
+retained [request](deepseek-harness-self-plugin-v0.1.5-request.md) and
+[protocol](deepseek-harness-self-plugin-v0.1.5-protocol.md) define the final
+acceptance boundary.
+
 ## Reading the evidence
 
 - Start with the report matching the behavior under review.

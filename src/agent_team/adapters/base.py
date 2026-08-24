@@ -485,6 +485,24 @@ class HarnessAdapter(abc.ABC):
         del options
         return ()
 
+    def has_prepared_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> bool:
+        """Return whether Adapter-private state exists for an unvisited role.
+
+        Terminal cleanup always finalizes roles that have a durable Runtime.
+        This probe covers the narrower case where route preflight prepared
+        private state but no business Turn was committed for that role.
+        """
+
+        del run_dir, role_id
+        self.assert_launch_mode(launch_mode)
+        return False
+
     def finalize_run_state(
         self,
         *,

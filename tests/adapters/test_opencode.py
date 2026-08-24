@@ -141,10 +141,17 @@ def test_opencode_resolves_qualified_user_model_and_opaque_variant(
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/opencode"))
 
     def run(command, **kwargs):
-        assert command == ["/bin/opencode", "debug", "config", "--pure"]
         assert kwargs["cwd"] == tmp_path
         assert kwargs["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
         assert kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+        if command == ["/bin/opencode", "models", "deepseek"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="deepseek/deepseek-v4-pro\n",
+                stderr="",
+            )
+        assert command == ["/bin/opencode", "debug", "config", "--pure"]
         return subprocess.CompletedProcess(
             command,
             0,
@@ -163,6 +170,74 @@ def test_opencode_resolves_qualified_user_model_and_opaque_variant(
         model="deepseek/deepseek-v4-pro",
         reasoning_effort="provider-deep",
     )
+
+
+def test_opencode_qualifies_a_unique_unqualified_user_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    adapter = OpenCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/opencode"))
+
+    def run(command, **kwargs):
+        if command == ["/bin/opencode", "debug", "config", "--pure"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "model": "doubao-seed-2.0-pro",
+                        "provider": {
+                            "anthropic": {"models": {"doubao-seed-2.0-pro": {}}},
+                            "other": {"models": {"different-model": {}}},
+                        },
+                    }
+                ),
+                stderr="",
+            )
+        assert command == ["/bin/opencode", "models", "anthropic"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="anthropic/doubao-seed-2.0-pro\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_team.adapters.opencode.subprocess.run", run)
+
+    options = adapter.resolve_launch_options(
+        model=None,
+        reasoning_effort=None,
+        fast_mode=None,
+        workspace=tmp_path,
+    )
+
+    assert options.model == "anthropic/doubao-seed-2.0-pro"
+
+
+def test_opencode_rejects_a_model_missing_from_the_effective_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    adapter = OpenCodeAdapter()
+    monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/opencode"))
+    monkeypatch.setattr(
+        "agent_team.adapters.opencode.subprocess.run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="Provider not found: missing",
+        ),
+    )
+
+    with pytest.raises(InvalidArgument, match="not available"):
+        adapter.resolve_launch_options(
+            model="missing/example-model",
+            reasoning_effort=None,
+            fast_mode=None,
+            workspace=tmp_path,
+        )
 
 
 @pytest.mark.parametrize("model", [None, "unqualified", "provider/", "/model"])

@@ -95,8 +95,10 @@ existing Run:
    shell that runs `init` and `start`. Omit an unspecified Claude Route so
    `init` detects and freezes that environment.
    OpenCode Model IDs must resolve to `provider/model`; its reasoning-effort
-   value is a provider-specific Variant. Supply an explicit OpenCode Model when
-   Doctor reports an absent or unqualified user default.
+   value is a provider-specific Variant. Agent-Team completes an unqualified
+   user default only when exactly one configured Provider declares it, then
+   verifies the qualified Model against the effective OpenCode catalog. Supply
+   an explicit OpenCode Model when the default is absent or ambiguous.
    DeepSeek Harness Model IDs also use `provider/model`; its effort is `off`,
    `high`, or `max`. Launch mode is separate: every new External role defaults
    to native `interactive` PTY execution in its tmux Pane. For Codex, Claude

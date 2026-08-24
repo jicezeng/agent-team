@@ -42,16 +42,30 @@ def release_terminal_owner_locked(run_dir: Path) -> bool:
                 pgid=runner_pgid,
             ) not in {"gone", "reused"}:
                 return False
+    runtime_roles = {
+        runtime["role_id"]
+        for runtime in runtimes
+        if runtime["executor"] == "worker"
+    }
     # A route probe may prepare Adapter-private state before its Event commits.
-    # Iterate the immutable role set after process quiescence so such state is
-    # closed even if the route failed; unprepared roles are an idempotent no-op.
+    # Inspect unvisited roles after process quiescence so such state is closed,
+    # while a role that was never routed remains a true no-op. A role with a
+    # durable Runtime is always finalized, so missing state still fails closed.
     for role in projection.team.roles.values():
         if role.binding != "external":
             continue
-        get_adapter(role.adapter or "").finalize_run_state(
+        adapter = get_adapter(role.adapter or "")
+        launch_mode = role.launch_mode or "headless"
+        if role.role_id not in runtime_roles and not adapter.has_prepared_run_state(
             run_dir=run_dir,
             role_id=role.role_id,
-            launch_mode=role.launch_mode or "headless",
+            launch_mode=launch_mode,
+        ):
+            continue
+        adapter.finalize_run_state(
+            run_dir=run_dir,
+            role_id=role.role_id,
+            launch_mode=launch_mode,
         )
     owner = read_owner(projection.team.workspace)
     if owner is None:

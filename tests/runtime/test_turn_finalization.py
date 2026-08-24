@@ -404,10 +404,19 @@ def test_terminal_owner_release_rechecks_supervisor_and_runner_group(
     assert read_owner(workspace) is None
 
 
-def test_terminal_owner_release_finalizes_unvisited_external_roles(
+@pytest.mark.parametrize(
+    ("reviewer_prepared", "expected_roles"),
+    [
+        (False, ["developer"]),
+        (True, ["developer", "reviewer"]),
+    ],
+)
+def test_terminal_owner_release_finalizes_only_prepared_external_roles(
     workspace: Path,
     request_protocol: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
+    reviewer_prepared: bool,
+    expected_roles: list[str],
 ) -> None:
     run_dir, runtime = _external_run(
         workspace,
@@ -438,6 +447,17 @@ def test_terminal_owner_release_finalizes_unvisited_external_roles(
     finalized: list[tuple[str, str]] = []
 
     class _TerminalAdapter:
+        def has_prepared_run_state(
+            self,
+            *,
+            run_dir: Path,
+            role_id: str,
+            launch_mode: str,
+        ) -> bool:
+            assert run_dir.name == "at-worker-release-all-adapters"
+            assert launch_mode == "headless"
+            return role_id == "reviewer" and reviewer_prepared
+
         def finalize_run_state(
             self,
             *,
@@ -463,10 +483,7 @@ def test_terminal_owner_release_finalizes_unvisited_external_roles(
     with locked_run(run_dir, exclusive=True):
         assert release_terminal_owner_locked(run_dir)
 
-    assert finalized == [
-        ("developer", "headless"),
-        ("reviewer", "headless"),
-    ]
+    assert finalized == [(role_id, "headless") for role_id in expected_roles]
     assert read_owner(workspace) is None
 
 

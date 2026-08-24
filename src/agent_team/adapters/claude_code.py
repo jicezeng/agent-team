@@ -637,6 +637,18 @@ class ClaudeCodeAdapter(HarnessAdapter):
         for directory in self._runtime_hierarchy(run_dir, role_id):
             directory.chmod(0o700)
 
+    def has_prepared_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> bool:
+        self.assert_launch_mode(launch_mode)
+        return launch_mode == "interactive" and path_entry_exists(
+            self._runtime_home(run_dir, role_id)
+        )
+
     @staticmethod
     def _boolean_environment(name: str) -> bool | None:
         raw = os.environ.get(name)

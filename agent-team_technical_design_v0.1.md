@@ -914,9 +914,11 @@ Provider 的安全定义；Claude Code 先读取
 `ANTHROPIC_MODEL` / `CLAUDE_CODE_EFFORT_LEVEL` 环境变量，再读取 User Settings 的
 `model` / `effortLevel`，Provider Route 只从显式选项和当前进程的原生 Route 环境解析，
 不从被禁用的 Setting Sources 继承。OpenCode 在目标 Workspace 禁用 Project Config 后通过
-`debug config --pure` 只解析
-有效 Model；缺失或不是完整 `provider/model` 时要求显式 `--role-model`，不以隔离环境
-重新猜测 Last-used Model。DeepSeek Harness 不读取用户 Profile，缺省冻结
+`debug config --pure` 只解析有效 Model；未限定 Provider 的 Model 仅在恰好一个已配置
+Provider 显式声明该 Model 时补全为 `provider/model`，否则要求显式 `--role-model`，不以
+隔离环境重新猜测 Last-used Model。补全或显式选择后的 Model 还必须出现在同一有效配置下
+`opencode models <provider>` 的本地 Catalog 中，未知 Provider/Model 在创建 Run 前拒绝。
+DeepSeek Harness 不读取用户 Profile，缺省冻结
 `deepseek-official/deepseek-v4-flash` 与 `high`。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时保持 `null`，由
 Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍可能在执行时覆盖
 冻结的请求 Model；Agent-Team 不得把请求值误报为已证明的最终有效 Model。当前公共
@@ -2284,7 +2286,10 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
   仍属于本规范不能摘要或覆盖的管理员边界；
 - Model 必须在 `init` 冻结为 `provider/model`。显式值优先；省略时 Adapter 在目标
   Workspace 禁用 Project Config 后执行只读 `opencode debug config --pure`，只抽取 Model。
-  缺失或不完整 ID Fail Closed。执行时同一冻结值同时进入 CLI `--model`、Primary Agent
+  未限定 Provider 的默认值只在一个已配置 Provider 声明该 Model 时唯一补全；缺失、歧义或
+  仍不完整的 ID Fail Closed。Adapter 随后用 `opencode models <provider>` 的有效本地
+  Catalog 校验完整 ID，防止未知 Provider/Model 延迟到业务 Turn 才失败。执行时同一冻结值
+  同时进入 CLI `--model`、Primary Agent
   `model`、顶层 `model` 与 `small_model`；后者约束会在 Primary Agent 前执行的 Title 等
   Lightweight Agent，避免自定义 Endpoint 先收到无关的内建 Model。Reasoning Effort 作为 Provider-specific Variant 冻结：
   两种 Mode 都使用 `--variant`，Interactive 还把同一值写入隔离 Primary Agent；

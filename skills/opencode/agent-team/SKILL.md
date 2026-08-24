@@ -67,7 +67,10 @@ External business Turn inside an existing Run:
    `--role-reasoning-effort ROLE=VARIANT`, and
    `--role-model-provider ROLE=PROVIDER` only for choices the user made.
    OpenCode models use `provider/model`; its reasoning-effort option maps to a
-   provider-specific variant. DSH models also use `provider/model`, with effort
+   provider-specific variant. An unqualified OpenCode default is completed only
+   when exactly one configured Provider declares it, and the qualified Model is
+   checked against the effective local catalog; otherwise pass the full Model.
+   DSH models also use `provider/model`, with effort
    `off`, `high`, or `max`; neither accepts a separate Provider option.
    `--role-model-provider` applies to Codex and Claude Code, while
    `--role-fast` is Codex-only. A custom Codex Provider must already exist in the user's Codex

@@ -806,6 +806,15 @@ def _install_skill() -> dict[str, Any]:
         if owners_dir.is_symlink() or not stat.S_ISDIR(info.st_mode):
             raise IntegrityError(f"workspace owner directory is unsafe: {owners_dir}")
         for owner_path in committed_directory_entries(owners_dir):
+            owner_digest = owner_path.stem
+            if (
+                owner_path.suffix != ".json"
+                or len(owner_digest) != 64
+                or any(char not in "0123456789abcdef" for char in owner_digest)
+            ):
+                # Released-owner archives from older versions remain useful
+                # evidence but are not live ownership records.
+                continue
             owner_info = owner_path.lstat()
             if owner_path.is_symlink() or not stat.S_ISREG(owner_info.st_mode):
                 raise IntegrityError(f"workspace owner entry is unsafe: {owner_path}")

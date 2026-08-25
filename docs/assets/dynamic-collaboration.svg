@@ -1,222 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
-  <title id="title">Agent-Team dynamic collaboration patterns</title>
-  <desc id="desc">A natural-language task is converted into roles, topology, and a completion authority. Four compact examples show software delivery, multimedia production, research and decision support, and incident response with explicit feedback loops.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="title desc">
+  <title id="title">A task-shaped Agent-Team collaboration</title>
+  <desc id="desc">A natural-language task is turned into an on-demand Developer, Reviewer, and Validator topology. Findings loop back to the Developer, and a clean validation produces an evidence-backed completion.</desc>
 
   <defs>
-    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0B0E13"/>
-      <stop offset="0.55" stop-color="#10151C"/>
-      <stop offset="1" stop-color="#090D12"/>
-    </linearGradient>
-    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#171E27"/>
-      <stop offset="1" stop-color="#11171E"/>
-    </linearGradient>
-    <linearGradient id="taskPanel" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#121A22"/>
-      <stop offset="0.5" stop-color="#152129"/>
-      <stop offset="1" stop-color="#121820"/>
-    </linearGradient>
-    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
-      <path d="M 36 0 L 0 0 0 36" fill="none" stroke="#FFFFFF" stroke-opacity="0.026" stroke-width="1"/>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#1A2530"/>
     </pattern>
-    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="7" result="blur"/>
-      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#62D8FF"/>
-    </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#61E294"/>
-    </marker>
-    <marker id="arrowCoral" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF725C"/>
-    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 1.6px; }
+      .role { font-size: 19px; font-weight: 700; fill: #F5F7FA; }
+      .detail { font-size: 13px; fill: #8D9AA8; }
+    </style>
   </defs>
 
-  <rect width="1600" height="900" rx="32" fill="url(#canvas)"/>
-  <rect width="1600" height="900" rx="32" fill="url(#grid)"/>
+  <rect x="1" y="1" width="1198" height="378" rx="22" fill="#0B0F14" stroke="#25313D" stroke-width="2"/>
+  <rect x="2" y="2" width="1196" height="376" rx="21" fill="url(#grid)"/>
 
-  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-    <text x="72" y="62" fill="#62D8FF" font-size="15" font-weight="700" letter-spacing="3.6">DYNAMIC COLLABORATION</text>
-    <text x="72" y="118" fill="#F5F7FA" font-size="42" font-weight="760">The task defines the team.</text>
-    <text x="72" y="154" fill="#9EABB9" font-size="19">Roles, routes, feedback loops, and completion authority are derived for each Run.</text>
+  <g class="sans">
+    <text x="42" y="56" class="eyebrow" fill="#54D2FF">ONE NATURAL-LANGUAGE TASK</text>
+    <rect x="42" y="82" width="220" height="154" rx="16" fill="#111821" stroke="#2A3947" stroke-width="2"/>
+    <path d="M72 116h24M72 127h31M72 138h18" fill="none" stroke="#54D2FF" stroke-width="3" stroke-linecap="round"/>
+    <text x="72" y="178" font-size="23" font-weight="700" fill="#F5F7FA">Ship the change</text>
+    <text x="72" y="205" class="detail">build · review · verify</text>
 
-    <rect x="72" y="188" width="1456" height="118" rx="24" fill="url(#taskPanel)" stroke="#42515F" stroke-width="1.5"/>
+    <path d="M276 159H302" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M302 153l11 6-11 6z" fill="#54D2FF"/>
+    <rect x="318" y="132" width="130" height="54" rx="27" fill="#10232C" stroke="#54D2FF" stroke-width="2"/>
+    <text x="383" y="154" text-anchor="middle" class="eyebrow" fill="#54D2FF">AGENT-TEAM</text>
+    <text x="383" y="173" text-anchor="middle" font-size="11" fill="#8D9AA8">creates on demand</text>
+    <path d="M462 159H490" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M490 153l11 6-11 6z" fill="#54D2FF"/>
 
-    <rect x="100" y="218" width="300" height="58" rx="17" fill="#111A22" stroke="#3B6574"/>
-    <rect x="120" y="233" width="24" height="28" rx="3" fill="none" stroke="#62D8FF" stroke-width="1.8"/>
-    <path d="M 126 241 H 138 M 126 247 H 138 M 126 253 H 135" stroke="#62D8FF" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="160" y="244" fill="#EAF6FA" font-size="13" font-weight="700" letter-spacing="1.4">NATURAL-LANGUAGE</text>
-    <text x="160" y="263" fill="#A8B5C0" font-size="15">task + collaboration rules</text>
+    <text x="506" y="56" class="eyebrow" fill="#8D9AA8">GENERATED TOPOLOGY · EXAMPLE</text>
 
-    <line x1="418" y1="247" x2="482" y2="247" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+    <rect x="506" y="92" width="150" height="116" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="532" cy="120" r="7" fill="#54D2FF"/>
+    <text x="548" y="125" class="role">Developer</text>
+    <text x="532" y="158" class="detail">implements + tests</text>
+    <text x="532" y="183" class="mono" font-size="11" fill="#647586">Claude Code</text>
 
-    <rect x="500" y="210" width="500" height="74" rx="20" fill="#142028" stroke="#4A7180" stroke-width="1.2"/>
-    <circle cx="536" cy="247" r="18" fill="#15333E" stroke="#62D8FF"/>
-    <path d="M 527 247 H 545 M 536 238 V 256" stroke="#62D8FF" stroke-width="2" stroke-linecap="round"/>
-    <text x="570" y="240" fill="#F0F6F8" font-size="18" font-weight="720">Skill derives the collaboration contract</text>
-    <text x="570" y="265" fill="#8FA0AD" font-size="14">roles  ·  topology  ·  gates  ·  completion authority</text>
+    <path d="M670 150H694" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M694 144l11 6-11 6z" fill="#54D2FF"/>
 
-    <line x1="1018" y1="247" x2="1082" y2="247" stroke="#61E294" stroke-width="2" marker-end="url(#arrowGreen)"/>
+    <rect x="710" y="92" width="150" height="116" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="736" cy="120" r="7" fill="#54D2FF"/>
+    <text x="752" y="125" class="role">Reviewer</text>
+    <text x="736" y="158" class="detail">challenges + routes</text>
+    <text x="736" y="183" class="mono" font-size="11" fill="#647586">Codex</text>
 
-    <rect x="1100" y="218" width="400" height="58" rx="17" fill="#13241E" stroke="#39785A"/>
-    <circle cx="1126" cy="247" r="7" fill="#61E294" filter="url(#softGlow)"/>
-    <text x="1148" y="244" fill="#DDF9E9" font-size="15" font-weight="720">EVENT-DRIVEN RUN</text>
-    <text x="1148" y="264" fill="#87A99A" font-size="14">one explicit transition per role Turn</text>
+    <path d="M874 150H898" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M898 144l11 6-11 6z" fill="#54D2FF"/>
 
-    <!-- Software delivery -->
-    <rect x="72" y="338" width="700" height="222" rx="24" fill="url(#panel)" stroke="#3D4B58" stroke-width="1.3"/>
-    <circle cx="104" cy="371" r="6" fill="#62D8FF"/>
-    <text x="122" y="378" fill="#F2F5F8" font-size="18" font-weight="730">SOFTWARE DELIVERY</text>
-    <text x="632" y="378" fill="#6F8190" font-size="12" font-weight="700" letter-spacing="1.2">REVIEW LOOP</text>
+    <rect x="914" y="92" width="150" height="116" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="940" cy="120" r="7" fill="#54D2FF"/>
+    <text x="956" y="125" class="role">Validator</text>
+    <text x="940" y="158" class="detail">proves the result</text>
+    <text x="940" y="183" class="mono" font-size="11" fill="#647586">DSH</text>
 
-    <rect x="108" y="405" width="166" height="78" rx="16" fill="#101A22" stroke="#32667A"/>
-    <circle cx="133" cy="430" r="10" fill="#62D8FF" fill-opacity="0.15" stroke="#62D8FF"/>
-    <path d="M 128 426 L 133 430 L 128 435 M 137 435 H 141" fill="none" stroke="#62D8FF" stroke-width="1.6" stroke-linecap="round"/>
-    <text x="153" y="435" fill="#EAF6FA" font-size="16" font-weight="700">Developer</text>
-    <text x="128" y="463" fill="#8796A4" font-size="13">implement + test</text>
+    <path d="M1078 150H1089" fill="none" stroke="#5EE39A" stroke-width="2.5"/>
+    <path d="M1089 144l9 6-9 6z" fill="#5EE39A"/>
+    <rect x="1102" y="105" width="64" height="90" rx="15" fill="#10231B" stroke="#397B59" stroke-width="2"/>
+    <path d="M1120 142l8 8 18-21" fill="none" stroke="#5EE39A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1134" y="175" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#5EE39A">DONE</text>
 
-    <line x1="286" y1="444" x2="328" y2="444" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
+    <path d="M785 220V268H581V222" fill="none" stroke="#FF7A6B" stroke-width="2.5" stroke-dasharray="7 7"/>
+    <path d="M575 222l6-12 6 12z" fill="#FF7A6B"/>
+    <rect x="648" y="248" width="70" height="28" rx="14" fill="#251817"/>
+    <text x="683" y="267" text-anchor="middle" class="mono" font-size="11" font-weight="700" fill="#FF7A6B">findings</text>
 
-    <rect x="344" y="405" width="166" height="78" rx="16" fill="#151722" stroke="#66558A"/>
-    <circle cx="369" cy="430" r="10" fill="#A78BFA" fill-opacity="0.15" stroke="#A78BFA"/>
-    <path d="M 364 430 L 368 434 L 375 425" fill="none" stroke="#A78BFA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="389" y="435" fill="#F0ECFF" font-size="16" font-weight="700">Reviewer</text>
-    <text x="364" y="463" fill="#9287A9" font-size="13">completion authority</text>
-
-    <line x1="522" y1="444" x2="564" y2="444" stroke="#61E294" stroke-width="2" marker-end="url(#arrowGreen)"/>
-    <text x="543" y="430" text-anchor="middle" fill="#61E294" font-size="11" font-weight="700">CLEAN</text>
-
-    <rect x="580" y="405" width="156" height="78" rx="16" fill="#12211C" stroke="#39785A"/>
-    <circle cx="605" cy="430" r="10" fill="#61E294" fill-opacity="0.15" stroke="#61E294"/>
-    <path d="M 600 430 L 604 434 L 611 425" fill="none" stroke="#61E294" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="625" y="435" fill="#E3F9EC" font-size="16" font-weight="700">Complete</text>
-    <text x="600" y="463" fill="#7FA691" font-size="13">reviewed result</text>
-
-    <path d="M 426 492 V 520 C 426 532 414 536 402 536 H 208 C 196 536 190 528 190 518 V 493" fill="none" stroke="#FF725C" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowCoral)"/>
-    <text x="306" y="526" text-anchor="middle" fill="#FF806B" font-size="11" font-weight="700">P0–P3 FINDINGS</text>
-
-    <!-- Multimedia production -->
-    <rect x="828" y="338" width="700" height="222" rx="24" fill="url(#panel)" stroke="#3D4B58" stroke-width="1.3"/>
-    <circle cx="860" cy="371" r="6" fill="#F6C85F"/>
-    <text x="878" y="378" fill="#F2F5F8" font-size="18" font-weight="730">MULTIMEDIA PRODUCTION</text>
-    <text x="1370" y="378" fill="#6F8190" font-size="12" font-weight="700" letter-spacing="1.2">EDITORIAL LOOP</text>
-
-    <rect x="864" y="405" width="166" height="78" rx="16" fill="#1A1812" stroke="#715D2D"/>
-    <circle cx="889" cy="430" r="10" fill="#F6C85F" fill-opacity="0.15" stroke="#F6C85F"/>
-    <path d="M 884 434 L 894 424 M 886 424 H 894 V 432" fill="none" stroke="#F6C85F" stroke-width="1.6" stroke-linecap="round"/>
-    <text x="909" y="435" fill="#FFF7E2" font-size="16" font-weight="700">Producer</text>
-    <text x="884" y="463" fill="#A89B79" font-size="13">create the package</text>
-
-    <line x1="1042" y1="444" x2="1084" y2="444" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
-
-    <rect x="1100" y="405" width="166" height="78" rx="16" fill="#151722" stroke="#66558A"/>
-    <circle cx="1125" cy="430" r="10" fill="#A78BFA" fill-opacity="0.15" stroke="#A78BFA"/>
-    <path d="M 1120 430 H 1130 M 1125 425 V 435" stroke="#A78BFA" stroke-width="1.7" stroke-linecap="round"/>
-    <text x="1145" y="435" fill="#F0ECFF" font-size="16" font-weight="700">Editor</text>
-    <text x="1120" y="463" fill="#9287A9" font-size="13">quality + coherence</text>
-
-    <line x1="1278" y1="444" x2="1320" y2="444" stroke="#61E294" stroke-width="2" marker-end="url(#arrowGreen)"/>
-    <text x="1299" y="430" text-anchor="middle" fill="#61E294" font-size="11" font-weight="700">APPROVE</text>
-
-    <rect x="1336" y="405" width="156" height="78" rx="16" fill="#12211C" stroke="#39785A"/>
-    <circle cx="1361" cy="430" r="10" fill="#61E294" fill-opacity="0.15" stroke="#61E294"/>
-    <path d="M 1356 430 L 1360 434 L 1367 425" fill="none" stroke="#61E294" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="1381" y="435" fill="#E3F9EC" font-size="15" font-weight="700">Creative lead</text>
-    <text x="1356" y="463" fill="#7FA691" font-size="13">final sign-off</text>
-
-    <path d="M 1182 492 V 520 C 1182 532 1170 536 1158 536 H 964 C 952 536 946 528 946 518 V 493" fill="none" stroke="#FF725C" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowCoral)"/>
-    <text x="1062" y="526" text-anchor="middle" fill="#FF806B" font-size="11" font-weight="700">REVISION NOTES</text>
-
-    <!-- Research and decision support -->
-    <rect x="72" y="580" width="700" height="222" rx="24" fill="url(#panel)" stroke="#3D4B58" stroke-width="1.3"/>
-    <circle cx="104" cy="613" r="6" fill="#A78BFA"/>
-    <text x="122" y="620" fill="#F2F5F8" font-size="18" font-weight="730">RESEARCH &amp; DECISION</text>
-    <text x="600" y="620" fill="#6F8190" font-size="12" font-weight="700" letter-spacing="1.2">EVIDENCE LOOP</text>
-
-    <rect x="100" y="647" width="138" height="78" rx="15" fill="#101A22" stroke="#32667A"/>
-    <circle cx="123" cy="672" r="9" fill="#62D8FF" fill-opacity="0.15" stroke="#62D8FF"/>
-    <circle cx="121" cy="670" r="4" fill="none" stroke="#62D8FF" stroke-width="1.4"/>
-    <line x1="125" y1="674" x2="130" y2="679" stroke="#62D8FF" stroke-width="1.4" stroke-linecap="round"/>
-    <text x="141" y="677" fill="#EAF6FA" font-size="14" font-weight="700">Researcher</text>
-    <text x="120" y="705" fill="#8796A4" font-size="12">collect evidence</text>
-
-    <line x1="249" y1="686" x2="279" y2="686" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
-
-    <rect x="292" y="647" width="138" height="78" rx="15" fill="#151722" stroke="#66558A"/>
-    <circle cx="315" cy="672" r="9" fill="#A78BFA" fill-opacity="0.15" stroke="#A78BFA"/>
-    <path d="M 311 672 L 314 675 L 320 668" fill="none" stroke="#A78BFA" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="333" y="677" fill="#F0ECFF" font-size="14" font-weight="700">Fact-checker</text>
-    <text x="312" y="705" fill="#9287A9" font-size="12">challenge claims</text>
-
-    <line x1="441" y1="686" x2="471" y2="686" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
-
-    <rect x="484" y="647" width="138" height="78" rx="15" fill="#181A1F" stroke="#596774"/>
-    <circle cx="507" cy="672" r="9" fill="#BFC9D3" fill-opacity="0.12" stroke="#BFC9D3"/>
-    <path d="M 502 668 H 512 M 502 672 H 512 M 502 676 H 509" stroke="#BFC9D3" stroke-width="1.4" stroke-linecap="round"/>
-    <text x="525" y="677" fill="#EEF2F5" font-size="14" font-weight="700">Synthesizer</text>
-    <text x="504" y="705" fill="#8E9BA8" font-size="12">resolve uncertainty</text>
-
-    <line x1="633" y1="686" x2="655" y2="686" stroke="#61E294" stroke-width="2" marker-end="url(#arrowGreen)"/>
-
-    <rect x="668" y="647" width="78" height="78" rx="15" fill="#12211C" stroke="#39785A"/>
-    <circle cx="707" cy="671" r="9" fill="#61E294" fill-opacity="0.15" stroke="#61E294"/>
-    <path d="M 703 671 L 706 674 L 712 667" fill="none" stroke="#61E294" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="707" y="697" text-anchor="middle" fill="#DFF8E9" font-size="10" font-weight="700">DECISION</text>
-    <text x="707" y="711" text-anchor="middle" fill="#DFF8E9" font-size="10" font-weight="700">OWNER</text>
-
-    <path d="M 361 734 V 760 C 361 772 349 778 337 778 H 172 C 160 778 154 770 154 760 V 734" fill="none" stroke="#FF725C" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowCoral)"/>
-    <text x="256" y="768" text-anchor="middle" fill="#FF806B" font-size="11" font-weight="700">EVIDENCE GAP</text>
-
-    <!-- Incident response -->
-    <rect x="828" y="580" width="700" height="222" rx="24" fill="url(#panel)" stroke="#3D4B58" stroke-width="1.3"/>
-    <circle cx="860" cy="613" r="6" fill="#FF725C"/>
-    <text x="878" y="620" fill="#F2F5F8" font-size="18" font-weight="730">INCIDENT RESPONSE</text>
-    <text x="1370" y="620" fill="#6F8190" font-size="12" font-weight="700" letter-spacing="1.2">VERIFY LOOP</text>
-
-    <rect x="856" y="647" width="138" height="78" rx="15" fill="#211512" stroke="#7D4439"/>
-    <circle cx="879" cy="672" r="9" fill="#FF725C" fill-opacity="0.15" stroke="#FF725C"/>
-    <path d="M 879 665 V 673 M 879 678 V 679" stroke="#FF725C" stroke-width="1.8" stroke-linecap="round"/>
-    <text x="897" y="677" fill="#FFE9E5" font-size="14" font-weight="700">Triage</text>
-    <text x="876" y="705" fill="#AE8178" font-size="12">classify + route</text>
-
-    <line x1="1005" y1="686" x2="1035" y2="686" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
-
-    <rect x="1048" y="647" width="138" height="78" rx="15" fill="#101A22" stroke="#32667A"/>
-    <circle cx="1071" cy="672" r="9" fill="#62D8FF" fill-opacity="0.15" stroke="#62D8FF"/>
-    <path d="M 1066 676 L 1076 666 M 1068 666 H 1076 V 674" fill="none" stroke="#62D8FF" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="1089" y="677" fill="#EAF6FA" font-size="14" font-weight="700">Specialist</text>
-    <text x="1068" y="705" fill="#8796A4" font-size="12">mitigate</text>
-
-    <line x1="1197" y1="686" x2="1227" y2="686" stroke="#62D8FF" stroke-width="2" marker-end="url(#arrowCyan)"/>
-
-    <rect x="1240" y="647" width="138" height="78" rx="15" fill="#151722" stroke="#66558A"/>
-    <circle cx="1263" cy="672" r="9" fill="#A78BFA" fill-opacity="0.15" stroke="#A78BFA"/>
-    <path d="M 1259 672 L 1262 675 L 1268 668" fill="none" stroke="#A78BFA" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="1281" y="677" fill="#F0ECFF" font-size="14" font-weight="700">Verifier</text>
-    <text x="1260" y="705" fill="#9287A9" font-size="12">prove recovery</text>
-
-    <line x1="1389" y1="686" x2="1411" y2="686" stroke="#61E294" stroke-width="2" marker-end="url(#arrowGreen)"/>
-
-    <rect x="1424" y="647" width="78" height="78" rx="15" fill="#12211C" stroke="#39785A"/>
-    <circle cx="1463" cy="671" r="9" fill="#61E294" fill-opacity="0.15" stroke="#61E294"/>
-    <path d="M 1459 671 L 1462 674 L 1468 667" fill="none" stroke="#61E294" stroke-width="1.5" stroke-linecap="round"/>
-    <text x="1463" y="697" text-anchor="middle" fill="#DFF8E9" font-size="9" font-weight="700">INCIDENT</text>
-    <text x="1463" y="711" text-anchor="middle" fill="#DFF8E9" font-size="9" font-weight="700">COMMANDER</text>
-
-    <path d="M 1309 734 V 760 C 1309 772 1297 778 1285 778 H 1120 C 1108 778 1102 770 1102 760 V 734" fill="none" stroke="#FF725C" stroke-width="2" stroke-dasharray="7 6" marker-end="url(#arrowCoral)"/>
-    <text x="1204" y="768" text-anchor="middle" fill="#FF806B" font-size="11" font-weight="700">FAILED VERIFICATION</text>
-
-    <line x1="72" y1="842" x2="1528" y2="842" stroke="#27323D"/>
-    <circle cx="243" cy="866" r="4" fill="#61E294"/>
-    <text x="259" y="872" fill="#9BA8B4" font-size="14" font-weight="650">SERIAL PATHS</text>
-    <circle cx="556" cy="866" r="4" fill="#61E294"/>
-    <text x="572" y="872" fill="#9BA8B4" font-size="14" font-weight="650">FEEDBACK LOOPS</text>
-    <circle cx="895" cy="866" r="4" fill="#61E294"/>
-    <text x="911" y="872" fill="#9BA8B4" font-size="14" font-weight="650">CONDITIONAL ROUTING</text>
-    <circle cx="1250" cy="866" r="4" fill="#61E294"/>
-    <text x="1266" y="872" fill="#9BA8B4" font-size="14" font-weight="650">EXPLICIT AUTHORITY</text>
+    <line x1="506" y1="314" x2="1166" y2="314" stroke="#25313D"/>
+    <circle cx="522" cy="338" r="4" fill="#54D2FF"/>
+    <text x="536" y="343" class="mono" font-size="12" fill="#8D9AA8">formal handoffs</text>
+    <circle cx="690" cy="338" r="4" fill="#54D2FF"/>
+    <text x="704" y="343" class="mono" font-size="12" fill="#8D9AA8">private sessions</text>
+    <circle cx="860" cy="338" r="4" fill="#54D2FF"/>
+    <text x="874" y="343" class="mono" font-size="12" fill="#8D9AA8">explicit completion authority</text>
   </g>
 </svg>

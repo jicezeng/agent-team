@@ -1,114 +1,30 @@
-# Agent-Team
+<h1 align="center">Agent-Team</h1>
 
-[![CI](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml/badge.svg)](https://github.com/jicezeng/agent-team/actions/workflows/ci.yml)
-
-Agent-Team is an event-driven local runtime for temporary AI-agent teams.
-Describe a task and collaboration rules in natural language; Agent-Team creates
-the roles and topology for that Run, coordinates Codex, Claude Code, OpenCode,
-and DeepSeek Harness, and preserves resumable Sessions and auditable handoffs until
-Completion or Block.
-
-## The task defines the team
-
-Agent-Team has no permanent team and no hard-coded Developer–Reviewer flow.
-For each Run, its Skill turns the request into dynamic roles and a readable
-`PROTOCOL.md`. During execution, a formal Handoff event names the next role, so
-the emerging collaboration is a task-specific directed graph rather than a
-workflow users must prebuild in a DSL.
-
-Role specifications are frozen for audit, while Agent processes are dynamic:
-only the currently routed External role owns a Worker/tmux window. A Handoff
-retires the sender and lazily creates the receiver, preserving only the
-configured Harness Session when `resume` was selected.
-
-Start with the work scenario, not an abstract graph template. The Skill derives
-the roles, handoff route, feedback loop, and completion authority that make that
-specific job effective:
+<p align="center"><strong>Not another coding agent. The runtime that turns agents into a team.</strong></p>
 
 <p align="center">
-  <img src="docs/assets/dynamic-collaboration.svg" width="100%" alt="Agent-Team derives a task-specific collaboration graph, illustrated by compact software delivery, multimedia production, research, and incident-response loops." />
+  Turn one natural-language task into a temporary, event-driven team across
+  Codex, Claude Code, OpenCode, and DeepSeek Harness—then keep the build,
+  review, and verification loop moving until a formal completion.
 </p>
-
-| Scenario | High-value, common collaboration pattern | Typical completion authority |
-| --- | --- | --- |
-| Software delivery | Developer implements and tests ↔ independent Reviewer returns every finding | Reviewer completes after a clean full review |
-| Multimedia production | Creative brief → medium-specific Producer ↔ Editor iterates on the package | Creative director approves the final package |
-| Research and decision support | Researcher ↔ skeptical Fact-checker → Synthesizer | Decision owner accepts sourced evidence and explicit uncertainty |
-| Incident response | Triage → dynamically selected Specialist → independent Verifier | Incident commander accepts a verified mitigation |
-
-These are examples, not built-in templates. A request may rename roles, add
-quality gates, loop on findings, or route the next Turn to whichever specialist
-the current evidence requires. Stage 1 supports serial paths, cycles, and
-dynamic routing through explicit single-token transitions, but not simultaneous
-Fan-out/Join, keeping one shared worktree deterministic.
-
-## A small, inspectable core
 
 <p align="center">
-  <img src="docs/assets/runtime-architecture.svg" width="100%" alt="Agent-Team runtime architecture: Skills and plugins create immutable Run inputs, an append-only Event Journal drives a small event-sourced core, and tmux hosts native interactive Harness sessions." />
+  <a href="https://github.com/jicezeng/agent-team/actions/workflows/ci.yml"><img src="https://github.com/jicezeng/agent-team/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB" alt="Python 3.11+" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-4C8BF5" alt="Apache 2.0" /></a>
 </p>
-
-The plugin layer turns each task into a readable protocol instead of compiled
-workflow code. Immutable files, hashed payloads, and the Event Journal are the
-durable source of truth. tmux only hosts detachable processes and visibility;
-Pane text, logs, and best-effort notifications cannot change Run state. Workers
-rescan the Journal, so losing a tmux notification never loses a Handoff.
-
-Only a small set of formal events changes business state:
 
 <p align="center">
-  <img src="docs/assets/run-state-machine.svg" width="100%" alt="Agent-Team Run state machine showing Kickoff, Handoff, Complete, Block, Resume, and Cancel transitions." />
+  <img src="docs/assets/dynamic-collaboration.svg" width="100%" alt="A natural-language task becomes a generated Developer, Reviewer, and Validator collaboration loop that ends in an evidence-backed result." />
 </p>
 
-The result is deliberately local and mechanically simple: no permanent manager
-Agent, compiled workflow engine, database, or Pane-scraping control loop.
-Natural language defines collaboration semantics, while a small event-sourced
-runtime protects ownership, process identity, Session continuity, trace
-integrity, and fail-closed recovery.
+<p align="center"><strong>The task defines the team. Events drive the work. Evidence closes the loop.</strong></p>
 
-## Requirements
+## One prompt. A whole team.
 
-- macOS or Linux, Python 3.11+, `uv`, Git, and tmux
-- Only the Harnesses selected by a team: an authenticated Codex, Claude Code,
-  or OpenCode CLI; DeepSeek Harness roles require Node.js, pnpm, and
-  `DEEPSEEK_API_KEY`
-- One normal Git worktree root per Run
-
-## Install
-
-Install from a source checkout on macOS or Linux:
-
-```bash
-git clone https://github.com/jicezeng/agent-team.git
-cd agent-team
-uv tool install --force .
-agent-team install
-```
-
-Then verify the target worktree and installed Harnesses:
-
-```bash
-agent-team doctor --workspace /path/to/worktree --json
-```
-
-Installation does not require or probe any Harness CLI. Agent-Team installs its
-Skills/plugin and trusted DSH Origin tool bundle; the pinned DSH runtime is
-provisioned only when a team first selects a DSH role. DSH Profile activation is
-explicit. See the [user guide](docs/user-guide.md#installation-and-upgrades).
-
-## Quick start
-
-The recommended entry point is the installed `agent-team` Skill in Codex,
-OpenCode, or DeepSeek Harness. Open it in the Git worktree the team should modify:
-
-```bash
-cd /path/to/worktree
-agent-team doctor --workspace "$PWD" --json
-codex
-# or: opencode / dsh
-```
-
-Then describe the team and task:
+After [installation](#install), open Codex, OpenCode, or DeepSeek Harness in
+the worktree the team should own, then invoke the installed Agent-Team Skill
+(`$agent-team` in Codex, the native Skill in OpenCode, or `/agent-team` in DSH):
 
 ```text
 $agent-team
@@ -123,72 +39,104 @@ Task: <describe the change>
 Limits: at most 12 role turns and 7200 seconds.
 ```
 
-The skill writes the immutable Request and Protocol, starts the Run, follows
-handoffs, and returns either Completion or a user-visible Block to the Origin
-session.
+The Skill freezes a readable collaboration contract, creates each role process
+only when first routed, and follows formal Handoff events until Completion or a
+user-visible Block. There is no graph DSL to prebuild and no permanent manager
+Agent consuming the context window.
 
-New External roles default to `full-access` (YOLO), which disables the Harness
-host sandbox, opens command network access, and suppresses per-command approval
-prompts. The skill must obtain explicit confirmation once for each new Run and
-passes `--confirm-full-access` only after that confirmation. Choose the
-restricted `default` or `trusted-workspace` Profile explicitly when host
-containment is required.
+## Why Agent-Team
 
-| Profile | Host boundary | Extra capability |
-| --- | --- | --- |
-| `default` | Workspace-contained | Codex command network disabled; OpenCode arbitrary Bash denied |
-| `trusted-workspace` | Workspace-contained | Codex command network or OpenCode built-in web tools enabled |
-| `full-access` | Unrestricted host access | Host shell and network enabled |
+- **Task-shaped teams.** Roles, routes, feedback loops, quality gates, and
+  completion authority are generated for the job instead of selected from a
+  fixed Developer–Reviewer template.
+- **Native, independent Agents.** Every role runs in its real interactive
+  Harness with a private configuration and Session; selected Sessions can
+  resume on later Turns.
+- **Durable truth.** Immutable Run inputs and an append-only Event Journal—not
+  terminal text or notifications—determine state and reconstruct the audit
+  trail.
+- **A deliberately small core.** Files, a compact state reducer, Harness
+  adapters, and lazy tmux Workers provide deterministic recovery without a
+  database or compiled workflow engine.
 
-OpenCode has no OS Bash sandbox, so its restricted Profiles permit workspace
-file tools and formal Agent-Team commands but deny arbitrary Bash.
-DSH External roles are interactive-only; restricted Profiles sandbox writes to
-the workspace but inherit host reads, process execution, and network access.
+## Proven in real Harnesses
 
-Agent-Team freezes its requested mapping in `launch_profile_sha256`, isolates
-OpenCode project config and external plugins, and safely freezes selected
-Codex, Claude Code, OpenCode, and DSH Provider routes. Only referenced
-environment variables cross into the role Worker; their values never enter Run
-records. Agent-Team also sets Codex
-`features.hooks=false`, but Managed Harness policy can still change or
-reject the effective configuration. Inspect `doctor` output and administrator
-policy when a permission boundary matters.
+These are retained real-machine Runs, not simulated workflow examples:
 
-## Observe and manage a Run
+| Run | What completed |
+| --- | --- |
+| [Four-Harness relay](docs/validation/four-harness-interactive-v0.1.5-validation-report.md) | Codex → Claude Code → OpenCode → DSH → resumed Codex across five formal Turns, with independent Sessions and Full Audit traces |
+| [DSH self-hosted Plugin](docs/validation/deepseek-harness-self-plugin-v0.1.5-validation-report.md) | Independent DSH Developer → Reviewer → fresh Validator built, reviewed, installed, loaded, and invoked a new model-visible Plugin |
 
-Run these from the owned worktree; the Run ID is optional for active-Run
-observation commands:
+## How it works
+
+<p align="center">
+  <img src="docs/assets/runtime-architecture.svg" width="100%" alt="A natural-language task becomes immutable Run inputs; a small event core routes formal events to native Harness Sessions hosted by lazy tmux Workers." />
+</p>
+
+Only validated `Kickoff`, `Handoff`, `Complete`, `Block`, `Resume`, and `Cancel`
+events move a Run. tmux is a detachable process host and observation surface;
+pane content never controls business state.
+
+Agent-Team v0.1 keeps one active role token in one shared worktree. It supports
+serial paths, cycles, and evidence-driven dynamic routing, but deliberately not
+simultaneous Fan-out/Join.
+
+## Install
+
+Agent-Team requires macOS or Linux, Python 3.11+, `uv`, Git, and tmux. Only the
+Harnesses selected by a team need to be installed and authenticated.
+
+```bash
+git clone https://github.com/jicezeng/agent-team.git
+cd agent-team
+uv tool install --force .
+agent-team install
+```
+
+Verify the target worktree and available Harnesses:
+
+```bash
+agent-team doctor --workspace /path/to/worktree --json
+```
+
+Installation does not probe every Harness. The pinned DSH runtime is
+provisioned lazily only when a team first selects a DSH role. See the
+[installation guide](docs/user-guide.md#installation-and-upgrades) for wheels,
+upgrades, and development installs.
+
+> [!WARNING]
+> External roles default to `full-access` (YOLO). Agent-Team asks for explicit
+> confirmation once for each new Run. Choose `default` or `trusted-workspace`
+> when host containment is required; see [permission profiles](docs/user-guide.md#permission-profiles).
+
+## Observe and manage
+
+Run these from the owned worktree; observation commands detect its active Run:
 
 | Command | Purpose |
 | --- | --- |
-| `agent-team status` | Current Run, active role, health, and next action |
+| `agent-team status` | Show the active role, health, and next action |
 | `agent-team watch` | Follow derived Run snapshots |
 | `agent-team attach [--role <role>]` | Open the active tmux view read-only |
 | `agent-team transcript` | Reconstruct Turn inputs, events, and outputs |
-| `agent-team tail` | Read or follow normalized trace events |
+| `agent-team tail` | Follow normalized trace events |
 | `agent-team diagnose` | Inspect failures and recovery evidence |
-| `agent-team recover <run-id>` | Apply deterministic technical recovery |
-| `agent-team cancel <run-id>` | Stop the Run while retaining its audit store |
 
-Detach from `attach` with tmux's `Ctrl-b d`. Formal Handoff, Completion, Block,
-and Resume decisions always go through Agent-Team's validated journal, never
-through Pane text or manual TUI input.
-
-See the [user guide](docs/user-guide.md) for manual CLI bootstrap, role options,
-Claude workspace trust, observability modes, formal actions, Block/Resume,
-recovery, Unlock, and data-retention boundaries.
+Detach from `attach` with `Ctrl-b d`. Recovery, cancellation, manual bootstrap,
+audit modes, Provider routing, and retention boundaries are documented in the
+[user guide](docs/user-guide.md).
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): installation and operations
-- [Product requirements](agent-team_prd_v0.1.md): scope and acceptance criteria
-- [Technical design](agent-team_technical_design_v0.1.md): normative runtime
-  and recovery contract
-- [DeepSeek Harness integration](docs/deepseek-harness-integration-design.md):
-  Origin Skill and interactive External Adapter design
-- [Validation evidence](docs/validation/README.md): retained real-run reports
+- [User guide](docs/user-guide.md) — installation and operations
+- [Product requirements](agent-team_prd_v0.1.md) — scope and acceptance criteria
+- [Technical design](agent-team_technical_design_v0.1.md) — normative runtime contract
+- [DeepSeek Harness integration](docs/deepseek-harness-integration-design.md) — Origin and External Adapter design
+- [Validation evidence](docs/validation/README.md) — retained real-run reports
 
-## Development
+<details>
+<summary><strong>Development</strong></summary>
 
 ```bash
 uv sync --locked
@@ -197,3 +145,5 @@ uv run ruff check --select F src tests
 uv run python -m compileall -q src tests
 uv build
 ```
+
+</details>

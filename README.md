@@ -20,6 +20,10 @@
 
 <p align="center"><strong>The task defines the team. Events drive the work. Evidence closes the loop.</strong></p>
 
+<p align="center">
+  <a href="docs/validation/deepseek-harness-self-plugin-v0.1.5-validation-report.md"><img src="docs/assets/dsh-self-evolution.svg" width="100%" alt="A real self-hosted capability loop in which a DeepSeek Harness Origin uses three independent DSH Sessions to develop, review, install, load, and invoke a new Plugin." /></a>
+</p>
+
 ## One prompt. A whole team.
 
 After [installation](#install), open Codex, OpenCode, or DeepSeek Harness in

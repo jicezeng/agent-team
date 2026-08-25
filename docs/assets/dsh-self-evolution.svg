@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title desc">
+  <title id="title">DeepSeek Harness extends itself through an Agent-Team loop</title>
+  <desc id="desc">A DeepSeek Harness Origin asks Agent-Team to create three independent DSH Sessions. A Developer builds a plugin, a Reviewer returns findings, and a fresh Validator installs, loads, and invokes the plugin. The verified capability can seed the next extension loop.</desc>
+
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="#1A2530"/>
+    </pattern>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.45px; }
+      .role { font-size: 18px; font-weight: 700; fill: #F5F7FA; }
+      .detail { font-size: 12px; fill: #8D9AA8; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="328" rx="22" fill="#0B0F14" stroke="#25313D" stroke-width="2"/>
+  <rect x="2" y="2" width="1196" height="326" rx="21" fill="url(#grid)"/>
+
+  <g class="sans">
+    <text x="38" y="42" class="eyebrow" fill="#5EE39A">A HARNESS THAT EXTENDS ITSELF · REAL RUN</text>
+    <text x="1162" y="42" text-anchor="end" class="eyebrow" fill="#8D9AA8">1 ORIGIN · 3 INDEPENDENT DSH SESSIONS</text>
+
+    <rect x="38" y="68" width="190" height="132" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="64" cy="94" r="8" fill="#54D2FF"/>
+    <text x="82" y="100" class="role">DeepSeek Harness</text>
+    <text x="64" y="137" class="mono" font-size="11" font-weight="700" fill="#54D2FF">ORIGIN</text>
+    <text x="64" y="166" class="detail">names a capability gap</text>
+
+    <path d="M240 134H252" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M252 128l11 6-11 6z" fill="#54D2FF"/>
+    <rect x="267" y="107" width="112" height="54" rx="27" fill="#10232C" stroke="#54D2FF" stroke-width="2"/>
+    <text x="323" y="130" text-anchor="middle" class="eyebrow" fill="#54D2FF">AGENT-TEAM</text>
+    <text x="323" y="149" text-anchor="middle" font-size="10" fill="#8D9AA8">routes the loop</text>
+    <path d="M391 134H401" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M401 128l11 6-11 6z" fill="#54D2FF"/>
+
+    <rect x="416" y="68" width="146" height="132" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="441" cy="94" r="7" fill="#54D2FF"/>
+    <text x="457" y="100" class="role">Developer</text>
+    <text x="441" y="139" class="detail">builds the Plugin</text>
+    <text x="441" y="170" class="mono" font-size="10" fill="#647586">DSH · resumable</text>
+
+    <path d="M574 134H585" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M585 128l11 6-11 6z" fill="#54D2FF"/>
+
+    <rect x="600" y="68" width="146" height="132" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="625" cy="94" r="7" fill="#54D2FF"/>
+    <text x="641" y="100" class="role">Reviewer</text>
+    <text x="625" y="139" class="detail">challenges every change</text>
+    <text x="625" y="170" class="mono" font-size="10" fill="#647586">DSH · independent</text>
+
+    <path d="M758 134H769" fill="none" stroke="#54D2FF" stroke-width="2.5"/>
+    <path d="M769 128l11 6-11 6z" fill="#54D2FF"/>
+
+    <rect x="784" y="68" width="146" height="132" rx="15" fill="#111821" stroke="#315064" stroke-width="2"/>
+    <circle cx="809" cy="94" r="7" fill="#54D2FF"/>
+    <text x="825" y="100" class="role">Validator</text>
+    <text x="809" y="139" class="detail">installs + invokes</text>
+    <text x="809" y="170" class="mono" font-size="10" fill="#647586">DSH · fresh Profile</text>
+
+    <path d="M942 134H953" fill="none" stroke="#5EE39A" stroke-width="2.5"/>
+    <path d="M953 128l11 6-11 6z" fill="#5EE39A"/>
+
+    <rect x="968" y="68" width="194" height="132" rx="15" fill="#10231B" stroke="#397B59" stroke-width="2"/>
+    <path d="M994 96l7 7 15-18" fill="none" stroke="#5EE39A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1026" y="100" class="eyebrow" fill="#5EE39A">PLUGIN PROVEN</text>
+    <text x="994" y="139" class="mono" font-size="16" font-weight="700" fill="#F5F7FA">worktree_status</text>
+    <text x="994" y="170" class="detail">loaded · model-visible call</text>
+
+    <path d="M673 210V238H489V210" fill="none" stroke="#FF7A6B" stroke-width="2.5" stroke-dasharray="7 7"/>
+    <path d="M483 212l6-12 6 12z" fill="#FF7A6B"/>
+    <rect x="545" y="224" width="72" height="28" rx="14" fill="#251817"/>
+    <text x="581" y="243" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#FF7A6B">findings</text>
+
+    <path d="M1065 212V286H133V212" fill="none" stroke="#5EE39A" stroke-width="2.5"/>
+    <path d="M127 214l6-12 6 12z" fill="#5EE39A"/>
+    <rect x="453" y="272" width="294" height="28" rx="14" fill="#10231B"/>
+    <text x="600" y="291" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#5EE39A">verified capability · ready for the next loop</text>
+  </g>
+</svg>

@@ -463,9 +463,16 @@ class HarnessAdapter(abc.ABC):
         run_dir: Path,
         role_id: str,
         launch_mode: str,
+        session_generation: int = 1,
     ) -> None:
-        """Prepare private, adapter-owned state before a Run starts."""
+        """Prepare private state for the role's next Session generation."""
 
+        if (
+            isinstance(session_generation, bool)
+            or not isinstance(session_generation, int)
+            or session_generation < 1
+        ):
+            raise IntegrityError("session generation must be a positive integer")
         self.assert_launch_mode(launch_mode)
 
     def worker_environment_names(

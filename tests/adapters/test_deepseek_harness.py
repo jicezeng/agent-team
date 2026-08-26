@@ -334,6 +334,61 @@ def test_dsh_role_installs_and_freezes_workspace_bundle_on_activation(
         "export const name = 'candidate'\n"
     )
 
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+        session_generation=2,
+    )
+    second_context = launch_context(
+        adapter=adapter,
+        session_policy="fresh",
+        session_ref=None,
+        session_generation=2,
+        model="deepseek-official/deepseek-v4-flash",
+        reasoning_effort="high",
+        launch_mode="interactive",
+        workspace=str(workspace),
+        turn_dir=str(run_dir / "turns" / "turn-0002"),
+    )
+    second_launch = adapter.prepare_launch(second_context)
+    second_home = Path(second_launch.env["DSH_HOME"])
+    second_installed = (
+        second_home
+        / "profiles"
+        / "agent-team"
+        / "node_modules"
+        / "@example"
+        / "candidate"
+    )
+
+    assert second_home != home
+    assert second_launch.env["AGENT_TEAM_DSH_PLUGIN_GENERATION"] == "2"
+    assert second_launch.env["AGENT_TEAM_DSH_PLUGIN_SHA256"] != launch.env[
+        "AGENT_TEAM_DSH_PLUGIN_SHA256"
+    ]
+    assert (second_installed / "lib" / "index.js").read_text(
+        encoding="utf-8"
+    ) == "export const name = 'changed-after-activation'\n"
+    assert (installed / "lib" / "index.js").read_text(encoding="utf-8") == (
+        "export const name = 'candidate'\n"
+    )
+    assert json.loads(
+        (second_home / "agent-team-home.json").read_text(encoding="utf-8")
+    )["session_generation"] == 2
+    generated = second_home / "settings.yaml"
+    generated.write_text("generated: true\n", encoding="utf-8")
+    generated.chmod(0o644)
+    adapter.finalize_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    assert stat.S_IMODE(generated.stat().st_mode) == 0o600
+    assert (installed / "lib" / "index.js").read_text(encoding="utf-8") == (
+        "export const name = 'candidate'\n"
+    )
+
     snapshot_path = home / "agent-team-dsh-plugin.json"
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     snapshot["content_sha256"] = "0" * 64

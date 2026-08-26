@@ -93,9 +93,14 @@ External business Turn inside an existing Run:
    UNSTARTED Run, not a second Agent-Team permission decision.
    When a DSH role must validate a Workspace bundle produced during the Run,
    add `--role-dsh-plugin ROLE=WORKSPACE_PATH`. The directory must exist at
-   `init`; Agent-Team copies and freezes its current contents in that role's
-   private DSH Profile on the first route. Tell the role to call the installed
-   tool directly. Never ask it to launch a nested DSH or manage tmux itself.
+   `init`, and the role must use the `fresh` Session policy. Agent-Team copies
+   and freezes its current contents in a generation-private DSH Profile on
+   every route to the role. A Validator source finding routes back through the
+   normal Developer and review loop; the next Validator route receives a new
+   immutable artifact generation while prior generations remain preserved. Do
+   not Block merely because the installed generation contains a source defect.
+   Tell the role to call the installed tool directly. Never ask it to launch a
+   nested DSH or manage tmux itself.
 7. Choose the observability policy. Use `full` only when every business role is
    External and Origin is control-plane only; otherwise use `standard`.
 8. Resolve `agent-team` once to its canonical absolute executable path and

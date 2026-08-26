@@ -838,12 +838,19 @@ def _recover_run_strict(run_dir: Path) -> dict[str, Any]:
             and projection.team.roles[projection.current_role].binding == "external"
             else ()
         )
+        active = active_runtime(run_dir, team=projection.team)
         for role_id in active_roles:
             role = projection.team.roles[role_id]
+            generation = (
+                active["session_generation"]
+                if active is not None and active["role_id"] == role_id
+                else session_launch_state(run_dir, role)[0]
+            )
             get_adapter(role.adapter or "").prepare_run_state(
                 run_dir=run_dir,
                 role_id=role.role_id,
                 launch_mode=role.launch_mode or "headless",
+                session_generation=generation,
             )
         tmux = ensure_workers(
             run_dir,

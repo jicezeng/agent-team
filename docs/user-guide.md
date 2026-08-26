@@ -313,14 +313,15 @@ such as `CLAUDE_CODE_USE_BEDROCK=1` plus `AWS_REGION`. Pass only the Route ID an
 model on the Agent-Team command line; never put tokens, headers, or endpoint
 credentials in the Request, Protocol, or CLI.
 
-`--role-dsh-plugin` is DSH-only and declares one installable bundle directory
-inside the Run worktree. Agent-Team does not snapshot it at `init`: when that
-role is first routed, the Adapter copies the then-current package into the
-role-private DSH Profile, freezes its file manifest and SHA-256, and includes
-the hash in the LaunchSpec. This lets a Developer and Reviewer finish a plugin
-before a fresh Validator Agent is created, without nesting DSH from a
-model-facing Bash process. The frozen copy remains authoritative for that role
-for the rest of the Run; testing a later revision requires a new Run.
+`--role-dsh-plugin` is DSH-only, requires that role to use the `fresh` Session
+policy, and declares one installable bundle directory inside the Run worktree.
+Agent-Team does not snapshot it at `init`. On every route to that role, the
+Adapter creates a new Session generation, copies the then-current package into
+a generation-private DSH Profile, freezes its file manifest and SHA-256, and
+includes both the generation and hash in the LaunchSpec environment. Earlier
+generation homes and snapshots remain unchanged. This lets a Validator send a
+source finding back to Developer, then receive the newly reviewed revision in
+a fresh Session in the same Run; no nested DSH or continuation Run is needed.
 
 Before the first interactive Claude Code Run in a worktree, establish Claude's
 own workspace trust in a normal terminal:

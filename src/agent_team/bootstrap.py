@@ -140,6 +140,10 @@ def parse_role_spec(
             raise InvalidArgument(
                 f"--role-dsh-plugin requires a deepseek-harness role: {role_id}"
             )
+        if session_policy != "fresh":
+            raise InvalidArgument(
+                f"--role-dsh-plugin requires a fresh Session policy: {role_id}"
+            )
         if workspace is None:
             raise InvalidArgument("DSH plugin validation requires a workspace")
         supplied = Path(dsh_plugin)
@@ -318,6 +322,7 @@ def _preflight_start(run_dir: Path) -> Team:
             run_dir=run_dir,
             role_id=initial.role_id,
             launch_mode=initial.launch_mode or "headless",
+            session_generation=1,
         )
     return team
 

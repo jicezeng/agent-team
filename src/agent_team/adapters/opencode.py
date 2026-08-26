@@ -631,11 +631,13 @@ class OpenCodeAdapter(HarnessAdapter):
         run_dir: Path,
         role_id: str,
         launch_mode: str,
+        session_generation: int = 1,
     ) -> None:
         super().prepare_run_state(
             run_dir=run_dir,
             role_id=role_id,
             launch_mode=launch_mode,
+            session_generation=session_generation,
         )
         for directory in self._home_hierarchy(run_dir, role_id):
             ensure_dir(directory)

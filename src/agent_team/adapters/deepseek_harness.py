@@ -161,7 +161,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 "runtime": runtime,
                 "tui": self._plugin_contract(),
                 "runtime_isolation": {
-                    "dsh_home": "private per Run and role",
+                    "dsh_home": "private per Run, role, and Session generation",
                     "credentials": "environment only",
                     "user_profiles": "not loaded",
                     "session_resume": "native agents.resume over private JSONL",
@@ -232,36 +232,127 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         install_managed_dsh_runtime()
 
     @staticmethod
-    def _home(run_dir: Path, role_id: str) -> Path:
+    def _run_home_root(run_dir: Path) -> Path:
         digest = sha256_bytes(os.fsencode(str(run_dir.resolve(strict=True))))
         return (
             fixed_state_dir()
             / "harness-homes"
             / "deepseek-harness"
             / digest
-            / role_id
         )
 
     @classmethod
-    def _home_hierarchy(cls, run_dir: Path, role_id: str) -> tuple[Path, ...]:
-        home = cls._home(run_dir, role_id)
-        state = fixed_state_dir()
+    def _home(
+        cls,
+        run_dir: Path,
+        role_id: str,
+        session_generation: int = 1,
+    ) -> Path:
+        if (
+            isinstance(session_generation, bool)
+            or not isinstance(session_generation, int)
+            or session_generation < 1
+        ):
+            raise IntegrityError("DeepSeek Harness Session generation is invalid")
+        root = cls._run_home_root(run_dir)
+        # Keep generation 1 at its historical location so a blocked or active
+        # Run created by an older Agent-Team release remains resumable after an
+        # upgrade. Later generations are immutable sibling homes rather than
+        # replacements for the first installed artifact.
+        if session_generation == 1:
+            return root / role_id
         return (
+            root
+            / "session-generations"
+            / role_id
+            / f"{session_generation:08d}"
+        )
+
+    @classmethod
+    def _home_hierarchy(
+        cls,
+        run_dir: Path,
+        role_id: str,
+        session_generation: int = 1,
+    ) -> tuple[Path, ...]:
+        home = cls._home(run_dir, role_id, session_generation)
+        state = fixed_state_dir()
+        common = (
             state,
             state / "harness-homes",
             state / "harness-homes" / "deepseek-harness",
-            home.parent,
-            home,
+            cls._run_home_root(run_dir),
         )
+        if session_generation == 1:
+            return (*common, home)
+        generations = cls._run_home_root(run_dir) / "session-generations"
+        return (*common, generations, generations / role_id, home)
 
     @classmethod
-    def _marker(cls, run_dir: Path, role_id: str) -> dict[str, Any]:
-        return {
+    def _marker(
+        cls,
+        run_dir: Path,
+        role_id: str,
+        session_generation: int = 1,
+    ) -> dict[str, Any]:
+        marker: dict[str, Any] = {
             "schema_version": 1,
             "adapter": "deepseek-harness",
             "run_dir": str(run_dir.resolve(strict=True)),
             "role_id": role_id,
         }
+        if session_generation > 1:
+            marker.update(
+                {
+                    "schema_version": 2,
+                    "session_generation": session_generation,
+                }
+            )
+        return marker
+
+    @classmethod
+    def _prepared_homes(
+        cls,
+        run_dir: Path,
+        role_id: str,
+    ) -> tuple[tuple[int, Path], ...]:
+        prepared: list[tuple[int, Path]] = []
+        first = cls._home(run_dir, role_id, 1)
+        if path_entry_exists(first):
+            prepared.append((1, first))
+        generation_root = cls._run_home_root(run_dir) / "session-generations" / role_id
+        if not path_entry_exists(generation_root):
+            return tuple(prepared)
+        info = generation_root.lstat()
+        if generation_root.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise IntegrityError(
+                f"DeepSeek Harness generation root is unsafe: {generation_root}"
+            )
+        for home in sorted(generation_root.iterdir(), key=lambda item: item.name):
+            if (
+                len(home.name) < 8
+                or not home.name.isascii()
+                or not home.name.isdigit()
+            ):
+                raise IntegrityError(
+                    f"DeepSeek Harness generation entry is invalid: {home}"
+                )
+            generation = int(home.name)
+            if (
+                generation < 2
+                or home.name != f"{generation:08d}"
+                or home != cls._home(run_dir, role_id, generation)
+            ):
+                raise IntegrityError(
+                    f"DeepSeek Harness generation entry is invalid: {home}"
+                )
+            home_info = home.lstat()
+            if home.is_symlink() or not stat.S_ISDIR(home_info.st_mode):
+                raise IntegrityError(
+                    f"DeepSeek Harness generation home is unsafe: {home}"
+                )
+            prepared.append((generation, home))
+        return tuple(prepared)
 
     @staticmethod
     def _profile_manifest(
@@ -470,15 +561,21 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         run_dir: Path,
         role_id: str,
         launch_mode: str,
+        session_generation: int = 1,
     ) -> None:
         super().prepare_run_state(
             run_dir=run_dir,
             role_id=role_id,
             launch_mode=launch_mode,
+            session_generation=session_generation,
         )
         # Validate the exact managed runtime before creating any role state.
         managed_dsh_runtime_report()
-        for directory in self._home_hierarchy(run_dir, role_id):
+        for directory in self._home_hierarchy(
+            run_dir,
+            role_id,
+            session_generation,
+        ):
             ensure_dir(directory)
             info = directory.lstat()
             if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
@@ -486,9 +583,9 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                     f"DeepSeek Harness state directory is unsafe: {directory}"
                 )
             directory.chmod(0o700)
-        home = self._home(run_dir, role_id)
+        home = self._home(run_dir, role_id, session_generation)
         marker_path = home / "agent-team-home.json"
-        marker = self._marker(run_dir, role_id)
+        marker = self._marker(run_dir, role_id, session_generation)
         if path_entry_exists(marker_path):
             if read_json(marker_path) != marker:
                 raise IntegrityError(
@@ -555,7 +652,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
 
     def _assert_home(self, context: TurnLaunchContext) -> Path:
         run_dir = Path(context.turn_dir).parent.parent
-        home = self._home(run_dir, context.role_id)
+        home = self._home(run_dir, context.role_id, context.session_generation)
         try:
             info = home.lstat()
         except OSError as exc:
@@ -566,7 +663,9 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
             raise IntegrityError("DeepSeek Harness state is unsafe")
         if read_json(home / "agent-team-home.json") != self._marker(
-            run_dir, context.role_id
+            run_dir,
+            context.role_id,
+            context.session_generation,
         ):
             raise AgentTeamError(
                 "HARNESS_STATE_NOT_PREPARED",
@@ -732,6 +831,9 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             env["AGENT_TEAM_DSH_PLUGIN_SHA256"] = read_json(candidate_state)[
                 "content_sha256"
             ]
+            env["AGENT_TEAM_DSH_PLUGIN_GENERATION"] = str(
+                context.session_generation
+            )
         return LaunchSpec(
             adapter_id=self.adapter_id,
             argv=tuple(argv),
@@ -766,58 +868,67 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             role_id=role_id,
             launch_mode=launch_mode,
         )
-        home = self._home(run_dir, role_id)
-        try:
-            info = home.lstat()
-        except OSError as exc:
+        homes = self._prepared_homes(run_dir, role_id)
+        if not homes:
             raise IntegrityError(
-                f"DeepSeek Harness state is unavailable: {home}"
-            ) from exc
-        if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
-            raise IntegrityError(f"DeepSeek Harness state is unsafe: {home}")
-        if read_json(home / "agent-team-home.json") != self._marker(run_dir, role_id):
-            raise IntegrityError(
-                f"DeepSeek Harness state is not owned by this Run: {home}"
+                f"DeepSeek Harness state is unavailable for role: {role_id}"
             )
-        resolved_home = home.resolve(strict=True)
         resolved_runtime = managed_dsh_runtime().resolve(strict=True)
-        for directory, child_dirs, files in os.walk(
-            home,
-            topdown=False,
-            followlinks=False,
-        ):
-            current = Path(directory)
-            for name in (*child_dirs, *files):
-                path = current / name
-                path_info = path.lstat()
-                if stat.S_ISLNK(path_info.st_mode):
-                    try:
-                        target = path.resolve(strict=True)
-                        if not (
-                            target.is_relative_to(resolved_home)
-                            or target.is_relative_to(resolved_runtime)
-                        ):
-                            raise ValueError
-                    except (OSError, RuntimeError, ValueError) as exc:
+        for generation, home in homes:
+            info = home.lstat()
+            if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise IntegrityError(f"DeepSeek Harness state is unsafe: {home}")
+            if read_json(home / "agent-team-home.json") != self._marker(
+                run_dir,
+                role_id,
+                generation,
+            ):
+                raise IntegrityError(
+                    f"DeepSeek Harness state is not owned by this Run: {home}"
+                )
+            resolved_home = home.resolve(strict=True)
+            for directory, child_dirs, files in os.walk(
+                home,
+                topdown=False,
+                followlinks=False,
+            ):
+                current = Path(directory)
+                for name in (*child_dirs, *files):
+                    path = current / name
+                    path_info = path.lstat()
+                    if stat.S_ISLNK(path_info.st_mode):
+                        try:
+                            target = path.resolve(strict=True)
+                            if not (
+                                target.is_relative_to(resolved_home)
+                                or target.is_relative_to(resolved_runtime)
+                            ):
+                                raise ValueError
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            raise IntegrityError(
+                                "DeepSeek Harness state symlink escapes managed "
+                                f"roots: {path}"
+                            ) from exc
+                        continue
+                    if stat.S_ISDIR(path_info.st_mode):
+                        path.chmod(0o700)
+                    elif stat.S_ISREG(path_info.st_mode):
+                        path.chmod(
+                            0o700
+                            if stat.S_IMODE(path_info.st_mode) & 0o111
+                            else 0o600
+                        )
+                    else:
                         raise IntegrityError(
-                            f"DeepSeek Harness state symlink escapes managed roots: {path}"
-                        ) from exc
-                    continue
-                if stat.S_ISDIR(path_info.st_mode):
-                    path.chmod(0o700)
-                elif stat.S_ISREG(path_info.st_mode):
-                    path.chmod(
-                        0o700
-                        if stat.S_IMODE(path_info.st_mode) & 0o111
-                        else 0o600
-                    )
-                else:
-                    raise IntegrityError(
-                        f"DeepSeek Harness state entry is unsafe: {path}"
-                    )
-            current.chmod(0o700)
-        for directory in self._home_hierarchy(run_dir, role_id):
-            directory.chmod(0o700)
+                            f"DeepSeek Harness state entry is unsafe: {path}"
+                        )
+                current.chmod(0o700)
+            for directory in self._home_hierarchy(
+                run_dir,
+                role_id,
+                generation,
+            ):
+                directory.chmod(0o700)
 
     def has_prepared_run_state(
         self,
@@ -827,7 +938,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         launch_mode: str,
     ) -> bool:
         self.assert_launch_mode(launch_mode)
-        return path_entry_exists(self._home(run_dir, role_id))
+        return bool(self._prepared_homes(run_dir, role_id))
 
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None:
         del record

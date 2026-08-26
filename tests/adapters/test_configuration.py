@@ -822,6 +822,13 @@ def test_role_spec_freezes_workspace_local_dsh_plugin_path(
 
     assert role.dsh_plugin == "packages/candidate"
 
+    with pytest.raises(InvalidArgument, match="fresh Session policy"):
+        parse_role_spec(
+            "validator=deepseek-harness:resume:full-access",
+            dsh_plugin=str(plugin),
+            workspace=workspace,
+        )
+
     outside = tmp_path / "outside"
     outside.mkdir()
     with pytest.raises(InvalidArgument, match="inside"):

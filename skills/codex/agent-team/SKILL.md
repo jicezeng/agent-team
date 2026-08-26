@@ -121,10 +121,14 @@ existing Run:
    Claude's separate dangerous-mode prompt.
    When a DSH role must validate a Workspace bundle produced during the Run,
    add `--role-dsh-plugin <role>=<workspace-package-directory>`. The directory
-   must exist at `init`; Agent-Team copies and freezes its current contents in
-   that role's private DSH Profile on the first route to the role. Tell the role
-   to call the installed tool directly. Never ask it to launch a nested DSH or
-   manage tmux itself.
+   must exist at `init`, and the role must use the `fresh` Session policy.
+   Agent-Team copies and freezes its current contents in a generation-private
+   DSH Profile on every route to the role. A Validator source finding routes
+   back through the normal Developer and review loop; the next Validator route
+   receives a new immutable artifact generation while prior generations remain
+   preserved. Do not Block merely because the installed generation contains a
+   source defect. Tell the role to call the installed tool directly. Never ask
+   it to launch a nested DSH or manage tmux itself.
 7. Choose and record the observability policy. Use `full` only when every
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.

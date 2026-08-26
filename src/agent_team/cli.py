@@ -849,7 +849,7 @@ def _install_skill() -> dict[str, Any]:
         },
         "deepseek_harness_tui": {
             "source": str(tui_source),
-            "installation": "private per Run and role",
+            "installation": "private per Run, role, and Session generation",
         },
     }
 

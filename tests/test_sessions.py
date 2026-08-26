@@ -10,6 +10,7 @@ from agent_team.turns import (
     commit_session,
     load_session,
     mark_session_unavailable,
+    session_generation_for_route,
     session_launch_state,
 )
 
@@ -139,3 +140,31 @@ def test_resume_session_remains_stable_across_five_later_turns(
         assert committed["updated_turn_id"] == runtime["turn_id"]
 
     assert session_launch_state(run_dir, role) == (1, session_ref)
+
+
+def test_fresh_self_handoff_prepares_the_next_inflight_generation(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    (run_dir / "sessions").mkdir(parents=True)
+    role = Role(
+        "validator",
+        "external",
+        "deepseek-harness",
+        "fresh",
+        "full-access",
+        "b" * 64,
+    )
+    runtime = {
+        "turn_id": "turn-0001",
+        "role_id": role.role_id,
+        "session_generation": 1,
+    }
+
+    assert session_launch_state(run_dir, role) == (1, None)
+    assert session_generation_for_route(
+        run_dir,
+        role,
+        source_runtime=runtime,
+    ) == 2
+    assert session_generation_for_route(run_dir, role) == 1

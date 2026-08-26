@@ -77,10 +77,12 @@ class _BootstrapAdapter:
         run_dir: Path,
         role_id: str,
         launch_mode: str,
+        session_generation: int = 1,
     ) -> None:
         assert run_dir.name.startswith("at-")
         assert role_id in {"developer", "reviewer"}
         assert launch_mode == self.launch_mode
+        assert session_generation >= 1
 
     def finalize_run_state(
         self,

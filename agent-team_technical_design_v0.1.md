@@ -2025,7 +2025,9 @@ class HarnessAdapter(Protocol):
     ) -> dict[str, dict[str, list[str]]]: ...
     def resolve_launch_options(...) -> HarnessLaunchOptions: ...
     def assert_launch_options(self, options: HarnessLaunchOptions) -> None: ...
-    def prepare_run_state(..., launch_mode: str) -> None: ...
+    def prepare_run_state(
+        ..., launch_mode: str, session_generation: int
+    ) -> None: ...
     def finalize_run_state(..., launch_mode: str) -> None: ...
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec: ...
     def interactive_session_refs(self, launch: LaunchSpec) -> set[str]: ...
@@ -2043,7 +2045,8 @@ class HarnessAdapter(Protocol):
 `TurnLaunchContext` 包含当前 Turn、Prompt、External Session Policy、已持久化
 Session Ref、Launch Mode、Launch Profile 名称与冻结 Hash，以及 `team.json` 中冻结
 的 Harness Options。`profile_mappings()` 提供 Probe 与 Fingerprint 使用的固定
-Start/Resume 映射；`prepare_run_state()` 在 Kickoff 前准备 Mode 所需的私有状态；
+Start/Resume 映射；`prepare_run_state()` 在 Kickoff 或路由提交前准备目标 Session
+Generation 所需的私有状态；
 `finalize_run_state()` 只在对应受管进程组已证明 Quiescent 后收口 Adapter 私有状态；
 `prepare_launch()` 先复核 Mode、Hash 与 Options，再生成可序列化的 argv、环境、
 stdin、Adapter ID、`prompt_file`、可空 `expected_session_ref` 和输出格式，不创建
@@ -2333,12 +2336,15 @@ Adapter 对 `headless` 在 Kickoff 前返回 `LAUNCH_MODE_UNSUPPORTED`，不降�
 `agent-team install` 在固定账号状态目录安装精确版本
 `@deepseek-ai/dsh@0.1.0-rc.6`，校验 npm integrity、Lockfile、Package Version、
 `dsh --version`、Executable 和 Symlink Root，再通过原子 Rename 发布。Runtime 不加入
-`PATH`，也不使用用户的 DSH CLI/Profile。每个 Run/Role 另有私有 `DSH_HOME`，其中只
-加载 `@deepseek-ai/dsh-base` 与 bundled `@agent-team/dsh-tui`；若 Role 声明
-`--role-dsh-plugin`，首次向它路由前还会复制当时的 Workspace Bundle 到私有 Profile，
-冻结逐文件 Manifest 与内容 Hash。受管 Runtime、bundled TUI 资产 Manifest 和
-Integrity 进入 Profile Fingerprint；Role-local Bundle Hash 进入其不可变 Snapshot 与
-LaunchSpec，不在 `init` 时提前冻结尚待 Developer 修改的源码。
+`PATH`，也不使用用户的 DSH CLI/Profile。每个 Run/Role/Session Generation 另有私有
+`DSH_HOME`，其中只加载 `@deepseek-ai/dsh-base` 与 bundled `@agent-team/dsh-tui`。为兼容
+既有 Run，Generation 1 保留历史 `<run-digest>/<role-id>` 路径；Generation 2 起使用
+`<run-digest>/session-generations/<role-id>/<generation>`。若 Role 声明
+`--role-dsh-plugin`，它必须使用 `fresh`，每次向它路由前复制当时的 Workspace Bundle
+到本代私有 Profile，冻结逐文件 Manifest 与内容 Hash，旧代 Home 不覆盖也不删除。
+受管 Runtime、bundled TUI 资产 Manifest 和 Integrity 进入 Profile Fingerprint；
+Role-local Bundle Hash 与 Generation 进入不可变 LaunchSpec 证据，不在 `init` 时提前
+冻结尚待 Developer 修改的源码。
 
 启动合同：
 
@@ -2358,8 +2364,10 @@ LaunchSpec，不在 `init` 时提前冻结尚待 Developer 修改的源码。
 - 私有 Profile 禁用 HMR、Telemetry、Title LLM、Permission Switching、User Profile、
   Skill、Subagent、Workflow 与 Ralph，并把 Session 保存为私有无压缩 JSONL；
 - 可选 Workspace Bundle 每个 Role 至多一个，必须是 Worktree 内真实目录和可安装的
-  DSH Bundle；首次路由时复制并冻结。该 Role 直接调用已加载工具，不从模型 Bash
-  启动子 DSH，也不把父 DSH Credential 交给工具进程；
+  DSH Bundle，且 Role 必须使用 `fresh`；每一代首次路由时复制并冻结。Validator finding
+  可 Handoff 给 Developer，修复和复审后再次路由到同一 Validator 时创建下一代 Home、
+  Session 和快照。该 Role 直接调用已加载工具，不从模型 Bash 启动子 DSH，也不把父
+  DSH Credential 交给工具进程；
 - TUI 保留 `dsh> ` 输入循环，显示公开 Text、有限 Tool 状态和不含正文的
   `[thinking]` 标记，不把 private reasoning text 输出到 PTY；
 - 只有首轮结构化 `turn/end.reason.kind=completed` 才进入 `dsh> ` 输入循环；首轮 Quota、
@@ -4463,6 +4471,9 @@ sequenceDiagram
 49. 分别损坏已存在的 `runner.json` / `launch-authorized.json`，以及在身份被引用或许可消费证据出现后删除它们：恢复只进入 `CORRUPTED` 并清理可验证进程，不把它们视为首次缺失，也不产生第二次授权。
 50. 在首次 Snapshot 中放入不支持的文件类型、消失的 untracked 路径或嵌套仓库目录：`start` 释放本 Run Owner 并拒绝 Kickoff，修正后可对同一 UNSTARTED Run 重试。
 51. Kickoff 后分别让 Before 与 After Snapshot 失败：Before 不伪造 Turn / Block 而进入 `CORRUPTED`，After 使用既有 Turn 产生 Recovery Block；合法 Event 后 Deadline 先到则创建唯一的无 Before Facts 技术 Turn。
+52. Fresh DSH Plugin Role 第一代冻结后提出 finding，正常回环 Developer / Reviewer，
+    再次路由时创建下一代私有 Home、Session 和 Plugin Hash；旧代文件保持不变，恢复和
+    清理同时校验所有已准备代次，且旧版 Generation 1 路径仍可继续使用。
 52. 损坏 `root.json` 后，`unlock` 仍能从固定状态目录定位 Owner；只有 `--expect-run` 匹配且所有身份清空时可删除精确 Owner，错误 Run 或活进程时均拒绝。
 53. 对可启动 UNSTARTED、被其他 Owner 阻塞的 UNSTARTED、正常 Running、可恢复运行时缺失、Origin Unclaimed、Origin Exited、Blocked、Completed、Cancelled、终态清理仍活跃、终态进程已结束但 Owner 遗留、Recovery Required 和 Corrupted 分别调用 Status / Diagnose，确认 Health、Resume Policy 与 Recommended Action 的固定映射一致；终态 Owner 遗留建议 `RUN_RECOVER`，执行后只安全释放 Owner，不产生 Worker 或 Event。
 54. 分别制造 Owner、Journal、Turn、Runner 身份、Session 和 Workspace Facts 故障：`diagnose --json` 返回固定码、检查对象与可用证据路径，不解析 Pane / 普通日志，也不调用 Recover。

@@ -33,6 +33,11 @@ Describe natural-language routing, loops, disagreement handling, and required
 rechecks. Every route is selected by the active role and committed through the
 CLI. Do not compile business verdicts into machine state.
 
+For a Fresh DeepSeek Harness role with a Workspace Plugin, route source
+findings through the normal repair/review loop. Each later route creates a new
+immutable Plugin and Session generation in the same Run; freezing one
+generation is not by itself a reason to Block.
+
 For External roles, state that the Agent-Team Skill is guidance only and has no
 terminal arguments. Require exactly one `$AGENT_TEAM_CLI handoff`, `complete`,
 or `block` command at the end of each Turn; repeated Skill invocations do not

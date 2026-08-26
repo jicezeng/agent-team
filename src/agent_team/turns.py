@@ -786,6 +786,30 @@ def session_launch_state(
     return (current["generation"] + 1 if current else 1), None
 
 
+def session_generation_for_route(
+    run_dir: Path,
+    role: Role,
+    *,
+    source_runtime: dict[str, Any] | None = None,
+) -> int:
+    """Return the generation whose private state a route must prepare.
+
+    A Fresh role routed to itself stages its Handoff before its current
+    Session snapshot is committed. Account for that in-flight generation so
+    preflight prepares the next immutable artifact rather than rechecking the
+    current one.
+    """
+
+    generation, _ = session_launch_state(run_dir, role)
+    if (
+        source_runtime is not None
+        and source_runtime["role_id"] == role.role_id
+        and role.session_policy == "fresh"
+    ):
+        generation = max(generation, source_runtime["session_generation"] + 1)
+    return generation
+
+
 def commit_session(
     run_dir: Path,
     *,
@@ -1422,6 +1446,11 @@ def stage_external_action_locked(
                     run_dir=run_dir,
                     role_id=target.role_id,
                     launch_mode=target.launch_mode or "headless",
+                    session_generation=session_generation_for_route(
+                        run_dir,
+                        target,
+                        source_runtime=runtime,
+                    ),
                 )
             except AgentTeamError as exc:
                 after_probe = dt.datetime.now(dt.timezone.utc)
@@ -1600,6 +1629,11 @@ def deliver_outbox_locked(
                         run_dir=run_dir,
                         role_id=target.role_id,
                         launch_mode=target.launch_mode or "headless",
+                        session_generation=session_generation_for_route(
+                            run_dir,
+                            target,
+                            source_runtime=runtime,
+                        ),
                     )
                 except AgentTeamError as exc:
                     after_probe = dt.datetime.now(dt.timezone.utc)

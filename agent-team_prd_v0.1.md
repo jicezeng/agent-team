@@ -131,6 +131,10 @@ v0.1 不承诺：
   Workflow。Session 以私有 JSONL Store 持久化并通过 DSH 原生 Resume 恢复；认证只从
   环境读取。DSH Sandbox 只约束文件写效果，因此 `default` 与
   `trusted-workspace` 都限制写入 Workspace，但不限制读取、进程或网络；
+- 声明 Workspace DSH Plugin 的验证 Role 必须使用 `fresh`；每次进入该 Role 都按
+  Session Generation 创建新的私有 Home，冻结当前候选 Bundle，保留旧代制品和证据。
+  Validator finding 走正常 Handoff 与修复/复审循环，同一 Run 可用下一代制品继续验证，
+  不得仅因上一代已冻结而要求 Block 或新 Run；
 - Codex 的管理员 Requirements 与 Claude 的 Enterprise Managed Settings 都不能由
   Agent-Team 覆盖，不进入 `launch_profile_sha256`，也不能由 `doctor` 证明云端或最终
   有效内容；Codex Requirements 可以约束并拒绝不兼容的 Sandbox、Approval、Permission
@@ -245,6 +249,8 @@ v0.1 的发布验收必须同时满足：
   创建 restricted External Role Run，并收到该 Role 的 Completion；同时必须作为
   interactive External Role 完成原生 Session 创建、跨进程 Resume 和多 Turn 正式闭环；
 - Finding 能经历提出、接受或有证据拒绝、修复、同 Session 复审和关闭；
+- DSH Validator 对冻结制品提出 finding 后，可在同一 Run 经 Developer 和 Reviewer
+  回环，再以新 Session Generation 验证新制品，同时旧代 Hash 与 Profile 保持可审计；
 - 至少五个后续 Turn 可恢复同一 External Role Session；
 - 生命周期、完整性、崩溃点、进程身份、Workspace Ownership 和观察接口测试通过；
 - 每个完成的 Full Audit External Turn 都有可验证 Manifest 锚点，且无未声明截断；

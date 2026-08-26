@@ -341,6 +341,57 @@ def test_external_handoff_to_origin_is_idempotent_claimable_and_completable(
     assert read_owner(workspace) is None
 
 
+def test_fresh_external_self_handoff_prepares_next_session_generation(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-generation-aware-handoff",
+    )
+    prepared: list[int] = []
+
+    class RecordingAdapter:
+        @staticmethod
+        def assert_profile(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        @staticmethod
+        def prepare_run_state(
+            *,
+            run_dir: Path,
+            role_id: str,
+            launch_mode: str,
+            session_generation: int,
+        ) -> None:
+            assert run_dir.name == "at-worker-generation-aware-handoff"
+            assert role_id == "developer"
+            assert launch_mode == "headless"
+            prepared.append(session_generation)
+
+    monkeypatch.setattr(
+        "agent_team.turns.get_adapter",
+        lambda _adapter_id: RecordingAdapter(),
+    )
+    payload = run_dir / "turns" / runtime["turn_id"] / "handoff-source.md"
+    payload.write_text("# Handoff\n\nReview generation two.\n", encoding="utf-8")
+
+    with locked_run(run_dir, exclusive=True):
+        accepted = stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="handoff",
+            source_file=payload,
+            to_role="developer",
+        )
+
+    assert accepted["code"] == "ACTION_ACCEPTED"
+    assert prepared == [2]
+
+
 def test_terminal_owner_release_rechecks_supervisor_and_runner_group(
     workspace: Path,
     request_protocol: tuple[Path, Path],

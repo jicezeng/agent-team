@@ -38,6 +38,7 @@ from .turns import (
     load_runtime,
     runtime_for_input,
     save_runtime,
+    session_generation_for_route,
     validate_payload_contract,
 )
 from .util import (
@@ -626,6 +627,11 @@ def origin_action(
                             run_dir=run_dir,
                             role_id=target.role_id,
                             launch_mode=target.launch_mode or "headless",
+                            session_generation=session_generation_for_route(
+                                run_dir,
+                                target,
+                                source_runtime=runtime,
+                            ),
                         )
                     except AgentTeamError as exc:
                         after_probe = dt.datetime.now(dt.timezone.utc)
@@ -853,6 +859,11 @@ def origin_resume(
                 run_dir=run_dir,
                 role_id=target.role_id,
                 launch_mode=target.launch_mode or "headless",
+                session_generation=session_generation_for_route(
+                    run_dir,
+                    target,
+                    source_runtime=runtime,
+                ),
             )
         allowed, reason = can_create_business_turn(run_dir, projection)
         if not allowed:

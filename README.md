@@ -111,8 +111,13 @@ upgrades, and development installs.
 
 > [!WARNING]
 > External roles default to `full-access` (YOLO). Agent-Team asks for explicit
-> confirmation once for each new Run. Choose `default` or `trusted-workspace`
-> when host containment is required; see [permission profiles](docs/user-guide.md#permission-profiles).
+> confirmation once for each new Run and records it through
+> `--confirm-full-access`. Managed Harness policy may still narrow or extend
+> the effective boundary. Choose `default` or `trusted-workspace` when host
+> containment is required; see [permission profiles](docs/user-guide.md#permission-profiles).
+
+Codex private profiles set `features.hooks=false`; `launch_profile_sha256` and
+`agent-team doctor` expose the frozen local contract, not overriding Managed policy.
 
 ## Observe and manage
 

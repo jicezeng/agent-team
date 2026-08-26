@@ -334,11 +334,13 @@ class CodexAdapter(HarnessAdapter):
         run_dir: Path,
         role_id: str,
         launch_mode: str,
+        session_generation: int = 1,
     ) -> None:
         super().prepare_run_state(
             run_dir=run_dir,
             role_id=role_id,
             launch_mode=launch_mode,
+            session_generation=session_generation,
         )
         options = self._role_launch_options(run_dir, role_id)
         self.assert_launch_prerequisites(options)

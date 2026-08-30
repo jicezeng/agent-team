@@ -49,10 +49,11 @@ Resume submit and wait in the same command.
 
 An input headed `Agent-Team Automatic Continuation` means the preceding
 invocation exhausted a structurally verified output budget before it submitted
-an action. It is a new counted Turn for the same `resume` Role, not a Block
-Resume or added authority. Inspect the live worktree and preserved Session,
-continue only the unfinished responsibility, and still end with exactly one
-formal action.
+an action. It is a new counted Turn for the same Role, not a Block Resume or
+added authority. A `resume` role reuses the exact available Session; a `fresh`
+role receives a new generation and reconstructs from durable inputs. Inspect
+the live worktree and preserved evidence, continue only the unfinished
+responsibility, and still end with exactly one formal action.
 
 ## Never
 

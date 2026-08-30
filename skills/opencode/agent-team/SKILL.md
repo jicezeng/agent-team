@@ -91,16 +91,41 @@ External business Turn inside an existing Run:
    trust prompt, and exit. Never edit its trust state or accept it with tmux
    input; `HARNESS_WORKSPACE_TRUST_REQUIRED` is a pre-Kickoff retry of the same
    UNSTARTED Run, not a second Agent-Team permission decision.
-   When a DSH role must validate a Workspace bundle produced during the Run,
-   add `--role-dsh-plugin ROLE=WORKSPACE_PATH`. The directory must exist at
-   `init`, and the role must use the `fresh` Session policy. Agent-Team copies
-   and freezes its current contents in a generation-private DSH Profile on
-   every route to the role. A Validator source finding routes back through the
-   normal Developer and review loop; the next Validator route receives a new
-   immutable artifact generation while prior generations remain preserved. Do
-   not Block merely because the installed generation contains a source defect.
-   Tell the role to call the installed tool directly. Never ask it to launch a
-   nested DSH or manage tmux itself.
+   When a DSH role must consume a Workspace bundle produced during the Run,
+   add `--role-dsh-plugin ROLE=WORKSPACE_PATH`. The directory may be absent at
+   `init`, allowing another role to create it from scratch, but it must stay
+   inside the Workspace and the candidate-bound role must use the `fresh`
+   Session policy. Agent-Team freezes its current contents in a
+   generation-private DSH Profile on every route. A source finding follows the
+   natural-language Protocol; a later candidate route receives a new immutable
+   generation while earlier generations remain preserved. Do not Block merely
+   because an installed generation contains a source defect.
+   Route preflight happens before an Outbox or Handoff Event is accepted. If
+   the CLI returns `ROUTE_PREFLIGHT_REJECTED`, the current Turn still owns the
+   token: treat the reported artifact problem as a finding and submit a new
+   payload choosing the next Protocol-valid role. A failed CLI call is not the
+   Turn's formal action. Frozen Profile drift or a change after Outbox staging
+   still fails closed. If the frozen candidate reaches the real DSH loader but
+   the Harness exits before the candidate-bound Fresh Session is durably initialized,
+   Agent-Team does not interpret loader prose or duplicate DSH plugin rules. It
+   consumes that failed generation and commits an `Agent-Team Candidate
+   Activation Finding` Handoff, structurally marked
+   `system_handoff_reason=candidate_activation_failed`, back to the sending role.
+   That role inspects the preserved trace and chooses the next Protocol-valid
+   action, or Blocks only when the evidence proves an infrastructure failure.
+   Tell the candidate-bound role to call the installed tool directly. Never ask
+   it to launch a nested DSH or manage tmux itself.
+   A supported Harness may structurally report that a model Turn exhausted its
+   output budget. Agent-Team can then create a counted same-role continuation
+   only for a durably initialized Session and only before any Block exists. A
+   `resume` role reuses that Session; a `fresh` role receives a new generation
+   and reconstructs from durable inputs. Ordinary crashes, permissions, audit
+   truncation, exhausted limits, and existing Outboxes still Block. Configured
+   Turn and wall-time limits bound repeated continuations; Git mutation is not a
+   progress signal. Do
+   not encode task-specific recovery commands or ask the Origin to Resume this
+   pre-Block system Handoff. Budget enough Turns for such continuations when a
+   selected model may need multiple long responses.
 7. Choose the observability policy. Use `full` only when every business role is
    External and Origin is control-plane only; otherwise use `standard`.
 8. Resolve `agent-team` once to its canonical absolute executable path and
@@ -154,6 +179,10 @@ nested Harness processes. Save the Run ID and immediately call:
   business work and call `wait-origin` without the old Claim.
 - Make `origin-complete` or `origin-block` the final tool call of the Agent
   turn. Every Block returns to the user before any Resume.
+- A Journal Handoff with `continuation_reason=output_limit` is a pre-Block,
+  same-role system continuation, not a user-authorized Resume. Continue the
+  normal wait loop; if any Block is later committed, the rule above applies
+  without exception.
 - On the next user Agent turn, first call `wait-origin` with the prior Claim to
   finalize an `exited` Origin runtime before doing new business work.
 - Resume only after a new explicit user instruction:

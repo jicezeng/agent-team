@@ -12,6 +12,7 @@ from .state import validate_state_root
 from .util import (
     atomic_json,
     atomic_write,
+    is_uncommitted_atomic_temporary,
     parse_rfc3339,
     read_json,
     read_regular,
@@ -20,9 +21,7 @@ from .util import (
     resolve_run_path,
     rfc3339,
     sha256_bytes,
-    is_uncommitted_atomic_temporary,
 )
-
 
 EVENT_TYPES = {"kickoff", "handoff", "complete", "block", "resume", "cancel"}
 BLOCK_REASONS = {
@@ -55,7 +54,11 @@ EVENT_OPTIONAL = {
     "limit_reason",
     "request_id",
     "cancel_reason",
+    "continuation_reason",
+    "continuation_no_progress_count",
+    "system_handoff_reason",
 }
+SYSTEM_HANDOFF_REASONS = frozenset({"candidate_activation_failed"})
 EVENT_FILE_RE = re.compile(r"^(\d+)-([a-z]+-\d+)\.json$")
 TURN_ID_RE = re.compile(r"^turn-\d{4,}$")
 
@@ -126,11 +129,41 @@ def _validate_event_schema(event: dict[str, Any], path: Path) -> None:
         "resume": set(),
         "cancel": {"request_id", "cancel_reason"},
     }
-    if type_fields != expected_fields[event["event_type"]]:
+    allowed_type_fields = {frozenset(expected_fields[event["event_type"]])}
+    if event["event_type"] == "handoff":
+        allowed_type_fields.add(frozenset({"continuation_reason"}))
+        allowed_type_fields.add(
+            frozenset(
+                {"continuation_reason", "continuation_no_progress_count"}
+            )
+        )
+        allowed_type_fields.add(frozenset({"system_handoff_reason"}))
+    if frozenset(type_fields) not in allowed_type_fields:
         raise IntegrityError(
             f"invalid type-specific fields in {path.name}: "
             f"{sorted(type_fields)}"
         )
+    if "continuation_reason" in event:
+        if event["continuation_reason"] != "output_limit":
+            raise IntegrityError(f"invalid continuation reason: {path.name}")
+        if "continuation_no_progress_count" in event:
+            # Compatibility only: new events no longer infer role progress from
+            # Git-visible mutations, but already committed v0.1 events remain
+            # readable and immutable.
+            no_progress = event["continuation_no_progress_count"]
+            if (
+                isinstance(no_progress, bool)
+                or not isinstance(no_progress, int)
+                or no_progress < 0
+                or no_progress > 1
+            ):
+                raise IntegrityError(
+                    f"invalid continuation no-progress count: {path.name}"
+                )
+    if "system_handoff_reason" in event and (
+        event["system_handoff_reason"] not in SYSTEM_HANDOFF_REASONS
+    ):
+        raise IntegrityError(f"invalid system Handoff reason: {path.name}")
     seq = event["event_seq"]
     if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
         raise IntegrityError(f"invalid event sequence: {path.name}")
@@ -346,6 +379,47 @@ def _validate_transition(
     if event_type == "handoff":
         if to_role is None or created >= deadline:
             raise IntegrityError("handoff target or deadline is invalid")
+        if event.get("continuation_reason") is not None:
+            if (
+                to_role != owner
+                or from_role != owner
+                or team.roles[owner].binding != "external"
+            ):
+                raise IntegrityError("automatic continuation routing is invalid")
+            result_is_persisted = runtime.get("termination_kind") is not None
+            if result_is_persisted and (
+                runtime.get("executor") != "worker"
+                or runtime["termination_kind"] != "output_limit"
+                or runtime.get("agent_execution_started") is not True
+                or runtime.get("adapter_completed") is not False
+                or runtime.get("permission_required") is not False
+                or runtime.get("group_quiescent") is not True
+                or not isinstance(runtime.get("observed_session_ref"), str)
+                or not runtime["observed_session_ref"]
+            ):
+                raise IntegrityError(
+                    "automatic continuation process evidence is invalid"
+                )
+        if event.get("system_handoff_reason") is not None:
+            role = team.roles[owner]
+            if (
+                event["system_handoff_reason"] != "candidate_activation_failed"
+                or to_role == owner
+                or role.binding != "external"
+                or role.session_policy != "fresh"
+            ):
+                raise IntegrityError("system Handoff routing is invalid")
+            result_is_persisted = runtime.get("termination_kind") is not None
+            if result_is_persisted and (
+                runtime.get("executor") != "worker"
+                or runtime.get("termination_kind") != "crash"
+                or runtime.get("adapter_completed") is not False
+                or runtime.get("permission_required") is not False
+                or runtime.get("group_quiescent") is not True
+                or not isinstance(runtime.get("observed_session_ref"), str)
+                or not runtime["observed_session_ref"]
+            ):
+                raise IntegrityError("system Handoff process evidence is invalid")
         seq = runtime.get("business_turn_seq")
         if not isinstance(seq, int) or seq >= team.max_turns:
             raise IntegrityError("handoff was committed after max_turns")

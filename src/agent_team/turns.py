@@ -15,6 +15,7 @@ from .errors import (
     IntegrityError,
     InvalidArgument,
     RecoverableTurnArtifactError,
+    RoutePreflightError,
 )
 from .gitfacts import (
     capture_workspace_facts,
@@ -123,8 +124,10 @@ TERMINATION_KINDS = {
     "signal",
     "crash",
     "action",
+    "output_limit",
     "unknown",
 }
+AUTOMATIC_CONTINUATION_REASONS = frozenset({"output_limit"})
 TURN_ID_RE = re.compile(r"^turn-\d{4,}$")
 INPUT_EVENT_ID_RE = re.compile(r"^(kickoff|handoff|resume|block)-\d{4,}$")
 TERMINAL_EVENT_ID_RE = re.compile(r"^(handoff|complete|block|resume|cancel)-\d{4,}$")
@@ -906,6 +909,53 @@ def mark_session_unavailable(
     return value
 
 
+def record_candidate_activation_failure_session(
+    run_dir: Path,
+    *,
+    role: Role,
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    """Consume a Fresh Session generation that failed during candidate activation."""
+
+    if role.binding != "external" or role.session_policy != "fresh":
+        raise IntegrityError(
+            "candidate activation failure requires a Fresh External role"
+        )
+    current = load_session(run_dir, role)
+    generation = runtime["session_generation"]
+    if current and current["generation"] > generation:
+        raise IntegrityError("older turn cannot consume a newer session generation")
+    if current is None and generation != 1:
+        raise IntegrityError("first failed session generation must be generation 1")
+    if current and current["generation"] == generation:
+        if (
+            current["status"] == "unavailable"
+            and current["updated_turn_id"] == runtime["turn_id"]
+            and current["unavailable_reason"] == "candidate_activation_failed"
+        ):
+            return current
+        raise IntegrityError("session generation was already committed")
+    if current and generation != current["generation"] + 1:
+        raise IntegrityError("failed session generation skipped")
+    value = {
+        "schema_version": 1,
+        "role_id": role.role_id,
+        "adapter": role.adapter,
+        "generation": generation,
+        "status": "unavailable",
+        "session_ref": None,
+        "effective_launch_profile": role.launch_profile,
+        "effective_launch_profile_sha256": role.launch_profile_sha256,
+        "created_turn_id": runtime["turn_id"],
+        "updated_turn_id": runtime["turn_id"],
+        "unavailable_reason": "candidate_activation_failed",
+        "updated_at": rfc3339(),
+    }
+    validate_session(value, role=role)
+    atomic_json(run_dir / "sessions" / f"{role.role_id}.json", value)
+    return value
+
+
 def _copy_event_input(
     run_dir: Path,
     turn_dir: Path,
@@ -1162,6 +1212,13 @@ def render_turn_prompt(
             "\nThis turn's direct input is a Resume payload. Within the scope of the "
             "referenced Block, its user instruction outranks PROTOCOL.md and older "
             "handoffs, but it cannot change REQUEST.md or immutable run configuration.\n"
+        )
+    elif event.get("system_handoff_reason") == "candidate_activation_failed":
+        input_note = (
+            "\nThis turn's direct input is a structured Agent-Team system Handoff, "
+            "not an action selected by the candidate-bound role. Inspect its frozen "
+            "evidence and choose the next protocol-valid action; do not infer a "
+            "product verdict from the system classification alone.\n"
         )
     recovery_note = ""
     if session_recovered_as_fresh:
@@ -1467,6 +1524,14 @@ def stage_external_action_locked(
                         created_at=rfc3339(after_probe),
                     )
                     return {"code": "TEAM_BLOCKED", "event": event}
+                if isinstance(exc, RoutePreflightError):
+                    raise AgentTeamError(
+                        "ROUTE_PREFLIGHT_REJECTED",
+                        f"target role {target.role_id!r} cannot be activated: "
+                        f"{exc.code}: {exc.message}. No Outbox or Handoff Event "
+                        "was staged; the current Turn still owns the token and "
+                        "may select another Protocol-valid route.",
+                    ) from exc
                 event = commit_technical_block_locked(
                     run_dir,
                     runtime=runtime,
@@ -1540,15 +1605,119 @@ def _system_facts_markdown(
     return "\n".join(lines).encode("utf-8")
 
 
+def _automatic_continuation_payload(
+    runtime: dict[str, Any],
+    *,
+    reason: str,
+    session_policy: str,
+    next_session_generation: int,
+) -> bytes:
+    if session_policy == "resume":
+        continuity = (
+            "The next Turn reuses the exact available Harness Session and its "
+            "durable conversational context."
+        )
+    elif session_policy == "fresh":
+        continuity = (
+            "The role's Fresh policy creates a new Session generation. Reconstruct "
+            "unfinished work only from the authoritative Request, Protocol, current "
+            "input, preserved trace, and live worktree; do not assume hidden context "
+            "from the exhausted Session."
+        )
+    else:
+        raise IntegrityError("automatic continuation has invalid Session policy")
+    return (
+        "# Agent-Team Automatic Continuation\n\n"
+        f"- From: {runtime['role_id']}\n"
+        f"- To: {runtime['role_id']}\n"
+        f"- Reason: {reason}\n\n"
+        "## Requested next action\n\n"
+        "The preceding Harness invocation reached its explicit output budget "
+        "before it could submit a formal action. Inspect the live worktree and "
+        "the preserved Session, continue the same role responsibility without "
+        "redoing completed work, and finish this new Turn with exactly one "
+        "formal handoff, complete, or block action.\n\n"
+        "## Decision rationale\n\n"
+        "Agent-Team proved a dedicated recoverable Harness termination, a "
+        "quiescent process group, and a durably initialized Session. Continuing "
+        "the same role consumes another configured business Turn and grants no "
+        f"new authority. {continuity}\n\n"
+        "## Evidence\n\n"
+        f"- Previous Turn: {runtime['turn_id']}\n"
+        f"- Termination kind: {runtime['termination_kind']}\n"
+        f"- Process exit code: {runtime['process_exit_code']}\n"
+        f"- Exhausted Session generation: {runtime['session_generation']}\n"
+        f"- Session ref recorded: {runtime['observed_session_ref']}\n"
+        f"- Session policy: {session_policy}\n"
+        f"- Next Session generation: {next_session_generation}\n"
+    ).encode()
+
+
+def _candidate_activation_payload(
+    runtime: dict[str, Any],
+    *,
+    to_role: str,
+    failure: str,
+) -> bytes:
+    return (
+        "# Agent-Team Candidate Activation Finding\n\n"
+        "- Generated by: Agent-Team\n"
+        f"- From: {runtime['role_id']}\n"
+        f"- To: {to_role}\n"
+        "- Reason: candidate_activation_failed\n\n"
+        "## Requested next action\n\n"
+        "The candidate-bound Harness exited before the assigned role obtained "
+        "a usable Session. Inspect the preserved candidate and Turn diagnostics. "
+        "Choose the next Protocol-valid action from that evidence. If it proves "
+        "that no valid route can make progress, submit a Block; otherwise hand "
+        "off the concrete finding to a capable role. Do not claim that validation "
+        "passed.\n\n"
+        "## Decision rationale\n\n"
+        "Agent-Team proved that the Runner group is quiescent, a frozen candidate "
+        "generation was bound to this role, and the Harness failed before its "
+        "Session was durably initialized. Candidate semantics remain the team's "
+        "responsibility; Agent-Team did not parse terminal prose or duplicate the "
+        "Harness's plugin rules.\n\n"
+        "## Evidence\n\n"
+        f"- Structural classification: {failure}\n"
+        f"- Failed Turn: {runtime['turn_id']}\n"
+        f"- Candidate Session generation: {runtime['session_generation']}\n"
+        f"- Process exit code: {runtime['process_exit_code']}\n"
+        f"- Termination kind: {runtime['termination_kind']}\n"
+        f"- Full trace: turns/{runtime['turn_id']}/process/stream.jsonl\n"
+    ).encode()
+
+
 def deliver_outbox_locked(
     run_dir: Path,
     *,
     runtime: dict[str, Any],
     allow_after_capture: bool = False,
+    automatic_continuation_reason: str | None = None,
+    candidate_activation_failure: str | None = None,
+    candidate_activation_return_role: str | None = None,
 ) -> dict[str, Any]:
     team = load_team(run_dir)
     turn_dir = run_dir / "turns" / runtime["turn_id"]
     outbox = load_outbox(turn_dir)
+    if (
+        automatic_continuation_reason is not None
+        and automatic_continuation_reason not in AUTOMATIC_CONTINUATION_REASONS
+    ):
+        raise IntegrityError("unsupported automatic continuation reason")
+    automatic_continuation = automatic_continuation_reason is not None
+    candidate_activation_handoff = candidate_activation_failure is not None
+    if candidate_activation_handoff != (
+        candidate_activation_return_role is not None
+    ):
+        raise IntegrityError("candidate activation Handoff fields are incomplete")
+    if automatic_continuation and candidate_activation_handoff:
+        raise IntegrityError("automatic Handoff modes conflict")
+    if candidate_activation_handoff and (
+        candidate_activation_return_role not in team.roles
+        or candidate_activation_return_role == runtime["role_id"]
+    ):
+        raise IntegrityError("candidate activation Handoff target is invalid")
     if (
         outbox is not None
         and outbox["action"] == "handoff"
@@ -1570,6 +1739,47 @@ def deliver_outbox_locked(
                 f"orphaned Outbox payload is unreadable: {exc}",
                 f"turns/{runtime['turn_id']}/outbox-payload.md",
             ) from exc
+    if automatic_continuation and outbox is not None:
+        return commit_technical_block_locked(
+            run_dir,
+            runtime=runtime,
+            reason="recovery",
+            message=(
+                "Harness reported a recoverable output limit after a formal "
+                "Outbox was already staged. Agent-Team cannot guess whether to "
+                "deliver the action or continue the interrupted role."
+            ),
+        )
+    if candidate_activation_handoff and outbox is not None:
+        return commit_technical_block_locked(
+            run_dir,
+            runtime=runtime,
+            reason="recovery",
+            message=(
+                "Candidate activation failed after a formal Outbox was already "
+                "staged. Agent-Team cannot replace the role's chosen action with "
+                "a system Handoff."
+            ),
+        )
+    if automatic_continuation:
+        role = team.roles[runtime["role_id"]]
+        session = load_session(run_dir, role)
+        if (
+            role.binding != "external"
+            or session is None
+            or session["status"] != "available"
+            or session["generation"] != runtime["session_generation"]
+            or session["session_ref"] != runtime["observed_session_ref"]
+        ):
+            return commit_technical_block_locked(
+                run_dir,
+                runtime=runtime,
+                reason="recovery",
+                message=(
+                    "Harness reported a recoverable output limit, but the exact "
+                    "exhausted role Session is not durably available."
+                ),
+            )
 
     def delivery_guard() -> tuple[dict[str, Any] | None, str | None]:
         projection = scan_journal(run_dir)
@@ -1594,7 +1804,9 @@ def deliver_outbox_locked(
                 ),
                 None,
             )
-        if outbox is not None and outbox["action"] == "handoff":
+        if automatic_continuation or candidate_activation_handoff or (
+            outbox is not None and outbox["action"] == "handoff"
+        ):
             allowed, reason = can_create_business_turn(
                 run_dir,
                 projection,
@@ -1615,7 +1827,16 @@ def deliver_outbox_locked(
                     ),
                     None,
                 )
-            target = team.roles[outbox["to_role"]]
+            target_role_id = (
+                runtime["role_id"]
+                if automatic_continuation
+                else (
+                    candidate_activation_return_role
+                    if candidate_activation_handoff
+                    else outbox["to_role"]
+                )
+            )
+            target = team.roles[target_role_id]
             if target.binding == "external":
                 try:
                     adapter = get_adapter(target.adapter or "")
@@ -1786,13 +2007,77 @@ def deliver_outbox_locked(
             ),
             created_at=decision_at,
         )
-    if outbox is None:
+    if candidate_activation_handoff:
+        assert candidate_activation_failure is not None
+        assert candidate_activation_return_role is not None
+        payload = _candidate_activation_payload(
+            runtime,
+            to_role=candidate_activation_return_role,
+            failure=candidate_activation_failure,
+        )
+        payload += _system_facts_markdown(run_dir, runtime, before, after)
+        guarded, decision_at = delivery_guard()
+        if guarded is not None:
+            return guarded
+        assert decision_at is not None
+        projection = scan_journal(run_dir)
+        seq, _ = next_event_identity(projection, "handoff")
+        relative = (
+            f"handoffs/{seq:04d}-{runtime['role_id']}-candidate-activation-"
+            f"to-{candidate_activation_return_role}.md"
+        )
+        return commit_event(
+            run_dir,
+            event_type="handoff",
+            payload_relative=relative,
+            payload_bytes=payload,
+            from_role=runtime["role_id"],
+            to_role=candidate_activation_return_role,
+            turn_id=runtime["turn_id"],
+            created_at=decision_at,
+            extra={"system_handoff_reason": "candidate_activation_failed"},
+        )
+    if outbox is None and not automatic_continuation:
         return commit_technical_block_locked(
             run_dir,
             runtime=runtime,
             reason="no_action",
             message="Harness exited normally without handoff, complete, or block.",
             created_at=decision_at,
+        )
+    if automatic_continuation:
+        role = team.roles[runtime["role_id"]]
+        next_generation = session_generation_for_route(
+            run_dir,
+            role,
+            source_runtime=runtime,
+        )
+        payload = _automatic_continuation_payload(
+            runtime,
+            reason=automatic_continuation_reason or "",
+            session_policy=role.session_policy or "",
+            next_session_generation=next_generation,
+        )
+        payload += _system_facts_markdown(run_dir, runtime, before, after)
+        guarded, decision_at = delivery_guard()
+        if guarded is not None:
+            return guarded
+        assert decision_at is not None
+        projection = scan_journal(run_dir)
+        seq, _ = next_event_identity(projection, "handoff")
+        relative = (
+            f"handoffs/{seq:04d}-{runtime['role_id']}-automatic-continuation.md"
+        )
+        return commit_event(
+            run_dir,
+            event_type="handoff",
+            payload_relative=relative,
+            payload_bytes=payload,
+            from_role=runtime["role_id"],
+            to_role=runtime["role_id"],
+            turn_id=runtime["turn_id"],
+            created_at=decision_at,
+            extra={"continuation_reason": automatic_continuation_reason},
         )
     try:
         payload = read_regular(resolve_run_path(run_dir, outbox["payload_path"]))

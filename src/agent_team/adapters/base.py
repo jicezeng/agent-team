@@ -556,6 +556,40 @@ class HarnessAdapter(abc.ABC):
         )
         return ExitInfo(normal, "normal_completion" if normal else "abnormal_exit")
 
+    def recoverable_termination_kind(
+        self,
+        result: ProcessResult,
+        evidence: AdapterEvidenceSnapshot,
+    ) -> str | None:
+        """Map a trusted Harness stop to a generic automatic-continuation kind.
+
+        Adapters must use structural process evidence such as a dedicated exit
+        status from a frozen launcher. Human terminal text is not evidence.
+        """
+
+        del result, evidence
+        return None
+
+    def candidate_activation_failure(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        session_generation: int,
+        result: ProcessResult,
+        evidence: AdapterEvidenceSnapshot,
+    ) -> str | None:
+        """Classify a structurally proven candidate-bound activation failure.
+
+        This hook must not interpret terminal prose or duplicate candidate
+        business rules.  An Adapter may return a concise factual summary only
+        when its private state proves that a bound candidate failed before the
+        Harness established the Session needed for the role to inspect it.
+        """
+
+        del run_dir, role_id, session_generation, result, evidence
+        return None
+
     def executable(self) -> Path:
         located = shutil.which(self.executable_name)
         if not located:

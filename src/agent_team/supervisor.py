@@ -23,6 +23,7 @@ from .adapters.base import (
     AdapterEvidence,
     AdapterEvidenceSnapshot,
     LaunchSpec,
+    ProcessResult,
     StreamRecord,
 )
 from .errors import IntegrityError
@@ -291,6 +292,7 @@ def validate_supervisor(value: dict[str, Any]) -> dict[str, Any]:
             "signal",
             "crash",
             "action",
+            "output_limit",
             "unknown",
         }
     ):
@@ -1143,6 +1145,24 @@ async def supervise_turn(
         termination_kind = "signal"
     else:
         termination_kind = "crash"
+    recoverable_kind = None
+    if termination_kind == "crash":
+        recoverable_kind = adapter.recoverable_termination_kind(
+            ProcessResult(
+                process_exit_code=return_code,
+                termination_kind=termination_kind,
+                group_quiescent=group_quiescent,
+                launch_mode=launch.launch_mode,
+            ),
+            recorder.evidence,
+        )
+    if recoverable_kind is not None:
+        if recoverable_kind != "output_limit":
+            raise IntegrityError(
+                f"adapter returned unsupported recoverable termination kind: "
+                f"{recoverable_kind}"
+            )
+        termination_kind = recoverable_kind
     snapshot.update(recorder.evidence.to_json())
     snapshot.update(
         {

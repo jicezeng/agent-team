@@ -41,7 +41,6 @@ from .worker import (
     validate_role_snapshot,
 )
 
-
 RECOMMENDED_ACTIONS = {
     "START",
     "WAIT",
@@ -469,6 +468,14 @@ def _journal_tail(event: dict[str, Any] | None) -> dict[str, Any] | None:
             "created_at",
         }
     }
+    if "continuation_reason" in event:
+        result["continuation_reason"] = event["continuation_reason"]
+        if "continuation_no_progress_count" in event:
+            result["continuation_no_progress_count"] = event[
+                "continuation_no_progress_count"
+            ]
+    if "system_handoff_reason" in event:
+        result["system_handoff_reason"] = event["system_handoff_reason"]
     result["created_at"] = rfc3339(parse_rfc3339(event["created_at"]))
     return result
 

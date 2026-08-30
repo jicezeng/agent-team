@@ -35,8 +35,13 @@ RUNNER_PID = 700_002
 
 
 class _BootstrapAdapter:
-    def __init__(self, launch_mode: str = "headless") -> None:
+    def __init__(
+        self,
+        launch_mode: str = "headless",
+        session_policy: str = "fresh",
+    ) -> None:
         self.launch_mode = launch_mode
+        self.session_policy = session_policy
 
     def probe(self) -> SimpleNamespace:
         return SimpleNamespace(
@@ -52,7 +57,7 @@ class _BootstrapAdapter:
         launch_mode: str = "headless",
     ) -> None:
         assert profile == PROFILE
-        assert session_policy == "fresh"
+        assert session_policy == self.session_policy
         assert expected_hash == PROFILE_HASH
         assert launch_mode == self.launch_mode
 
@@ -113,9 +118,10 @@ def _external_run(
     include_external_reviewer: bool = False,
     observability: ObservabilityPolicy | None = None,
     launch_mode: str = "headless",
+    developer_session_policy: str = "fresh",
 ) -> tuple[Path, dict[str, Any]]:
     request, protocol = request_protocol
-    adapter = _BootstrapAdapter(launch_mode)
+    adapter = _BootstrapAdapter(launch_mode, developer_session_policy)
     monkeypatch.setattr("agent_team.bootstrap.get_adapter", lambda _adapter: adapter)
     monkeypatch.setattr("agent_team.ownership.get_adapter", lambda _adapter: adapter)
     monkeypatch.setattr("agent_team.bootstrap.tmux_executable", lambda: "/bin/true")
@@ -139,7 +145,7 @@ def _external_run(
             "developer",
             "external",
             "codex",
-            "fresh",
+            developer_session_policy,
             PROFILE,
             PROFILE_HASH,
             launch_mode=launch_mode,
@@ -211,7 +217,7 @@ def _launch_spec(
         cwd=str(run_dir.parent.parent.parent),
         env={
             "AGENT_TEAM_RUN_ID": run_dir.name,
-            "AGENT_TEAM_ROLE_ID": "developer",
+            "AGENT_TEAM_ROLE_ID": runtime["role_id"],
             "AGENT_TEAM_TURN_ID": turn_id,
             "AGENT_TEAM_RUN_DIR": str(run_dir),
             "AGENT_TEAM_TURN_DIR": str(run_dir / "turns" / turn_id),
@@ -266,6 +272,10 @@ def _persist_process_chain(
     runtime_phase: str = "running",
     runtime_has_identities: bool = True,
     write_capture: bool = True,
+    adapter_completed: bool | None = None,
+    process_exit_code: int | None = None,
+    termination_kind: str | None = None,
+    observed_session_ref: str | None = None,
 ) -> tuple[LaunchSpec, dict[str, Any]]:
     turn_dir = run_dir / "turns" / runtime["turn_id"]
     process_dir = turn_dir / "process"
@@ -297,6 +307,22 @@ def _persist_process_chain(
     if write_runner:
         atomic_json(process_dir / "runner.json", runner, immutable=True)
     supervisor = _base_snapshot(runtime["turn_id"], NONCE)
+    completed = execution_started if adapter_completed is None else adapter_completed
+    effective_exit_code = (
+        (0 if supervisor_state == "finished" else None)
+        if process_exit_code is None
+        else process_exit_code
+    )
+    effective_termination_kind = (
+        ("normal" if supervisor_state == "finished" else None)
+        if termination_kind is None
+        else termination_kind
+    )
+    effective_session_ref = (
+        f"thread-{runtime['turn_id']}"
+        if observed_session_ref is None and execution_started
+        else observed_session_ref
+    )
     supervisor.update(
         {
             "state": supervisor_state,
@@ -306,12 +332,10 @@ def _persist_process_chain(
             "runner_pgid": RUNNER_PID if supervisor_has_runner else None,
             "runner_start_id": ("runner-start" if supervisor_has_runner else None),
             "agent_execution_started": execution_started,
-            "adapter_completed": execution_started,
-            "observed_session_ref": (
-                f"thread-{runtime['turn_id']}" if execution_started else None
-            ),
-            "process_exit_code": 0 if supervisor_state == "finished" else None,
-            "termination_kind": ("normal" if supervisor_state == "finished" else None),
+            "adapter_completed": completed,
+            "observed_session_ref": effective_session_ref,
+            "process_exit_code": effective_exit_code,
+            "termination_kind": effective_termination_kind,
             "group_quiescent": supervisor_state == "finished",
             "updated_at": rfc3339(),
         }

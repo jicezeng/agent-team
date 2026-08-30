@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from agent_team.adapters.base import ExitInfo
 from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
 )
-from agent_team.errors import AgentTeamError
+from agent_team.errors import AgentTeamError, IntegrityError, RoutePreflightError
 from agent_team.journal import scan_journal
 from agent_team.management import unlock_workspace
 from agent_team.observation import derive_observation
@@ -18,8 +19,11 @@ from agent_team.ownership import release_terminal_owner_locked
 from agent_team.state import locked_run, read_owner
 from agent_team.trace import finalize_turn_trace
 from agent_team.turns import (
+    create_business_turn_locked,
     iter_runtimes,
     load_runtime,
+    load_session,
+    session_launch_state,
     stage_external_action_locked,
 )
 from agent_team.util import atomic_json, atomic_write, read_json, rfc3339
@@ -32,6 +36,106 @@ from ._support import (
     _external_run,
     _persist_process_chain,
 )
+
+
+class _OutputLimitAdapter:
+    def __init__(self, prepared_generations: list[int]) -> None:
+        self.prepared_generations = prepared_generations
+
+    @staticmethod
+    def finalize_run_state(**_kwargs: object) -> None:
+        return None
+
+    @staticmethod
+    def classify_result(_result: object, _evidence: object) -> ExitInfo:
+        return ExitInfo(False, "output budget reached")
+
+    @staticmethod
+    def recoverable_termination_kind(result: object, evidence: object) -> str | None:
+        if (
+            getattr(result, "process_exit_code", None) == 75
+            and getattr(result, "group_quiescent", False)
+            and getattr(evidence, "agent_execution_started", False)
+            and not getattr(evidence, "adapter_completed", True)
+            and getattr(evidence, "observed_session_ref", None)
+        ):
+            return "output_limit"
+        return None
+
+    @staticmethod
+    def assert_profile(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def prepare_run_state(self, *, session_generation: int, **_kwargs: object) -> None:
+        self.prepared_generations.append(session_generation)
+
+
+class _RoutePreflightAdapter:
+    def __init__(self, rejected_role: str | None = None) -> None:
+        self.rejected_role = rejected_role
+
+    @staticmethod
+    def assert_profile(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def prepare_run_state(self, *, role_id: str, **_kwargs: object) -> None:
+        if role_id == self.rejected_role:
+            raise RoutePreflightError(
+                "DSH_PLUGIN_INVALID",
+                "workspace DSH plugin is not an installable bundle",
+            )
+
+
+class _CandidateActivationAdapter:
+    @staticmethod
+    def assert_profile(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    @staticmethod
+    def prepare_run_state(**_kwargs: object) -> None:
+        return None
+
+    @staticmethod
+    def finalize_run_state(**_kwargs: object) -> None:
+        return None
+
+    @staticmethod
+    def classify_result(result: object, evidence: object) -> ExitInfo:
+        normal = (
+            getattr(result, "process_exit_code", None) == 0
+            and getattr(result, "termination_kind", None) == "normal"
+            and getattr(result, "group_quiescent", False)
+            and getattr(evidence, "agent_execution_started", False)
+            and getattr(evidence, "adapter_completed", False)
+        )
+        return ExitInfo(normal, "normal_completion" if normal else "abnormal_exit")
+
+    @staticmethod
+    def recoverable_termination_kind(
+        _result: object,
+        _evidence: object,
+    ) -> str | None:
+        return None
+
+    @staticmethod
+    def candidate_activation_failure(
+        *,
+        result: object,
+        **_kwargs: object,
+    ) -> str | None:
+        if getattr(result, "termination_kind", None) != "crash":
+            return None
+        return "candidate-bound Harness exited before Session initialization"
+
+
+def _install_output_limit_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[int]:
+    prepared_generations: list[int] = []
+    adapter = _OutputLimitAdapter(prepared_generations)
+    monkeypatch.setattr("agent_team.worker.get_adapter", lambda _adapter: adapter)
+    monkeypatch.setattr("agent_team.turns.get_adapter", lambda _adapter: adapter)
+    return prepared_generations
 
 
 def test_normal_exit_without_outbox_commits_stalled_no_action(
@@ -62,6 +166,237 @@ def test_normal_exit_without_outbox_commits_stalled_no_action(
     assert persisted["phase"] == "finalized"
     assert persisted["outcome"] == "stalled"
     assert persisted["workspace_facts_after_sha256"] is not None
+
+
+def test_output_limit_automatically_continues_available_resume_session(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _install_output_limit_adapter(monkeypatch)
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-output-limit-continuation",
+        max_turns=4,
+        developer_session_policy="resume",
+    )
+    session_ref = f"thread-{runtime['turn_id']}"
+
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            runtime,
+            adapter_completed=False,
+            process_exit_code=75,
+            termination_kind="output_limit",
+            observed_session_ref=session_ref,
+        )
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+        next_runtime, continuity_error = create_business_turn_locked(
+            run_dir,
+            role_id="developer",
+            executor="worker",
+        )
+
+    assert event is not None
+    assert event["event_type"] == "handoff"
+    assert event["from_role"] == event["to_role"] == "developer"
+    assert event["continuation_reason"] == "output_limit"
+    assert "continuation_no_progress_count" not in event
+    assert prepared
+    assert set(prepared) == {1}
+    persisted = load_runtime(
+        run_dir / "turns" / runtime["turn_id"],
+        team=scan_journal(run_dir).team,
+    )
+    assert persisted["phase"] == "finalized"
+    assert persisted["outcome"] == "success"
+    assert persisted["workspace_facts_after_sha256"] is not None
+    assert next_runtime is not None
+    assert continuity_error is None
+    assert next_runtime["session_generation"] == runtime["session_generation"]
+    assert derive_observation(run_dir)["journal_tail"]["continuation_reason"] == (
+        "output_limit"
+    )
+    assert "continuation_no_progress_count" not in derive_observation(run_dir)[
+        "journal_tail"
+    ]
+    assert "output budget" in (
+        run_dir / "turns" / next_runtime["turn_id"] / "input.md"
+    ).read_text(encoding="utf-8")
+
+    event_path = (
+        run_dir
+        / "events"
+        / f"{event['event_seq']:04d}-{event['event_id']}.json"
+    )
+    legacy_event = read_json(event_path)
+    legacy_event["continuation_no_progress_count"] = 1
+    atomic_json(event_path, legacy_event)
+    assert scan_journal(run_dir).status == "RUNNING"
+    assert derive_observation(run_dir)["journal_tail"][
+        "continuation_no_progress_count"
+    ] == 1
+
+    source_runtime_path = run_dir / "turns" / runtime["turn_id"] / "runtime.json"
+    tampered_runtime = read_json(source_runtime_path)
+    tampered_runtime["termination_kind"] = "crash"
+    atomic_json(source_runtime_path, tampered_runtime)
+    with pytest.raises(
+        IntegrityError,
+        match="automatic continuation process evidence is invalid",
+    ):
+        scan_journal(run_dir)
+
+
+def test_repeated_output_limits_continue_until_configured_limits(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_output_limit_adapter(monkeypatch)
+    run_dir, first_runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-output-limit-configured-limits",
+        max_turns=4,
+        developer_session_policy="resume",
+    )
+    session_ref = f"thread-{first_runtime['turn_id']}"
+
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            first_runtime,
+            adapter_completed=False,
+            process_exit_code=75,
+            termination_kind="output_limit",
+            observed_session_ref=session_ref,
+        )
+        first_event = finalize_external_turn_locked(
+            run_dir,
+            first_runtime,
+            allow_after_capture=True,
+        )
+        second_runtime, continuity_error = create_business_turn_locked(
+            run_dir,
+            role_id="developer",
+            executor="worker",
+        )
+        assert second_runtime is not None
+        _persist_process_chain(
+            run_dir,
+            second_runtime,
+            adapter_completed=False,
+            process_exit_code=75,
+            termination_kind="output_limit",
+            observed_session_ref=session_ref,
+        )
+        second_event = finalize_external_turn_locked(
+            run_dir,
+            second_runtime,
+            allow_after_capture=True,
+        )
+
+    assert first_event is not None
+    assert first_event["event_type"] == "handoff"
+    assert continuity_error is None
+    assert second_event is not None
+    assert second_event["event_type"] == "handoff"
+    assert second_event["continuation_reason"] == "output_limit"
+    assert scan_journal(run_dir).status == "RUNNING"
+
+
+def test_output_limit_respects_turn_limit(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_output_limit_adapter(monkeypatch)
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-output-limit-turn-limit",
+        max_turns=1,
+        developer_session_policy="resume",
+    )
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            runtime,
+            adapter_completed=False,
+            process_exit_code=75,
+            termination_kind="output_limit",
+        )
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+
+    assert event is not None
+    assert event["event_type"] == "block"
+    assert event["block_reason"] == "limit"
+    assert event.get("limit_reason") == "max_turns"
+
+
+def test_output_limit_continues_fresh_role_in_new_session_generation(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _install_output_limit_adapter(monkeypatch)
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-output-limit-fresh-continuation",
+        max_turns=4,
+        developer_session_policy="fresh",
+    )
+    session_ref = f"thread-{runtime['turn_id']}"
+
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            runtime,
+            adapter_completed=False,
+            process_exit_code=75,
+            termination_kind="output_limit",
+            observed_session_ref=session_ref,
+        )
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+        next_runtime, continuity_error = create_business_turn_locked(
+            run_dir,
+            role_id="developer",
+            executor="worker",
+        )
+
+    assert event is not None
+    assert event["event_type"] == "handoff"
+    assert event["continuation_reason"] == "output_limit"
+    assert prepared
+    assert set(prepared) == {2}
+    assert next_runtime is not None
+    assert continuity_error is None
+
+    assert next_runtime["session_generation"] == 2
+    input_payload = (
+        run_dir / "turns" / next_runtime["turn_id"] / "input.md"
+    ).read_text(encoding="utf-8")
+    assert "Fresh policy creates a new Session generation" in input_payload
 
 
 def test_external_action_enforces_audited_rationale_and_evidence_contract(
@@ -390,6 +725,220 @@ def test_fresh_external_self_handoff_prepares_next_session_generation(
 
     assert accepted["code"] == "ACTION_ACCEPTED"
     assert prepared == [2]
+
+
+def test_fixable_route_preflight_rejection_keeps_turn_actionable(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-route-preflight-rejected",
+        include_external_reviewer=True,
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    payload = turn_dir / "handoff-source.md"
+    payload.write_text("# Handoff\n\nThe target artifact needs repair.\n")
+    monkeypatch.setattr(
+        "agent_team.turns.get_adapter",
+        lambda _adapter_id: _RoutePreflightAdapter("reviewer"),
+    )
+
+    with locked_run(run_dir, exclusive=True):
+        with pytest.raises(AgentTeamError) as rejected:
+            stage_external_action_locked(
+                run_dir,
+                runtime=runtime,
+                action="handoff",
+                source_file=payload,
+                to_role="reviewer",
+            )
+        projection = scan_journal(run_dir)
+        assert rejected.value.code == "ROUTE_PREFLIGHT_REJECTED"
+        assert "No Outbox or Handoff Event was staged" in rejected.value.message
+        assert projection.status == "RUNNING"
+        assert projection.current_role == "developer"
+        assert projection.tail == projection.kickoff
+        assert not (turn_dir / "outbox.json").exists()
+        assert not (turn_dir / "outbox-payload.md").exists()
+
+        redirected = stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="handoff",
+            source_file=payload,
+            to_role="developer",
+        )
+
+    assert redirected["code"] == "ACTION_ACCEPTED"
+    assert redirected["outbox"]["to_role"] == "developer"
+
+
+def test_candidate_activation_crash_returns_finding_to_sending_role(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, developer_runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-candidate-activation-finding",
+        include_external_reviewer=True,
+    )
+    adapter = _CandidateActivationAdapter()
+    monkeypatch.setattr("agent_team.worker.get_adapter", lambda _adapter: adapter)
+    monkeypatch.setattr("agent_team.turns.get_adapter", lambda _adapter: adapter)
+    developer_payload = (
+        run_dir / "turns" / developer_runtime["turn_id"] / "handoff-source.md"
+    )
+    developer_payload.write_text(
+        "# Handoff\n\nPlease activate and validate the candidate.\n",
+        encoding="utf-8",
+    )
+
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(run_dir, developer_runtime)
+        stage_external_action_locked(
+            run_dir,
+            runtime=developer_runtime,
+            action="handoff",
+            source_file=developer_payload,
+            to_role="reviewer",
+        )
+        first_handoff = finalize_external_turn_locked(
+            run_dir,
+            developer_runtime,
+            allow_after_capture=True,
+        )
+        reviewer_runtime, continuity_error = create_business_turn_locked(
+            run_dir,
+            role_id="reviewer",
+            executor="worker",
+        )
+
+    assert first_handoff is not None
+    assert first_handoff["to_role"] == "reviewer"
+    assert reviewer_runtime is not None
+    assert continuity_error is None
+
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(
+            run_dir,
+            reviewer_runtime,
+            adapter_completed=False,
+            process_exit_code=1,
+            termination_kind="crash",
+            observed_session_ref="candidate-session",
+        )
+        activation_handoff = finalize_external_turn_locked(
+            run_dir,
+            reviewer_runtime,
+            allow_after_capture=True,
+        )
+
+    assert activation_handoff is not None
+    assert activation_handoff["event_type"] == "handoff"
+    assert activation_handoff["from_role"] == "reviewer"
+    assert activation_handoff["to_role"] == "developer"
+    assert (
+        activation_handoff["system_handoff_reason"]
+        == "candidate_activation_failed"
+    )
+    assert "candidate-activation-to-developer" in activation_handoff["payload_path"]
+    payload = (run_dir / activation_handoff["payload_path"]).read_text(
+        encoding="utf-8"
+    )
+    assert "Agent-Team Candidate Activation Finding" in payload
+    assert "did not parse terminal prose" in payload
+    reviewer = scan_journal(run_dir).team.roles["reviewer"]
+    failed_session = load_session(run_dir, reviewer)
+    assert failed_session is not None
+    assert failed_session["generation"] == 1
+    assert failed_session["status"] == "unavailable"
+    assert failed_session["session_ref"] is None
+    assert failed_session["unavailable_reason"] == "candidate_activation_failed"
+    assert session_launch_state(run_dir, reviewer) == (2, None)
+    projection = scan_journal(run_dir)
+    assert projection.status == "RUNNING"
+    assert projection.current_role == "developer"
+    assert derive_observation(run_dir)["journal_tail"][
+        "system_handoff_reason"
+    ] == "candidate_activation_failed"
+
+    with locked_run(run_dir, exclusive=True):
+        next_runtime, continuity_error = create_business_turn_locked(
+            run_dir,
+            role_id="developer",
+            executor="worker",
+        )
+
+    assert next_runtime is not None
+    assert continuity_error is None
+
+    event_path = (
+        run_dir
+        / "events"
+        / (
+            f"{activation_handoff['event_seq']:04d}-"
+            f"{activation_handoff['event_id']}.json"
+        )
+    )
+    invalid_event = read_json(event_path)
+    invalid_event["system_handoff_reason"] = "untrusted_payload_heading"
+    atomic_json(event_path, invalid_event)
+    with pytest.raises(IntegrityError, match="invalid system Handoff reason"):
+        scan_journal(run_dir)
+
+
+def test_route_preflight_change_after_outbox_staging_still_blocks(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-route-preflight-changed-after-stage",
+        include_external_reviewer=True,
+    )
+    turn_dir = run_dir / "turns" / runtime["turn_id"]
+    payload = turn_dir / "handoff-source.md"
+    payload.write_text("# Handoff\n\nThe reviewed artifact is ready.\n")
+    monkeypatch.setattr(
+        "agent_team.turns.get_adapter",
+        lambda _adapter_id: _RoutePreflightAdapter(),
+    )
+    with locked_run(run_dir, exclusive=True):
+        _persist_process_chain(run_dir, runtime)
+        accepted = stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="handoff",
+            source_file=payload,
+            to_role="reviewer",
+        )
+    assert accepted["code"] == "ACTION_ACCEPTED"
+
+    monkeypatch.setattr(
+        "agent_team.turns.get_adapter",
+        lambda _adapter_id: _RoutePreflightAdapter("reviewer"),
+    )
+    with locked_run(run_dir, exclusive=True):
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+
+    assert event is not None
+    assert event["event_type"] == "block"
+    assert event["block_reason"] == "profile_changed"
+    assert scan_journal(run_dir).status == "BLOCKED"
 
 
 def test_terminal_owner_release_rechecks_supervisor_and_runner_group(

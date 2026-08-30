@@ -314,14 +314,36 @@ model on the Agent-Team command line; never put tokens, headers, or endpoint
 credentials in the Request, Protocol, or CLI.
 
 `--role-dsh-plugin` is DSH-only, requires that role to use the `fresh` Session
-policy, and declares one installable bundle directory inside the Run worktree.
-Agent-Team does not snapshot it at `init`. On every route to that role, the
-Adapter creates a new Session generation, copies the then-current package into
+policy, and declares one future bundle location inside the Run worktree. The
+location may be absent at `init`, so a producing role can create the Plugin from
+scratch during the Run. Before any route to the candidate-bound role succeeds,
+the location must have become a real, installable directory. Agent-Team does not
+snapshot it at `init`. On every route to that role, the Adapter creates a new
+Session generation, copies the then-current package into
 a generation-private DSH Profile, freezes its file manifest and SHA-256, and
 includes both the generation and hash in the LaunchSpec environment. Earlier
-generation homes and snapshots remain unchanged. This lets a Validator send a
-source finding back to Developer, then receive the newly reviewed revision in
-a fresh Session in the same Run; no nested DSH or continuation Run is needed.
+generation homes and snapshots remain unchanged. A candidate-bound role can
+route a source finding according to the natural-language Protocol and receive a
+later revision in a fresh Session in the same Run; no nested DSH or continuation
+Run is needed.
+Target preflight happens before Agent-Team accepts an Outbox or Handoff Event.
+If the bundle is missing its install contract, manifest, patch, or safe file
+tree, the CLI returns `ROUTE_PREFLIGHT_REJECTED`. The current Turn still owns
+the token and should submit a new payload selecting a capable, Protocol-valid
+role. The rejected command is not the Turn's formal action. Frozen Profile
+drift, and any change detected after Outbox staging, still fail closed.
+
+This preflight checks only what Agent-Team needs to copy and bind the package;
+it does not parse the patch language or duplicate DSH's loader rules. If the
+real candidate-bound DSH process exits before its Fresh Session is initialized,
+Agent-Team preserves the loader trace, marks that candidate generation
+unavailable, and sends an `Agent-Team Candidate Activation Finding` back to the
+sending role. The Handoff is structurally marked with
+`system_handoff_reason=candidate_activation_failed`; it is not an action chosen
+by the role that failed to start. The receiving role inspects the evidence and
+chooses the next Protocol-valid route, or Blocks only when the evidence proves
+an infrastructure failure. A later candidate route receives a new immutable
+generation.
 
 Before the first interactive Claude Code Run in a worktree, establish Claude's
 own workspace trust in a normal terminal:
@@ -429,6 +451,27 @@ The action copies and hashes its payload before acceptance. Ordinary model
 text, tmux Pane content, logs, and manual TUI input never move the execution
 token.
 
+A CLI command that returns `ROUTE_PREFLIGHT_REJECTED` did not accept an action:
+it created no Outbox or Event, so the same Turn remains actionable. This is
+intended for repairable target artifacts such as a malformed DSH Workspace
+Plugin. Verify the error and route it to an appropriate Protocol-valid role with
+a new payload. Do not use this behavior for frozen Profile drift or other
+integrity failures.
+
+If a supported Harness structurally reports that one model Turn exhausted its
+explicit output budget before staging an action, Agent-Team may create an
+automatic same-role Handoff. This requires a durably initialized Session, a
+quiescent Runner, complete required audit capture, unchanged authority, and
+remaining Turn/deadline budget. A `resume` role reuses the exact Session; a
+`fresh` role receives a new Session generation and reconstructs from durable
+inputs rather than hidden conversational context. The continuation is a new
+counted business Turn and appears in `status --json` as
+`continuation_reason=output_limit`. Agent-Team does not equate Git mutation with
+progress; the configured Turn and wall-time limits bound repeated continuations.
+Ordinary crashes, permissions, audit truncation, existing Outboxes, and exhausted
+limits never take this path. Candidate Activation Findings are a separate,
+structurally marked system Handoff.
+
 Origin-bound roles normally use these commands through the integration skill:
 
 ```bash
@@ -506,7 +549,9 @@ Agent-Team records a reasoning summary only when the Harness exposes one.
 
 ## Block, Resume, cancellation, and recovery
 
-A Block must be returned to the user. Read-only diagnosis and deterministic
+A Block must be returned to the user. The pre-Block automatic output-budget
+continuation described above is not a Block Resume; once any Block Event has
+been committed, it cannot use that path. Read-only diagnosis and deterministic
 technical recovery may run first, but a resumable Block remains Blocked until
 a later user instruction is recorded:
 

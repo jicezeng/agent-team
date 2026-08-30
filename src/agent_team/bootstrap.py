@@ -46,7 +46,6 @@ from .util import (
     path_entry_exists,
     read_regular,
     rfc3339,
-    safe_relative,
     sha256_bytes,
 )
 
@@ -146,13 +145,30 @@ def parse_role_spec(
             )
         if workspace is None:
             raise InvalidArgument("DSH plugin validation requires a workspace")
+        resolved_workspace = workspace.resolve(strict=True)
         supplied = Path(dsh_plugin)
         if not supplied.is_absolute():
-            supplied = workspace / supplied
-        plugin_relative = safe_relative(supplied, workspace)
-        if not supplied.resolve(strict=True).is_dir() or supplied.is_symlink():
+            supplied = resolved_workspace / supplied
+        try:
+            resolved_locator = supplied.resolve(strict=False)
+            relative = resolved_locator.relative_to(resolved_workspace)
+        except (OSError, RuntimeError, ValueError) as exc:
             raise InvalidArgument(
-                f"DSH plugin must be a real directory inside the workspace: {supplied}"
+                f"DSH plugin path must stay inside the workspace: {supplied}"
+            ) from exc
+        if not relative.parts or any(
+            part in {"", ".", ".."} for part in relative.parts
+        ):
+            raise InvalidArgument(
+                f"DSH plugin path must name a workspace package: {supplied}"
+            )
+        plugin_relative = relative.as_posix()
+        if path_entry_exists(supplied) and (
+            supplied.is_symlink() or not supplied.is_dir()
+        ):
+            raise InvalidArgument(
+                "an existing DSH plugin path must be a real directory inside "
+                f"the workspace: {supplied}"
             )
     effective_launch_mode = launch_mode or "interactive"
     adapter.assert_launch_mode(effective_launch_mode)

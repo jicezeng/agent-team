@@ -21,7 +21,12 @@ from agent_team.dsh_runtime import (
     managed_dsh_runtime_report,
     managed_dsh_version,
 )
-from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
+from agent_team.errors import (
+    AgentTeamError,
+    IntegrityError,
+    InvalidArgument,
+    RoutePreflightError,
+)
 from agent_team.state import fixed_state_dir
 from agent_team.util import (
     atomic_json,
@@ -38,10 +43,12 @@ from agent_team.util import (
 
 from .base import (
     AdapterEvidence,
+    AdapterEvidenceSnapshot,
     CapabilityReport,
     HarnessAdapter,
     HarnessLaunchOptions,
     LaunchSpec,
+    ProcessResult,
     StreamRecord,
     TurnLaunchContext,
 )
@@ -50,6 +57,7 @@ _SESSION_NAMESPACE = uuid.UUID("a02f363b-039e-4a17-af70-639179544261")
 _PROFILE_NAME = "agent-team"
 _PLUGIN_PACKAGE = "@agent-team/dsh-tui"
 _PLUGIN_STATE_FILE = "agent-team-dsh-plugin.json"
+_OUTPUT_LIMIT_EXIT_CODE = 75
 _RESERVED_PLUGIN_PACKAGES = {"@deepseek-ai/dsh-base", _PLUGIN_PACKAGE}
 _PACKAGE_NAME_RE = re.compile(
     r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$"
@@ -385,28 +393,55 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
     def _candidate_contract(
         source: Path,
         *,
+        workspace: Path,
         source_relative: str,
     ) -> dict[str, Any]:
         try:
             source_info = source.lstat()
         except OSError as exc:
-            raise AgentTeamError(
+            raise RoutePreflightError(
                 "DSH_PLUGIN_UNAVAILABLE",
                 f"workspace DSH plugin is unavailable: {source_relative}",
             ) from exc
         if source.is_symlink() or not stat.S_ISDIR(source_info.st_mode):
-            raise IntegrityError(
-                f"workspace DSH plugin is not a real directory: {source_relative}"
+            raise RoutePreflightError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin is not a real directory: {source_relative}",
             )
+        try:
+            resolved_workspace = workspace.resolve(strict=True)
+            resolved_source = source.resolve(strict=True)
+            resolved_source.relative_to(resolved_workspace)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RoutePreflightError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin escapes the workspace: {source_relative}",
+            ) from exc
+        current = resolved_workspace
+        for part in source_relative.split("/"):
+            current /= part
+            try:
+                current_info = current.lstat()
+            except OSError as exc:
+                raise RoutePreflightError(
+                    "DSH_PLUGIN_UNAVAILABLE",
+                    f"workspace DSH plugin is unavailable: {source_relative}",
+                ) from exc
+            if current.is_symlink() or not stat.S_ISDIR(current_info.st_mode):
+                raise RoutePreflightError(
+                    "DSH_PLUGIN_INVALID",
+                    "workspace DSH plugin path must contain only real "
+                    f"directories: {source_relative}",
+                )
         try:
             manifest = json.loads(read_regular(source / "package.json"))
         except (OSError, json.JSONDecodeError, IntegrityError) as exc:
-            raise AgentTeamError(
+            raise RoutePreflightError(
                 "DSH_PLUGIN_INVALID",
                 f"workspace DSH plugin has no valid package.json: {source_relative}",
             ) from exc
         if not isinstance(manifest, dict):
-            raise AgentTeamError(
+            raise RoutePreflightError(
                 "DSH_PLUGIN_INVALID",
                 f"workspace DSH plugin manifest is not an object: {source_relative}",
             )
@@ -435,7 +470,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 for part in normalized_patch.split("/")
             )
         ):
-            raise AgentTeamError(
+            raise RoutePreflightError(
                 "DSH_PLUGIN_INVALID",
                 f"workspace DSH plugin is not an installable bundle: {source_relative}",
             )
@@ -444,15 +479,22 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             patch_info = patch_path.lstat()
             patch_path.resolve(strict=True).relative_to(source.resolve(strict=True))
         except (OSError, RuntimeError, ValueError) as exc:
-            raise AgentTeamError(
+            raise RoutePreflightError(
                 "DSH_PLUGIN_INVALID",
                 f"workspace DSH plugin bundle patch is unavailable: {source_relative}",
             ) from exc
         if patch_path.is_symlink() or not stat.S_ISREG(patch_info.st_mode):
-            raise IntegrityError(
-                f"workspace DSH plugin bundle patch is unsafe: {source_relative}"
+            raise RoutePreflightError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin bundle patch is unsafe: {source_relative}",
             )
-        tree = _tree_manifest(source, ignored_names=frozenset({"node_modules"}))
+        try:
+            tree = _tree_manifest(source, ignored_names=frozenset({"node_modules"}))
+        except (IntegrityError, OSError) as exc:
+            raise RoutePreflightError(
+                "DSH_PLUGIN_INVALID",
+                f"workspace DSH plugin tree is unsafe: {source_relative}",
+            ) from exc
         return {
             "schema_version": 1,
             "source": source_relative,
@@ -611,6 +653,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 source = team.workspace / role.dsh_plugin
                 candidate = self._candidate_contract(
                     source,
+                    workspace=team.workspace,
                     source_relative=role.dsh_plugin,
                 )
                 target = self._package_target(profile, candidate["package"])
@@ -943,3 +986,66 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
     def parse_stream_record(self, record: StreamRecord) -> AdapterEvidence | None:
         del record
         return None
+
+    def recoverable_termination_kind(
+        self,
+        result: ProcessResult,
+        evidence: AdapterEvidenceSnapshot,
+    ) -> str | None:
+        self.assert_launch_mode(result.launch_mode)
+        if (
+            result.launch_mode == "interactive"
+            and result.process_exit_code == _OUTPUT_LIMIT_EXIT_CODE
+            and result.group_quiescent
+            and evidence.agent_execution_started
+            and not evidence.adapter_completed
+            and not evidence.permission_required
+            and evidence.observed_session_ref is not None
+            and evidence.session_unavailable_reason is None
+        ):
+            return "output_limit"
+        return None
+
+    def candidate_activation_failure(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        session_generation: int,
+        result: ProcessResult,
+        evidence: AdapterEvidenceSnapshot,
+    ) -> str | None:
+        self.assert_launch_mode(result.launch_mode)
+        team = load_team(run_dir)
+        role = team.roles[role_id]
+        if role.dsh_plugin is None:
+            return None
+        if (
+            result.launch_mode != "interactive"
+            or result.process_exit_code in {None, 0}
+            or result.termination_kind != "crash"
+            or not result.group_quiescent
+            or evidence.adapter_completed
+            or evidence.permission_required
+            or evidence.observed_session_ref is None
+            or evidence.session_unavailable_reason is not None
+        ):
+            return None
+        home = self._home(run_dir, role_id, session_generation)
+        candidate_state = home / _PLUGIN_STATE_FILE
+        if not path_entry_exists(candidate_state):
+            raise IntegrityError(
+                "DeepSeek Harness candidate activation has no frozen snapshot"
+            )
+        self._validate_candidate_snapshot(
+            read_json(candidate_state),
+            expected_source=role.dsh_plugin,
+        )
+        initialized = self._session_refs(home / "sessions", team.workspace)
+        if evidence.observed_session_ref in initialized:
+            return None
+        return (
+            "Candidate-bound DeepSeek Harness exited before its fresh Session "
+            "was durably initialized; inspect the preserved Turn trace and "
+            "Harness loader diagnostics."
+        )

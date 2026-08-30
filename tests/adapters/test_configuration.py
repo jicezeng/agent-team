@@ -781,13 +781,13 @@ def test_role_spec_freezes_explicit_harness_options(
     }
 
 
-def test_role_spec_freezes_workspace_local_dsh_plugin_path(
+def test_role_spec_freezes_workspace_local_dsh_plugin_locator(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
     plugin = workspace / "packages" / "candidate"
-    plugin.mkdir(parents=True)
+    workspace.mkdir()
 
     class StubAdapter:
         @staticmethod
@@ -821,6 +821,18 @@ def test_role_spec_freezes_workspace_local_dsh_plugin_path(
     )
 
     assert role.dsh_plugin == "packages/candidate"
+    assert not plugin.exists()
+
+    plugin.parent.mkdir()
+    plugin.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(InvalidArgument, match="real directory"):
+        parse_role_spec(
+            "validator=deepseek-harness:fresh:full-access",
+            dsh_plugin=str(plugin),
+            workspace=workspace,
+        )
+    plugin.unlink()
+    plugin.mkdir()
 
     with pytest.raises(InvalidArgument, match="fresh Session policy"):
         parse_role_spec(

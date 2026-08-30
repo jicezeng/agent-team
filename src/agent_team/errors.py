@@ -27,6 +27,10 @@ class RecoverableTurnArtifactError(IntegrityError):
         self.artifact = artifact
 
 
+class RoutePreflightError(AgentTeamError):
+    """A fixable target artifact rejected before a Handoff is staged."""
+
+
 class InvalidArgument(AgentTeamError):
     def __init__(self, message: str) -> None:
         super().__init__("INVALID_ARGUMENT", message, 2)

@@ -33,10 +33,25 @@ Describe natural-language routing, loops, disagreement handling, and required
 rechecks. Every route is selected by the active role and committed through the
 CLI. Do not compile business verdicts into machine state.
 
+Require each full-review cycle to compare the complete current candidate with
+the entire original Request and authoritative acceptance sources. Findings from
+the preceding Turn do not narrow review scope, and no role may close a finding
+by deleting its evidence or weakening an acceptance condition.
+
 For a Fresh DeepSeek Harness role with a Workspace Plugin, route source
-findings through the normal repair/review loop. Each later route creates a new
-immutable Plugin and Session generation in the same Run; freezing one
-generation is not by itself a reason to Block.
+findings according to the natural-language Protocol. Its declared package
+location may be absent at `init`, allowing another role to create it during the
+Run. Each later route creates a new immutable Plugin and Session generation;
+freezing one generation is not by itself a reason to Block. If target preflight returns
+`ROUTE_PREFLIGHT_REJECTED`, no Outbox or Handoff Event exists and the same Turn
+must select a new Protocol-valid action with a new payload.
+If the real candidate-bound Harness exits before the Fresh role obtains a
+durable Session, Agent-Team returns a system-generated Candidate Activation
+Finding, marked `system_handoff_reason=candidate_activation_failed`, to the
+sending role without interpreting Harness prose. Require that role to inspect
+the preserved evidence and choose the next Protocol-valid action, or Block only
+when the evidence proves an infrastructure failure.
+The next candidate route uses a new immutable generation.
 
 For External roles, state that the Agent-Team Skill is guidance only and has no
 terminal arguments. Require exactly one `$AGENT_TEAM_CLI handoff`, `complete`,
@@ -56,6 +71,15 @@ session.
 
 Specify `resume` or `fresh` for every External role and explain why. Origin
 roles use the embedded host session.
+
+If the selected Harness structurally reports an explicit output-budget stop,
+record that Agent-Team may create a new counted same-role Turn when a durable
+Session and all runtime safety gates exist. A `resume` role reuses the exact
+Session; a `fresh` role starts a new generation from durable inputs. This
+pre-Block Automatic Continuation grants no new authority. Ordinary crashes,
+existing Outboxes, audit or permission failures, and exhausted limits Block;
+configured Turn and wall-time limits bound repetition without treating Git
+mutation as progress.
 
 ## Shared context policy
 
@@ -78,6 +102,10 @@ Every Block returns to the user. Origin may run read-only diagnosis or
 deterministic `recover`, but may not auto-Resume. Only a new explicit user
 instruction may Resume a resumable Block. Limit/Profile Changed Blocks and
 immutable-input changes require Cancel plus a new Run.
+
+An Automatic Continuation Handoff may occur only before a Block exists; it is
+not a Block Resume. Once any Block Event is committed, this rule has no
+exception.
 
 ## Assumptions made during bootstrap
 

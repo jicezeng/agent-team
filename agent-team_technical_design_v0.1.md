@@ -1064,6 +1064,17 @@ Stage 1 同时拒绝启用了 Sparse Checkout 的 Worktree，以及索引中包�
 
 Event 只描述传输，不描述“为什么 Review 失败”等业务语义。
 
+Runtime 生成的 Automatic Continuation 仍使用普通 `handoff`，但必须是同一 External
+Role 的自 Handoff，并带 `continuation_reason=output_limit`。`resume` Role 的下一 Turn
+复用已提交 Session，`fresh` Role 的下一 Turn 创建新 Generation。历史版本已提交的
+`continuation_no_progress_count=0|1` 只为不可变 Journal 兼容读取，新 Event 不再产生该字段，
+也不再从 Git 变化推断 Agent 进展。
+
+系统生成的候选激活失败回传同样使用 `handoff`，但必须带
+`system_handoff_reason=candidate_activation_failed`。普通 Agent Handoff 不带
+`continuation_reason` 或 `system_handoff_reason`；结构化字段使观察与审计不依赖固定英文
+Payload 标题，同时避免增加旁路状态机。
+
 `events/<event-seq>-<event-id>.json` 的原子 `rename` 是一次状态转换的唯一提交点：
 
 - `event_seq` 在 Run 内严格递增；
@@ -1078,7 +1089,7 @@ Stage 1 的 `event_type` 是以下闭合集合。这里定义的只是技术转�
 | `event_type` | 允许的当前状态 | 必填类型字段 | 新状态 | 新 Token Owner |
 |---|---|---|---|---|
 | `kickoff` | `UNSTARTED` | `to_role`、Payload、`request_sha256`、`protocol_sha256`、`team_sha256` | `RUNNING` | `to_role` |
-| `handoff` | `RUNNING` 且允许创建下一业务 Turn | `turn_id`、`from_role`、`to_role`、Payload | `RUNNING` | `to_role` |
+| `handoff` | `RUNNING` 且允许创建下一业务 Turn | `turn_id`、`from_role`、`to_role`、Payload；Automatic Continuation 额外带 `continuation_reason`，候选激活失败回传额外带 `system_handoff_reason` | `RUNNING` | `to_role` |
 | `complete` | `RUNNING` | `turn_id`、`from_role`、Payload | `COMPLETED` | 无 |
 | `block` | `RUNNING` | `turn_id`、`from_role`、`block_reason`、可空 `limit_reason`、Payload；非 Limit Block 的 `limit_reason` 必须为 `null`，`block_reason=limit` 时必须为 `deadline` 或 `max_turns` | `BLOCKED` | 无 |
 | `resume` | `BLOCKED`、Tail 的 `block_reason` 不属于 `{limit, profile_changed}`、无未解除的 `recovery_required` 且允许创建下一业务 Turn | 管理 `turn_id`、`to_role`、Payload | `RUNNING` | `to_role` |
@@ -1368,7 +1379,9 @@ success | failed | cancelled | stalled
 只有 Supervisor 或 Runner 进程组可能仍存活、身份无法验证或无法证明 Runner 进程组已经清空时进入 `recovery_required`。已明确退出且 Runner 进程组已清空的异常 Harness 直接以 `phase=finalized, outcome=failed` 提交 Recovery Block，不再要求多一次 `recover`。Turn Runtime 记录“执行到了哪里”，但不能单独转移 Token；只有新的 Event Journal Tail 可以转移 Token 或结束 Run。
 
 `termination_kind` 固定为
-`normal | action | cancelled | deadline | signal | crash | unknown`。Headless Mode
+`normal | action | cancelled | deadline | signal | crash | output_limit | unknown`。
+`output_limit` 不得从 Pane 或终端文本猜测，只能由冻结 Adapter 将 Harness 专用结构化
+终止映射得到。Headless Mode
 只有 Adapter 明确观察到正常 Turn 完成、退出码符合成功约定且
 `termination_kind=normal` 时才接受完成。Interactive Mode 在正式 Outbox 与 Session
 都已验证后，由 Supervisor 主动清空仍在等待输入的 TUI，保留真实
@@ -1385,7 +1398,13 @@ Block 后创建的 Origin 管理 Turn 不承载业务 Token、不采集 Workspac
 
 唯一允许业务 Turn 的 Before Facts Hash 为 `null` 的情况，是 Wall Time 已在合法 Kickoff / Handoff / Resume Event 提交后、目标 Claim 前到期。Claim 先检查 Deadline，不尝试 Snapshot 或启动 Executor；它只创建带连续 `business_turn_seq` 的技术 Turn，立即写成 `phase=finalized, outcome=cancelled, termination_kind=deadline` 并提交 Limit Block。除此之外，业务 Turn 必须先成功冻结 Before Facts 才能提交 Runtime。
 
-`max_turns` 精确定义为“已创建的业务 Turn Runtime 数量”。业务 Turn 的 `business_turn_seq` 从 `1` 开始连续递增；External 与 Origin 都计数，管理 Turn 不计数。Stage 1 没有同一 Turn 内的自动启动重试；用户授权 Resume 后创建的新业务 Turn 正常计数。`business_turn_count` 是已校验 Runtime 中最大的连续 `business_turn_seq`，目标领取 Token 时在 Run 锁内写入下一个序号。缺号、重复或与 Event 输入链不一致时不得猜测计数，按 22.3 处理 Runtime 损坏。所有实现只使用一个守卫：
+`max_turns` 精确定义为“已创建的业务 Turn Runtime 数量”。业务 Turn 的
+`business_turn_seq` 从 `1` 开始连续递增；External 与 Origin 都计数，管理 Turn 不计数。
+Stage 1 没有同一 Turn 内的自动启动重试；用户授权 Resume 或安全的 Automatic
+Continuation Handoff 后创建的新业务 Turn 都正常计数。`business_turn_count` 是已校验
+Runtime 中最大的连续 `business_turn_seq`，目标领取 Token 时在 Run 锁内写入下一个
+序号。缺号、重复或与 Event 输入链不一致时不得猜测计数，按 22.3 处理 Runtime 损坏。
+所有实现只使用一个守卫：
 
 ```text
 can_create_business_turn =
@@ -1934,7 +1953,18 @@ Heading。CLI 在复制与 Hash Payload 之前执行同一 Validator：标题按
 agent-team handoff --to reviewer --file handoff.md
 ```
 
-该命令先在 Run 锁内检查 Journal Tail、Deadline、`can_create_business_turn`，以及目标 External Role 的 Launch Profile Fingerprint。Deadline 已到时不创建 Outbox，直接提交 `block_reason=limit, limit_reason=deadline`；仅 Max-Turn 守卫失败时直接提交 `block_reason=limit, limit_reason=max_turns`；目标 Profile 已漂移时提交 `block_reason=profile_changed`。三种情况都返回 `TEAM_BLOCKED`。守卫为真时把 `--file` 的当前字节复制为本 Turn 的不可变 `outbox-payload.md`，再写入 `outbox.json`，不立即唤醒下一角色。`outbox.json` 的最小结构为：
+该命令先在 Run 锁内检查 Journal Tail、Deadline、`can_create_business_turn`，以及目标 External Role 的 Launch Profile Fingerprint，并调用 Adapter 为目标 Session Generation 做路由预检。Deadline 已到时不创建 Outbox，直接提交 `block_reason=limit, limit_reason=deadline`；仅 Max-Turn 守卫失败时直接提交 `block_reason=limit, limit_reason=max_turns`；目标 Profile 已漂移时提交 `block_reason=profile_changed`。三种情况都返回 `TEAM_BLOCKED`。
+
+Adapter 只有在发现可由业务角色修复的 Workspace 候选制品缺陷时，才可抛出
+`RoutePreflightError`。CLI 将其映射为同步错误
+`ROUTE_PREFLIGHT_REJECTED`，且不复制 Payload、不创建 Outbox、不追加 Handoff/Event；
+当前 Turn 仍持有 Token，可以依据错误证据重新生成 Payload 并正式路由到修复 Role。
+因此一次失败的 CLI 调用不满足“每 Turn 唯一正式动作”。Launch Profile、私有状态或
+身份完整性故障不能伪装成该错误，仍提交 `profile_changed` 或进入既有完整性处理；若
+Outbox 已提交后交付前再次预检才发现变化，也必须 Fail Closed，而不能改写已接受动作。
+
+所有守卫和预检通过后，才把 `--file` 的当前字节复制为本 Turn 的不可变
+`outbox-payload.md`，再写入 `outbox.json`，不立即唤醒下一角色。`outbox.json` 的最小结构为：
 
 ```json
 {
@@ -1966,12 +1996,45 @@ Worker 才继续交付：Headless 要求 Adapter 的结构化完成证据与成�
 
 最终 Facts 是 Deferred Delivery 事务的一部分。若 After Facts 或其 Runtime Hash 未持久化完整，即使进程已正常退出且 Outbox 有效，也只能提交 Recovery Block；恢复过程不得重新扫描当前 Workspace 来补造 Turn 结束时的事实。
 
-普通 Signal/Crash、Cancel 或 Deadline 即使已经存在 Outbox 也不得走这条交付路径；
-只有由上述 Interactive 完成合同产生的 `action` 是预期的 Supervisor Stop。这样可以减少：
+普通 Signal/Crash、Cancel 或 Deadline 即使已经存在 Outbox 也不得走普通 Outbox 交付
+路径；只有由上述 Interactive 完成合同产生的 `action` 是预期的 Supervisor Stop。
+这样可以减少：
 
 - Agent Handoff 后仍继续修改；
 - 下一个角色读取到中间状态；
 - Handoff 文本和最终代码版本不一致。
+
+无正式 Outbox 的第一类受限系统 Handoff 是 Candidate Activation Finding。Adapter 只能
+依据结构化私有状态判定：Role 绑定了冻结候选制品、Runner PGID 已静止、Harness 非零
+Crash、无 Permission/Completion，且对应 Fresh Session Ref 没有出现在 Harness 的持久
+Session Store 中。不得读取或匹配 Terminal 文本，也不得在 Agent-Team 内实现候选格式、
+Loader Schema 或产品验收规则。Worker 把失败 Generation 记录为
+`unavailable_reason=candidate_activation_failed`，冻结 After Facts，并将含退出事实和 Trace
+路径、且带 `system_handoff_reason=candidate_activation_failed` 的系统 Handoff 返回给本
+Turn 输入 Handoff 的发送 Role；发送 Role 再依据自然语言 Protocol 选择下一 Role，或在
+证据证明基础设施故障时正式 Block。该结构化字段明确表明失败 Role 没有选择此次路由。若输入
+不是来自一个不同的已配置 Role、已有 Outbox、审计/权限/完整性守卫失败或 Limits 耗尽，
+仍然 Fail Closed。下一次进入候选 Role 使用新的不可变 Session/Plugin Generation。
+
+无正式 Outbox 的第二类受限系统 Handoff 是 `output_limit`。当前 DSH bundled TUI 只在原生
+`turn/end.reason.kind=max-tokens` 时以专用 Exit 75 退出；Adapter 必须同时验证
+Interactive Mode、Agent Execution 已开始、`adapter_completed=false`、无 Permission、
+唯一 Session Ref 已观察且 Runner PGID 已静止，Supervisor 才可把原始 `crash` 分类提升
+为 `termination_kind=output_limit`。取消、Deadline、已提交 Action、完整性停止或其他
+Supervisor Stop 原因优先，不能被相同退出码覆盖。Worker 还必须重新执行该 Adapter
+判定，并要求 Full Audit Capture 完整、没有 Outbox、已提交 Session 的 Generation/Ref
+与本 Turn 精确一致，以及
+`can_create_business_turn=true`。全部成立时，Worker 冻结 After Facts，生成含 System
+Facts 的同角色 Automatic Continuation Handoff。`resume` Role 的下一 Worker Turn 恢复
+同一 Session；`fresh` Role 按既定策略创建下一 Generation，并只从 Request、Protocol、
+当前 Input、保留 Trace 和 Worktree 重建上下文，不假定上一 Session 的隐藏对话状态。
+该 Handoff 不改变权限或协议。
+
+系统不以 Git 文件变化判断角色是否取得进展：只读评审、研究和非代码工作都可能只在
+Session/Trace 中产生进展。重复 Automatic Continuation 统一由已配置的 Max Turns 与
+Deadline 约束。已有 Outbox、Unavailable Session、审计截断、Profile/Permission/Integrity
+问题、Deadline 或 Max Turns 均按既有 Fail-closed 分支 Block。该机制发生在任何 Block
+提交之前；任一 Block Event 一旦提交，仍只能返回用户，绝不自动 Resume。
 
 Origin 嵌入角色没有外部 Worker，使用一个单调用的“提交并等待”命令：
 
@@ -2061,6 +2124,18 @@ Chunk 只原样持久化并镜像，Session Ref 通过预先指定值或 Adapter
 可测试证据链，不依赖 Worker 持有已经退出的进程对象，也不把 Pane 文本当作协议。
 
 Adapter 不拥有 Worker、PID、重试或 Cancel 生命周期。Session Ref 解析与结果归一化属于上述两个纯解析接口，不再隐藏成无法由 Supervisor 调用的隐式逻辑。
+
+`prepare_run_state()` 的业务可修复错误边界只覆盖完成隔离安装所必需、且路由前即可验证
+的 Workspace 候选制品合同：当前实现检查 Fresh DSH Workspace Plugin 的 Package
+Manifest、Bundle Patch 引用/文件存在性和安全文件树，但不解析 Patch YAML 语义或实现
+DSH Loader 规则。此类错误使用 `RoutePreflightError`；已经冻结的
+Profile/Generation、Session、Owner 或 Hash 不一致仍使用完整性错误，绝不把安全漂移
+降级成业务 Finding。
+
+`candidate_activation_failure()` 是独立的运行后结构化分类 Hook。默认 Adapter 返回
+`None`；DSH 仅在候选 Generation 已冻结、进程静止且 Fresh Session 未实际初始化时返回
+事实摘要。Worker 使用它生成返回给路由发送方的 Finding，不把 Terminal Prose 当协议，
+也不宣称已经知道是哪个产品规则失败。Session 已初始化后的普通 Crash 继续 Block。
 
 `LaunchSpec`、`RawStreamChunk`、`StreamRecord`、`AdapterEvidence`、
 `AdapterEvidenceSnapshot`、`ProcessResult` 和 `ExitInfo` 都定义在
@@ -2343,8 +2418,9 @@ Adapter 对 `headless` 在 Kickoff 前返回 `LAUNCH_MODE_UNSUPPORTED`，不降�
 `--role-dsh-plugin`，它必须使用 `fresh`，每次向它路由前复制当时的 Workspace Bundle
 到本代私有 Profile，冻结逐文件 Manifest 与内容 Hash，旧代 Home 不覆盖也不删除。
 受管 Runtime、bundled TUI 资产 Manifest 和 Integrity 进入 Profile Fingerprint；
-Role-local Bundle Hash 与 Generation 进入不可变 LaunchSpec 证据，不在 `init` 时提前
-冻结尚待 Developer 修改的源码。
+Role-local Bundle Hash 与 Generation 进入不可变 LaunchSpec 证据。`init` 只冻结规范化、
+不能逃逸 Workspace 的相对位置，该位置可以尚不存在；首次向 Role 路由时才要求它成为
+真实、可安装的 Package，因此候选生产 Role 可以在 Run 内从零创建制品。
 
 启动合同：
 
@@ -2364,10 +2440,10 @@ Role-local Bundle Hash 与 Generation 进入不可变 LaunchSpec 证据，不在
 - 私有 Profile 禁用 HMR、Telemetry、Title LLM、Permission Switching、User Profile、
   Skill、Subagent、Workflow 与 Ralph，并把 Session 保存为私有无压缩 JSONL；
 - 可选 Workspace Bundle 每个 Role 至多一个，必须是 Worktree 内真实目录和可安装的
-  DSH Bundle，且 Role 必须使用 `fresh`；每一代首次路由时复制并冻结。Validator finding
-  可 Handoff 给 Developer，修复和复审后再次路由到同一 Validator 时创建下一代 Home、
-  Session 和快照。该 Role 直接调用已加载工具，不从模型 Bash 启动子 DSH，也不把父
-  DSH Credential 交给工具进程；
+  DSH Bundle，且 Role 必须使用 `fresh`；“真实且可安装”在首次正式路由而非 `init` 时
+  校验，每一代首次路由时复制并冻结。候选消费 Role 的 finding 按自然语言 Protocol
+  Handoff；修改后的候选再次路由到同一 Role 时创建下一代 Home、Session 和快照。该 Role
+  直接调用已加载工具，不从模型 Bash 启动子 DSH，也不把父 DSH Credential 交给工具进程；
 - TUI 保留 `dsh> ` 输入循环，显示公开 Text、有限 Tool 状态和不含正文的
   `[thinking]` 标记，不把 private reasoning text 输出到 PTY；
 - 只有首轮结构化 `turn/end.reason.kind=completed` 才进入 `dsh> ` 输入循环；首轮 Quota、
@@ -3413,6 +3489,9 @@ State Root 和未提交临时目录，不出现最终 Run 目录，直接返回 
 
 ## 26.3 Harness 中途崩溃
 
+- 仅 Adapter 以 16.4 所述专用结构化证据确认的 `output_limit` 可在 Block 产生前走同
+  Role Automatic Continuation；它是新的计数业务 Turn，不是重启当前 Turn 或 Resume
+  Block；
 - 保存已产生的 stream/log；
 - 将 `adapter_completed=false`，并按观测结果记录 `termination_kind=signal|crash|unknown`；
 - 即使唯一 Outbox 已持久化，也不得提交其中的 Handoff / Complete / Block；
@@ -3420,7 +3499,7 @@ State Root 和未提交临时目录，不出现最终 Run 目录，直接返回 
 - Supervisor 仍可能存活、Runner 身份未知或无法证明 Runner 进程组清空时，才进入 `recovery_required` 并提交 Recovery Block；
 - 有恢复门禁时 Origin 可先运行 `recover`；门禁解除或原本没有门禁后，仍必须把 Block 展示给用户，只有用户明确授权才可用 `origin-resume --to <role-id>` 选择恢复目标，或取消 Run；
 - External 角色仍使用既定 Session Policy，原 Harness Session 不可用时按 17.8 降级为 Fresh，Origin Binding 按 18.5 处理 Claim；
-- 不自动 Handoff。
+- 除上述 `output_limit` 特例外不自动 Handoff。
 
 只有 `adapter_completed=true`、当前 Mode 的 Completion Contract 成立（Headless 为
 `termination_kind=normal` 且退出码符合 Adapter 成功约定；Interactive 为
@@ -3722,7 +3801,7 @@ RUNNING”简单等同于命令失败。
 - `details` 中唯一活跃 External Turn 的可空 Supervisor / Runner PID、PGID、Start ID，以及可空 `owner_run_id`；
 - 支撑结论的 Journal、Runtime、Block 或 Completion 文件路径；Owner 与进程事实放在结构化字段中，不伪造成 Run 内文件。
 
-`journal_tail` 在 UNSTARTED 时为 `null`；非空时固定包含 `{event_id, event_seq, event_type, from_role, to_role, turn_id, payload_path, created_at}`，不适用字段为 `null`。没有已领取的业务或管理 Turn 时 `active_turn=null`，否则对象中的上述字段全部存在。External Turn 的 Managed Process、Adapter Evidence、Exit 和 Group 字段优先来自当前有效 Supervisor Snapshot，Supervisor 已安全结束后才使用 Finalized Runtime；两者冲突按既有完整性规则处理，不能从 Stream 或普通日志补值。Origin 业务 / 管理 Turn 的 `managed_process_state=not_applicable`，Agent Execution、Adapter Completion、Permission、Observed Session Ref、Group 和所有 Process Detail 字段都为 `null`，不借用 External 的布尔语义。`active_turn.observed_session_ref` 是 External 当前 Turn 的候选 Evidence；Role 项中的 Session 字段只反映已提交的 `sessions/<role-id>.json`，提交窗口中仍为 `not_created` 或上一 Generation，不能用候选值提前覆盖。`block` 只在 BLOCKED 时为 `{event_id, block_reason, limit_reason, payload_path, resume_policy}`，其中 `limit_reason` 可空；`resume_policy` 在 `block_reason=limit|profile_changed` 或当前 `can_create_business_turn=false` 时为 `new_run_required`，其他原因只表示 `after_user_instruction`，并不代表 Recovery Gate 已解除。每个 Role 项固定保留自身可空的 Worker / tmux 身份；`details` 固定保留活跃 External Turn 的可空 Supervisor / Runner 身份和 `owner_run_id`。
+`journal_tail` 在 UNSTARTED 时为 `null`；非空时固定包含 `{event_id, event_seq, event_type, from_role, to_role, turn_id, payload_path, created_at}`，不适用字段为 `null`；Automatic Continuation Handoff 额外包含 `continuation_reason`，候选激活失败回传额外包含 `system_handoff_reason`；历史 Event 的 `continuation_no_progress_count` 仅兼容透传。没有已领取的业务或管理 Turn 时 `active_turn=null`，否则对象中的上述字段全部存在。External Turn 的 Managed Process、Adapter Evidence、Exit 和 Group 字段优先来自当前有效 Supervisor Snapshot，Supervisor 已安全结束后才使用 Finalized Runtime；两者冲突按既有完整性规则处理，不能从 Stream 或普通日志补值。Origin 业务 / 管理 Turn 的 `managed_process_state=not_applicable`，Agent Execution、Adapter Completion、Permission、Observed Session Ref、Group 和所有 Process Detail 字段都为 `null`，不借用 External 的布尔语义。`active_turn.observed_session_ref` 是 External 当前 Turn 的候选 Evidence；Role 项中的 Session 字段只反映已提交的 `sessions/<role-id>.json`，提交窗口中仍为 `not_created` 或上一 Generation，不能用候选值提前覆盖。`block` 只在 BLOCKED 时为 `{event_id, block_reason, limit_reason, payload_path, resume_policy}`，其中 `limit_reason` 可空；`resume_policy` 在 `block_reason=limit|profile_changed` 或当前 `can_create_business_turn=false` 时为 `new_run_required`，其他原因只表示 `after_user_instruction`，并不代表 Recovery Gate 已解除。每个 Role 项固定保留自身可空的 Worker / tmux 身份；`details` 固定保留活跃 External Turn 的可空 Supervisor / Runner 身份和 `owner_run_id`。
 
 Owner 文件不存在时，UNSTARTED 映射为 `not_acquired`，已满足安全释放条件的终态映射为 `released`，Kickoff 后尚未满足释放条件的 Run 才映射为 `missing` 并进入 Corrupted；有效的其他 Run Owner 始终映射为 `other_run`。历史终态 Run 在安全释放后看到新的 `other_run` 是正常状态，不追溯污染旧 Run。所有顶层键、非空对象的固定键和 Role 项字段在同一 Schema 版本中保持存在；Corrupted 状态下无法安全推导的值写 `null` 或对应的 `identity_unknown`，不能省略字段或从日志补猜。
 
@@ -4018,6 +4097,10 @@ src/agent_team/
     Harness stdout / stderr / terminal 必须以带顺序、时间、来源和可逆字节编码的
     `RawStreamChunk` 保存；只有 Headless 行协议经过 Framer，Evidence Snapshot 不得
     先于所依据的 Raw Stream `fsync`。
+43. Automatic Continuation 只能由 Adapter 专用结构化 `output_limit` 证据生成同一
+    External Role 的 Handoff；它必须重新校验 Session、Quiescence、Audit、Outbox、
+    Profile、Deadline 和 Turn 上限，`resume` 复用 Session、`fresh` 创建新 Generation，
+    不以 Git 变化推断进展，且任何已提交 Block 都不得被该路径自动 Resume。
 
 ---
 
@@ -4361,6 +4444,10 @@ sequenceDiagram
   `evidence_paths` 只列 Run 内已存在普通文件，所有时间规范化为 UTC RFC 3339；
 - Audited Formal Payload 的 UTF-8 Markdown、必填标题、非空内容和拒绝路径；
 - Adapter 正常启动 / 完成证据、未知记录忽略与 `termination_kind` 分类；
+- DSH 专用 Max-token Exit 只映射为 `output_limit`，安全门满足时生成同 Role Automatic
+  Continuation；Resume 复用 Session，Fresh 使用新 Generation。普通 Crash、已有 Outbox、
+  Unavailable Session、审计截断和上限耗尽都 Fail Closed，且 Cancel/Deadline/Action
+  不会被 Exit Code 碰撞覆盖；
 - 启动期和执行期的结构化 `permission_required` 都映射为唯一 Permission Block；已有 Cancel / Limit 时不追加；
 - Session Ref、Generation、`effective_launch_profile` 及其 SHA-256 持久化；
 - Origin / External Binding 的互斥字段校验，Origin 不执行 Probe 或创建 Worker Runtime；多个 Origin Role 共享宿主上下文，独立验证要求不能错误映射到共享 Origin；
@@ -4471,43 +4558,55 @@ sequenceDiagram
 49. 分别损坏已存在的 `runner.json` / `launch-authorized.json`，以及在身份被引用或许可消费证据出现后删除它们：恢复只进入 `CORRUPTED` 并清理可验证进程，不把它们视为首次缺失，也不产生第二次授权。
 50. 在首次 Snapshot 中放入不支持的文件类型、消失的 untracked 路径或嵌套仓库目录：`start` 释放本 Run Owner 并拒绝 Kickoff，修正后可对同一 UNSTARTED Run 重试。
 51. Kickoff 后分别让 Before 与 After Snapshot 失败：Before 不伪造 Turn / Block 而进入 `CORRUPTED`，After 使用既有 Turn 产生 Recovery Block；合法 Event 后 Deadline 先到则创建唯一的无 Before Facts 技术 Turn。
-52. Fresh DSH Plugin Role 第一代冻结后提出 finding，正常回环 Developer / Reviewer，
-    再次路由时创建下一代私有 Home、Session 和 Plugin Hash；旧代文件保持不变，恢复和
-    清理同时校验所有已准备代次，且旧版 Generation 1 路径仍可继续使用。
-52. 损坏 `root.json` 后，`unlock` 仍能从固定状态目录定位 Owner；只有 `--expect-run` 匹配且所有身份清空时可删除精确 Owner，错误 Run 或活进程时均拒绝。
-53. 对可启动 UNSTARTED、被其他 Owner 阻塞的 UNSTARTED、正常 Running、可恢复运行时缺失、Origin Unclaimed、Origin Exited、Blocked、Completed、Cancelled、终态清理仍活跃、终态进程已结束但 Owner 遗留、Recovery Required 和 Corrupted 分别调用 Status / Diagnose，确认 Health、Resume Policy 与 Recommended Action 的固定映射一致；终态 Owner 遗留建议 `RUN_RECOVER`，执行后只安全释放 Owner，不产生 Worker 或 Event。
-54. 分别制造 Owner、Journal、Turn、Runner 身份、Session 和 Workspace Facts 故障：`diagnose --json` 返回固定码、检查对象与可用证据路径，不解析 Pane / 普通日志，也不调用 Recover。
-55. 在 Running、Blocked 和 Completed 状态启动、断开并重启 `watch --jsonl`：每轮都是完整当前 Snapshot，Sequence 仅在当前 Watch 进程内递增；Completed 的正常清理阶段保持 `WAIT`，安全收口后的最后一行再正常退出。
-56. Harness 以任意 Pipe Read 边界交错写入 stdout / stderr、多条或拆分的 JSONL、
+52. Fresh DSH Plugin Role 的声明位置在 `init` 时不存在，由候选生产 Role 从零创建；
+    第一代冻结后提出 finding 并按 Protocol 回环，再次路由时创建下一代私有 Home、Session
+    和 Plugin Hash；旧代文件保持不变，恢复和清理同时校验所有已准备代次，且旧版
+    Generation 1 路径仍可继续使用。
+53. 发送 Role 路由 Fresh DSH Plugin 候选消费 Role 前，候选 Bundle 缺失安装合同、
+    Manifest、Patch 或安全文件树时返回 `ROUTE_PREFLIGHT_REJECTED`；确认没有 Outbox/Event、
+    Run 保持 Running 且原 Turn 仍持有 Token，并可在同一 Turn 选择新的 Protocol 合法
+    Handoff。路由预检成功后再篡改候选或冻结 Profile 时仍产生唯一 `profile_changed` Block。
+54. 多轮 Reviewer 每轮都以完整当前候选重新核对原始 Request 和权威验收源；构造删除
+    原验收测试或弱化条件的候选，确认不能凭上一轮 Finding 清单宣告完成。
+55. 损坏 `root.json` 后，`unlock` 仍能从固定状态目录定位 Owner；只有 `--expect-run` 匹配且所有身份清空时可删除精确 Owner，错误 Run 或活进程时均拒绝。
+56. 对可启动 UNSTARTED、被其他 Owner 阻塞的 UNSTARTED、正常 Running、可恢复运行时缺失、Origin Unclaimed、Origin Exited、Blocked、Completed、Cancelled、终态清理仍活跃、终态进程已结束但 Owner 遗留、Recovery Required 和 Corrupted 分别调用 Status / Diagnose，确认 Health、Resume Policy 与 Recommended Action 的固定映射一致；终态 Owner 遗留建议 `RUN_RECOVER`，执行后只安全释放 Owner，不产生 Worker 或 Event。
+57. 分别制造 Owner、Journal、Turn、Runner 身份、Session 和 Workspace Facts 故障：`diagnose --json` 返回固定码、检查对象与可用证据路径，不解析 Pane / 普通日志，也不调用 Recover。
+58. 在 Running、Blocked 和 Completed 状态启动、断开并重启 `watch --jsonl`：每轮都是完整当前 Snapshot，Sequence 仅在当前 Watch 进程内递增；Completed 的正常清理阶段保持 `WAIT`，安全收口后的最后一行再正常退出。
+59. Harness 以任意 Pipe Read 边界交错写入 stdout / stderr、多条或拆分的 JSONL、
     合法 UTF-8 和任意非 UTF-8 字节后，`stream.jsonl` 每行仍是合法 JSON，可无损
     恢复各来源字节并按 Sequence 重放 Supervisor 的观察顺序；Interactive PTY 的
     Terminal Chunk 同样可逆保存但不走 Framer。运行中把 Stream 路径替换为符号链接
     不能重定向持有 FD 的写入，inode 复核失败时不交付 Outbox。
-57. 在 Handoff、Cancel、Deadline 和终态 Owner 释放并发窗口持续执行观察命令：每份报告都对应一个锁内 Snapshot，观察不产生 Event、Claim、Runtime 更新、锁文件或第二份状态；删除既有 Workspace / Run 锁时不由观察命令补建，显式 Run 查询返回最小 Corrupted 报告，省略 Run ID 且无法安全解析 Owner 时返回 `OBSERVATION_IO_ERROR` / Exit `4`。
-58. Standard 与 Full Audit 分别执行 Origin/External 混合和全 External Run；Full Audit
+60. 在 Handoff、Cancel、Deadline 和终态 Owner 释放并发窗口持续执行观察命令：每份报告都对应一个锁内 Snapshot，观察不产生 Event、Claim、Runtime 更新、锁文件或第二份状态；删除既有 Workspace / Run 锁时不由观察命令补建，显式 Run 查询返回最小 Corrupted 报告，省略 Run ID 且无法安全解析 Owner 时返回 `OBSERVATION_IO_ERROR` / Exit `4`。
+61. Standard 与 Full Audit 分别执行 Origin/External 混合和全 External Run；Full Audit
     拒绝 Origin Business Role、Raw Delete，并在 Source 或 Normalized Trace 截断时
     提交唯一技术 Block。
-59. 对每个静止 External Turn 校验 Runtime Anchor、Manifest、所有 Retained Artifact、
+62. 对每个静止 External Turn 校验 Runtime Anchor、Manifest、所有 Retained Artifact、
     Trace Sequence/Raw Ref/Summary；改写任一字节后 Status、Diagnose、Transcript 和
     Recover 都拒绝。
-60. 使用 Role/Turn 过滤运行 `transcript --json` 与 `tail --jsonl`，确认 Frozen Input、
+63. 使用 Role/Turn 过滤运行 `transcript --json` 与 `tail --jsonl`，确认 Frozen Input、
     Prompt、Events、Formal Output、Event/Tool/Usage 汇总和 Follow 去重均来自同一已
     校验 Trace。
-61. 分别提交缺少或留空 Decision Rationale/Evidence 的 Handoff、Completion、Agent
+64. 分别提交缺少或留空 Decision Rationale/Evidence 的 Handoff、Completion、Agent
     Block，确认在 Outbox/Event 提交前拒绝；合法 Payload 正常完成循环。
-62. Claude Code Developer 与独立 Codex Reviewer 在 Full Audit 下完成 Finding→修复→
+65. Claude Code Developer 与独立 Codex Reviewer 在 Full Audit 下完成 Finding→修复→
     同 Session Re-review→Completion，所有 Turn 无截断、Owner 释放且 Diagnose 无失败项。
-63. 强制随机源返回以 `-` 开头的 Launch Nonce 与 Origin Claim：新 Token 仍获得非选项
+66. 强制随机源返回以 `-` 开头的 Launch Nonce 与 Origin Claim：新 Token 仍获得非选项
     前缀，Worker→Supervisor→Runner 的真实管线使用 `--nonce=<value>` 正常到达身份快照
     和启动许可，不再以 argparse Exit 2 误报 Start Failure。
-64. 在 Receipt 写入前、Receipt 后、Normalized Trace、Redacted Stream、同步 Stderr、
+67. 在 Receipt 写入前、Receipt 后、Normalized Trace、Redacted Stream、同步 Stderr、
     两个 Raw 文件删除之间、Manifest 写入和 Manifest 已提交但 Runtime 尚未锚定时分别
     注入崩溃；重试后 Artifact、Hash、事件/脱敏计数与首次冻结结果完全一致，且不残留
     Receipt。
-65. 分别伪造遗漏受支持 Artifact、Delete 后残留 Raw、Redacted Policy 下 Schema 1
+68. 分别伪造遗漏受支持 Artifact、Delete 后残留 Raw、Redacted Policy 下 Schema 1
     Stream、与 Stream 不一致的 Stderr、Boolean/Float Schema Version、重复 JSON Key、
     未知 Exec Error Code 和畸形 LaunchSpec；所有读取入口都 Fail Closed。Corrupted
     Observation 同时验证固定字段、UTC 时间以及不泄漏缺失或 Run 外证据路径。
+69. Fresh DSH Plugin Role 在真实 Loader 激活期间非零退出、Runner 已静止且 Session
+    Store 中不存在预期 Ref：确认不解析 Terminal 文本、不提交 Recovery Block，而是把
+    失败 Generation 标记 unavailable，并向原 Handoff 发送 Role 提交 Candidate
+    Activation Finding；Run 保持 Running，下一次候选路由使用新 Generation。无不同
+    发送 Role、已有 Outbox、Session 已初始化、非候选 Crash 或完整性故障仍 Fail Closed。
 
 ## 31.4 Handoff 质量评测
 

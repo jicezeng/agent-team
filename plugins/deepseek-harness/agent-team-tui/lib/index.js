@@ -12,6 +12,15 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 
 export const name = 'agent-team-tui'
 export const inject = ['cmdlineArgs', 'agents', 'sessions', 'agentDefaultModel']
+const OUTPUT_LIMIT_EXIT_CODE = 75
+
+class InitialTurnError extends Error {
+  constructor(message, exitCode = 1) {
+    super(message)
+    this.name = 'InitialTurnError'
+    this.exitCode = exitCode
+  }
+}
 
 function fail(message) {
   throw new Error(`agent-team-tui: ${message}`)
@@ -140,7 +149,10 @@ function assertInitialTurnCompleted(reason) {
   const detail = reason?.kind === 'error' && reason.error?.code
     ? `error (${reason.error.code})`
     : reason?.kind ?? 'missing terminal reason'
-  fail(`initial agent turn did not complete: ${detail}`)
+  throw new InitialTurnError(
+    `agent-team-tui: initial agent turn did not complete: ${detail}`,
+    reason?.kind === 'max-tokens' ? OUTPUT_LIMIT_EXIT_CODE : 1,
+  )
 }
 
 async function send(agent, sessions, text) {
@@ -237,6 +249,7 @@ export function apply(ctx) {
   }
   void start(ctx, options).catch((error) => {
     process.stderr.write(`dsh: ${error instanceof Error ? error.message : String(error)}\n`)
-    ctx.get('appExit')?.(1)
+    const exitCode = error instanceof InitialTurnError ? error.exitCode : 1
+    ctx.get('appExit')?.(exitCode)
   })
 }

@@ -87,11 +87,13 @@ Codex、Claude Code、OpenCode CLI 也只在团队选择对应 Role 时检查；
 ```
 
 若 Role 声明 `--role-dsh-plugin ROLE=<workspace-package-directory>`，它必须使用
-`fresh` Session Policy。每次路由到该 Role 都会创建下一代 Home，把当时的 Package
-内容复制到该代 Profile 的 `node_modules`，将 Bundle 插入 `dsh.profile.bundles`，并
-写入不可变的文件 Manifest 与内容 Hash。前一代 Home 与快照原样保留。Validator
-发现源码问题时可正常 Handoff 给 Developer；修复和复审后再次路由到同一 Validator，
-新 Session 自动加载新一代制品，无需 Block 或 continuation Run。Role 直接调用受管
+`fresh` Session Policy。该相对位置在 `init` 时可以尚不存在，由前序 Role 在 Run 内从零
+创建；首次正式路由前才要求它成为真实、可安装的 Workspace Package。每次路由到该 Role
+都会创建下一代 Home，把当时的 Package 内容复制到该代 Profile 的 `node_modules`，将
+Bundle 插入 `dsh.profile.bundles`，并写入不可变的文件 Manifest 与内容 Hash。前一代
+Home 与快照原样保留。候选消费 Role 发现源码问题时按自然语言 Protocol 选择下一 Role；
+修复后的候选再次进入该 Role 时，新 Session 自动加载新一代制品，无需 Block 或
+continuation Run。Role 直接调用受管
 DSH 中的插件；不从模型 Bash 启动子 DSH，也不把父 DSH Credential 转交给工具进程。
 
 Adapter 在每一 Session Generation 首次接收路由前创建私有 `DSH_HOME`，复制 bundled
@@ -228,8 +230,9 @@ Symlink 都阻止清理并进入完整性故障。
 6. Completion 后 Owner、Worker、Runner 和 tmux Runtime 均安全收口。
 7. 真实 DSH Origin 通过 `agent_team_cli` 启动至少一个 DSH External Role，凭据不出现
    在模型消息、Bash 环境、工具结果或 Agent-Team Trace 中。
-8. 带 Workspace Plugin 的 Fresh Validator 至少经历两代：第一代 finding 正常返回
-   Developer，第二代冻结新 Hash、使用新私有 Home，且第一代制品与证据保持不变。
+8. 带 Workspace Plugin 的 Fresh 候选消费 Role 至少经历两代：第一代 finding 按 Protocol
+   返回候选生产/修复 Role，第二代冻结新 Hash、使用新私有 Home，且第一代制品与证据
+   保持不变；声明位置在 `init` 时可以不存在。
 
 Origin 方向的历史证据见
 [`deepseek-harness-origin-v0.1.4-validation-report.md`](validation/deepseek-harness-origin-v0.1.4-validation-report.md)；

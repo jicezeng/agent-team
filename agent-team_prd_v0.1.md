@@ -131,10 +131,20 @@ v0.1 不承诺：
   Workflow。Session 以私有 JSONL Store 持久化并通过 DSH 原生 Resume 恢复；认证只从
   环境读取。DSH Sandbox 只约束文件写效果，因此 `default` 与
   `trusted-workspace` 都限制写入 Workspace，但不限制读取、进程或网络；
-- 声明 Workspace DSH Plugin 的验证 Role 必须使用 `fresh`；每次进入该 Role 都按
-  Session Generation 创建新的私有 Home，冻结当前候选 Bundle，保留旧代制品和证据。
-  Validator finding 走正常 Handoff 与修复/复审循环，同一 Run 可用下一代制品继续验证，
-  不得仅因上一代已冻结而要求 Block 或新 Run；
+- 声明 Workspace DSH Plugin 的候选消费 Role 必须使用 `fresh`；每次进入该 Role 都按
+  Session Generation 创建新的私有 Home，冻结当前候选 Bundle，保留旧代制品和证据；
+  Bundle 位置在 `init` 时可以尚不存在，由前序 Role 在 Run 内创建，首次路由时才必须
+  满足安装合同。候选消费 Role 的 finding 按自然语言 Protocol 走正常 Handoff，同一 Run
+  可用下一代制品继续验证，
+  不得仅因上一代已冻结而要求 Block 或新 Run。目标 Bundle 在 Outbox/Event 提交前被
+  判定为不可安装时，CLI 返回可审计的 `ROUTE_PREFLIGHT_REJECTED`，保留当前 Turn 的
+  Token，由当前 Role 按自然语言 Protocol 选择具备能力的下一 Role；只有冻结 Profile 漂移或 Outbox
+  提交后的目标变化继续 Fail Closed。候选 Bundle 已完成隔离复制、但在真实 DSH Loader
+  激活期间令 Harness 于 Fresh Session 持久化前退出时，Agent-Team 不解析 Loader 文本、
+  不复刻 DSH Plugin 语义；它把该代标记为不可用，并自动生成 Candidate Activation
+  Finding，以 `system_handoff_reason=candidate_activation_failed` 结构化标记并回交给发送
+  Role。接收方依据保留 Trace 选择 Protocol 允许的下一跳；只有证据证明是编排器、运行时
+  或权限故障时才 Block；
 - Codex 的管理员 Requirements 与 Claude 的 Enterprise Managed Settings 都不能由
   Agent-Team 覆盖，不进入 `launch_profile_sha256`，也不能由 `doctor` 证明云端或最终
   有效内容；Codex Requirements 可以约束并拒绝不兼容的 Sandbox、Approval、Permission
@@ -173,9 +183,14 @@ v0.1 不承诺：
 
 - 每个 External Role 独立持久化 Session Ref 和 Generation；
 - 同一 `resume` Role 的后续 Turn 恢复已校验 Session；
+- Harness 以专用结构化信号明确报告单次输出预算耗尽时，只有在 Runner 已静止、
+  Full Audit 未截断、无权限/完整性故障、精确 `resume` Session 可用且 Run 上限仍允许的
+  情况下，Runtime 才可在尚未产生 Block 前提交同角色 Automatic Continuation Handoff；
+  它创建并计数一个新的业务 Turn，不增加权限，也不等价于 Resume Block；连续两个没有
+  Git 可见 Workspace 进展的此类 Turn 必须停止并 Block；
 - Session 不可用时必须先 Block，经新的明确用户指令后才能在后续 Turn 降级；
 - Completion 可以由任意协议指定角色提交，最终由 Origin 向用户交付；
-- Block 必须先返回用户，禁止同一 Agent Turn 自动 Resume；
+- 任一 Block 一旦提交都必须先返回用户，禁止同一 Agent Turn 自动 Resume；
 - Limit、Profile Changed 或不可变配置变化必须新建 Run。
 
 ### 6.4 本地安全与恢复
@@ -249,9 +264,17 @@ v0.1 的发布验收必须同时满足：
   创建 restricted External Role Run，并收到该 Role 的 Completion；同时必须作为
   interactive External Role 完成原生 Session 创建、跨进程 Resume 和多 Turn 正式闭环；
 - Finding 能经历提出、接受或有证据拒绝、修复、同 Session 复审和关闭；
-- DSH Validator 对冻结制品提出 finding 后，可在同一 Run 经 Developer 和 Reviewer
-  回环，再以新 Session Generation 验证新制品，同时旧代 Hash 与 Profile 保持可审计；
+- 每轮完整 Review 都重新对照原始 Request 和权威验收源；不得通过删除测试、缩小审查
+  范围或降低验收条件关闭 Finding；
+- DSH 候选消费 Role 对冻结制品提出 finding 后，可在同一 Run 按 Protocol 回到候选生产/
+  修复 Role，再以新 Session Generation 验证新制品，同时旧代 Hash 与 Profile 保持可审计；
+- 候选消费 Role 的声明位置可在 `init` 时不存在；正式路由前遇到可修复的 Bundle 预检失败
+  时，不创建 Outbox/Event、不产生技术 Block，并能由同一 Turn 选择新的 Protocol 合法
+  Handoff；预检后漂移仍 Block；
 - 至少五个后续 Turn 可恢复同一 External Role Session；
+- DSH 的专用 `max-tokens` 终止在满足安全门时可自动创建同角色新业务 Turn；`resume`
+  复用同一 Session，`fresh` 创建新 Generation。普通 Crash、已有 Outbox、Turn/Deadline
+  耗尽、审计截断或权限问题必须 Fail Closed，且任何已提交 Block 都不得被自动 Resume；
 - 生命周期、完整性、崩溃点、进程身份、Workspace Ownership 和观察接口测试通过；
 - 每个完成的 Full Audit External Turn 都有可验证 Manifest 锚点，且无未声明截断；
 - Transcript 汇总可报告事件、工具和 Harness 提供的 Token/Cost/Duration；

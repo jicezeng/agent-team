@@ -7,10 +7,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_team.adapters.base import HarnessLaunchOptions
+from agent_team.adapters.base import (
+    AdapterEvidenceSnapshot,
+    HarnessLaunchOptions,
+    ProcessResult,
+)
 from agent_team.adapters.deepseek_harness import DeepSeekHarnessAdapter
 from agent_team.assets import dsh_tui_source
-from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
+from agent_team.errors import (
+    AgentTeamError,
+    IntegrityError,
+    InvalidArgument,
+    RoutePreflightError,
+)
 
 from ._support import launch_context
 
@@ -320,6 +329,40 @@ def test_dsh_role_installs_and_freezes_workspace_bundle_on_activation(
     assert not (installed / "node_modules").exists()
     assert len(launch.env["AGENT_TEAM_DSH_PLUGIN_SHA256"]) == 64
     assert home.is_relative_to(state / "harness-homes" / "deepseek-harness")
+    activation_failure = adapter.candidate_activation_failure(
+        run_dir=run_dir,
+        role_id="developer",
+        session_generation=1,
+        result=ProcessResult(
+            process_exit_code=1,
+            termination_kind="crash",
+            group_quiescent=True,
+            launch_mode="interactive",
+        ),
+        evidence=AdapterEvidenceSnapshot(
+            agent_execution_started=True,
+            adapter_completed=False,
+            observed_session_ref=launch.expected_session_ref,
+        ),
+    )
+    assert activation_failure is not None
+    assert "before its fresh Session" in activation_failure
+    assert adapter.candidate_activation_failure(
+        run_dir=run_dir,
+        role_id="developer",
+        session_generation=1,
+        result=ProcessResult(
+            process_exit_code=0,
+            termination_kind="normal",
+            group_quiescent=True,
+            launch_mode="interactive",
+        ),
+        evidence=AdapterEvidenceSnapshot(
+            agent_execution_started=True,
+            adapter_completed=True,
+            observed_session_ref=launch.expected_session_ref,
+        ),
+    ) is None
 
     (source / "lib" / "index.js").write_text(
         "export const name = 'changed-after-activation'\n",
@@ -418,10 +461,49 @@ def test_dsh_role_rejects_candidate_that_shadows_managed_bundles(
     with pytest.raises(AgentTeamError) as rejected:
         DeepSeekHarnessAdapter._candidate_contract(
             source,
+            workspace=tmp_path,
             source_relative="candidate",
         )
 
     assert rejected.value.code == "DSH_PLUGIN_INVALID"
+    assert isinstance(rejected.value, RoutePreflightError)
+
+
+def test_dsh_candidate_contract_defers_future_location_until_route(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "packages" / "future-plugin"
+
+    with pytest.raises(RoutePreflightError) as unavailable:
+        DeepSeekHarnessAdapter._candidate_contract(
+            source,
+            workspace=workspace,
+            source_relative="packages/future-plugin",
+        )
+
+    assert unavailable.value.code == "DSH_PLUGIN_UNAVAILABLE"
+
+
+def test_dsh_candidate_contract_rejects_symlinked_ancestor_escape(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    candidate = outside / "candidate"
+    workspace.mkdir()
+    candidate.mkdir(parents=True)
+    (workspace / "packages").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RoutePreflightError) as escaped:
+        DeepSeekHarnessAdapter._candidate_contract(
+            workspace / "packages" / "candidate",
+            workspace=workspace,
+            source_relative="packages/candidate",
+        )
+
+    assert escaped.value.code == "DSH_PLUGIN_INVALID"
 
 
 def test_dsh_resume_rejects_missing_private_session(
@@ -472,6 +554,9 @@ def test_bundled_dsh_tui_never_renders_private_reasoning() -> None:
     assert "resolveInitialTurn?.(reason)" in source
     assert "assertInitialTurnCompleted(await renderer.initialTurnReason)" in source
     assert "initial agent turn did not complete" in source
+    assert "const OUTPUT_LIMIT_EXIT_CODE = 75" in source
+    assert "class InitialTurnError extends Error" in source
+    assert "reason?.kind === 'max-tokens' ? OUTPUT_LIMIT_EXIT_CODE : 1" in source
     assert "'agentDefaultModel'" in source
     assert "defaultModel.currentSelection()" in source
     assert "--provider and --model must be supplied together" in source
@@ -479,3 +564,50 @@ def test_bundled_dsh_tui_never_renders_private_reasoning() -> None:
     assert "compression: none" in patch
     assert "tool-subagent" in patch
     assert "disabled: true" in patch
+
+
+def test_dsh_maps_only_structural_output_limit_exit_to_continuation() -> None:
+    adapter = DeepSeekHarnessAdapter()
+    result = ProcessResult(
+        process_exit_code=75,
+        termination_kind="output_limit",
+        group_quiescent=True,
+        launch_mode="interactive",
+    )
+    evidence = AdapterEvidenceSnapshot(
+        agent_execution_started=True,
+        adapter_completed=False,
+        observed_session_ref="agent-team-session",
+    )
+
+    assert adapter.recoverable_termination_kind(result, evidence) == "output_limit"
+    assert (
+        adapter.recoverable_termination_kind(
+            ProcessResult(
+                process_exit_code=1,
+                termination_kind="crash",
+                group_quiescent=True,
+                launch_mode="interactive",
+            ),
+            evidence,
+        )
+        is None
+    )
+    assert (
+        adapter.recoverable_termination_kind(
+            result,
+            AdapterEvidenceSnapshot(
+                agent_execution_started=True,
+                permission_required=True,
+                observed_session_ref="agent-team-session",
+            ),
+        )
+        is None
+    )
+    assert (
+        adapter.recoverable_termination_kind(
+            result,
+            AdapterEvidenceSnapshot(agent_execution_started=True),
+        )
+        is None
+    )

@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .adapters import get_adapter
-from .adapters.base import LaunchSpec, ProcessResult, TurnLaunchContext
+from .adapters.base import (
+    AdapterEvidenceSnapshot,
+    LaunchSpec,
+    ProcessResult,
+    TurnLaunchContext,
+)
 from .assets import effective_agent_team_cli
 from .config import Role, load_team
 from .errors import (
@@ -46,6 +51,7 @@ from .turns import (
     iter_runtimes,
     load_runtime,
     load_session,
+    record_candidate_activation_failure_session,
     render_turn_prompt,
     runtime_for_input,
     save_runtime,
@@ -73,6 +79,30 @@ ROLE_REQUIRED = {
     "tmux_pane_id",
     "updated_at",
 }
+
+
+def _candidate_activation_return_role(
+    run_dir: Path,
+    *,
+    runtime: dict[str, Any],
+) -> str | None:
+    projection = scan_journal(run_dir)
+    inputs = [
+        event
+        for event in projection.events
+        if event["event_id"] == runtime["input_event_id"]
+    ]
+    if len(inputs) != 1:
+        raise IntegrityError("candidate activation Turn input is not unique")
+    source = inputs[0]
+    if (
+        source["event_type"] != "handoff"
+        or source["to_role"] != runtime["role_id"]
+        or source["from_role"] not in projection.team.roles
+        or source["from_role"] == runtime["role_id"]
+    ):
+        return None
+    return source["from_role"]
 
 
 def _cli_path() -> str:
@@ -645,7 +675,42 @@ def finalize_external_turn_locked(
         raise IntegrityError(
             "session-unavailable evidence conflicts with execution evidence"
         )
-    if runtime["observed_session_ref"] and not session_unavailable:
+    result = ProcessResult(
+        process_exit_code=runtime["process_exit_code"],
+        termination_kind=runtime["termination_kind"] or "unknown",
+        group_quiescent=bool(runtime["group_quiescent"]),
+        launch_mode=role.launch_mode or "headless",
+    )
+    evidence = AdapterEvidenceSnapshot(
+        agent_execution_started=bool(runtime["agent_execution_started"]),
+        adapter_completed=bool(runtime["adapter_completed"]),
+        permission_required=bool(runtime["permission_required"]),
+        observed_session_ref=runtime["observed_session_ref"],
+    )
+    classification_adapter = get_adapter(role.adapter or "")
+    candidate_classifier = getattr(
+        classification_adapter,
+        "candidate_activation_failure",
+        None,
+    )
+    candidate_activation_failure = (
+        None
+        if session_unavailable or candidate_classifier is None
+        else candidate_classifier(
+            run_dir=run_dir,
+            role_id=role.role_id,
+            session_generation=runtime["session_generation"],
+            result=result,
+            evidence=evidence,
+        )
+    )
+    if candidate_activation_failure is not None:
+        record_candidate_activation_failure_session(
+            run_dir,
+            role=role,
+            runtime=runtime,
+        )
+    elif runtime["observed_session_ref"] and not session_unavailable:
         commit_session(
             run_dir,
             role=role,
@@ -723,22 +788,44 @@ def finalize_external_turn_locked(
         runtime["terminal_event_id"] = event["event_id"]
         save_runtime(turn_dir, runtime, team=team)
         return event
-    result = ProcessResult(
-        process_exit_code=runtime["process_exit_code"],
-        termination_kind=runtime["termination_kind"] or "unknown",
-        group_quiescent=bool(runtime["group_quiescent"]),
-        launch_mode=role.launch_mode or "headless",
-    )
-    from .adapters.base import AdapterEvidenceSnapshot
-
-    evidence = AdapterEvidenceSnapshot(
-        agent_execution_started=bool(runtime["agent_execution_started"]),
-        adapter_completed=bool(runtime["adapter_completed"]),
-        permission_required=bool(runtime["permission_required"]),
-        observed_session_ref=runtime["observed_session_ref"],
-    )
     exit_info = adapter.classify_result(result, evidence)
-    if exit_info.is_normal_completion:
+    recoverable_kind = adapter.recoverable_termination_kind(result, evidence)
+    if (
+        runtime["termination_kind"] == "output_limit"
+        and recoverable_kind == "output_limit"
+    ):
+        try:
+            event = deliver_outbox_locked(
+                run_dir,
+                runtime=runtime,
+                allow_after_capture=allow_after_capture,
+                automatic_continuation_reason="output_limit",
+            )
+        except RecoverableTurnArtifactError as exc:
+            event = commit_technical_block_locked(
+                run_dir,
+                runtime=runtime,
+                reason="recovery",
+                message=(
+                    f"Deferred {exc.artifact} evidence for this uniquely identified "
+                    "Turn is damaged and cannot be trusted or regenerated: "
+                    f"{exc.message}"
+                ),
+            )
+            runtime["outcome"] = "failed"
+        except IntegrityError:
+            raise
+        except (AgentTeamError, OSError) as exc:
+            event = commit_technical_block_locked(
+                run_dir,
+                runtime=runtime,
+                reason="recovery",
+                message=f"Automatic continuation delivery failed: {exc}",
+            )
+            runtime["outcome"] = "failed"
+        else:
+            runtime["outcome"] = _terminal_outcome(event)
+    elif exit_info.is_normal_completion:
         try:
             event = deliver_outbox_locked(
                 run_dir,
@@ -768,6 +855,54 @@ def finalize_external_turn_locked(
             runtime["outcome"] = "failed"
         else:
             runtime["outcome"] = _terminal_outcome(event)
+    elif candidate_activation_failure is not None:
+        return_role = _candidate_activation_return_role(
+            run_dir,
+            runtime=runtime,
+        )
+        if return_role is None:
+            event = commit_technical_block_locked(
+                run_dir,
+                runtime=runtime,
+                reason="start_failure",
+                message=(
+                    f"{candidate_activation_failure} The input Event has no "
+                    "distinct sending role that can receive the finding."
+                ),
+            )
+            runtime["outcome"] = "failed"
+        else:
+            try:
+                event = deliver_outbox_locked(
+                    run_dir,
+                    runtime=runtime,
+                    allow_after_capture=allow_after_capture,
+                    candidate_activation_failure=candidate_activation_failure,
+                    candidate_activation_return_role=return_role,
+                )
+            except RecoverableTurnArtifactError as exc:
+                event = commit_technical_block_locked(
+                    run_dir,
+                    runtime=runtime,
+                    reason="recovery",
+                    message=(
+                        f"Candidate activation {exc.artifact} evidence is damaged "
+                        f"and cannot be routed safely: {exc.message}"
+                    ),
+                )
+                runtime["outcome"] = "failed"
+            except IntegrityError:
+                raise
+            except (AgentTeamError, OSError) as exc:
+                event = commit_technical_block_locked(
+                    run_dir,
+                    runtime=runtime,
+                    reason="recovery",
+                    message=f"Candidate activation finding delivery failed: {exc}",
+                )
+                runtime["outcome"] = "failed"
+            else:
+                runtime["outcome"] = _terminal_outcome(event)
     else:
         exec_error = turn_dir / "process" / "exec-error.json"
         has_exec_error = path_entry_exists(exec_error)

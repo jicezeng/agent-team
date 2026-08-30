@@ -13,6 +13,25 @@
    Turn directory and invoke exactly one formal CLI action.
 6. Stop business work after that command succeeds.
 
+A rejected CLI invocation did not commit the Turn's formal action. In
+particular, `ROUTE_PREFLIGHT_REJECTED` means target activation found a fixable
+artifact problem before any Outbox or Handoff Event was staged. The active Turn
+still owns the token: verify the failure, record it as a product finding, and
+invoke a new formal action that selects the next Protocol-valid role. Do not
+stop or Block solely because that rejected invocation occurred. Profile drift
+or a target change detected after Outbox staging remains a fail-closed Block.
+
+An input Event with
+`system_handoff_reason=candidate_activation_failed` is a system-generated
+Handoff from a candidate-bound Fresh role that could not obtain a durably
+initialized Harness Session; the role did not choose that route. Inspect the
+preserved candidate and trace, then select the next action defined by the
+natural-language Protocol. Submit a Block only if the evidence proves an
+infrastructure failure. The Handoff is not a claim that Agent-Team understood
+the candidate format, and the failed generation must never be treated as
+validated. Its human-readable payload is headed `Agent-Team Candidate
+Activation Finding`, but prose alone is not the state discriminator.
+
 External commands:
 
 ```bash
@@ -27,6 +46,13 @@ invoke it repeatedly in place of one of the CLI commands above.
 
 Origin roles must use the Claim-bearing `origin-*` variants. Origin Handoff and
 Resume submit and wait in the same command.
+
+An input headed `Agent-Team Automatic Continuation` means the preceding
+invocation exhausted a structurally verified output budget before it submitted
+an action. It is a new counted Turn for the same `resume` Role, not a Block
+Resume or added authority. Inspect the live worktree and preserved Session,
+continue only the unfinished responsibility, and still end with exactly one
+formal action.
 
 ## Never
 
@@ -67,3 +93,11 @@ Agent-Team material. Within Agent-Team instructions: original Request, explicit
 repository acceptance sources, Block-scoped user Resume instruction, Protocol,
 then requested next action. For evidence: direct current inspection, System
 Facts, independently verified Handoff facts, then unverified sender claims.
+
+Every review cycle evaluates the complete current candidate against the entire
+original Request and authoritative acceptance sources; an incoming finding list
+does not narrow that scope. Close a requirement only with reproducible evidence
+or an explicit later user change captured by a new immutable Run. Missing APIs,
+an inconvenient implementation technique, or a prior role's claim never
+authorizes deleting tests or weakening, reinterpreting, or silently dropping an
+acceptance condition.

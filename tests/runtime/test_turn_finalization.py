@@ -431,6 +431,10 @@ def test_external_action_enforces_audited_rationale_and_evidence_contract(
             "# Completion\n\n"
             "## Decision rationale\n\n"
             "The requested change is complete.\n\n"
+            "## Acceptance coverage\n\n"
+            "Every Request condition is mapped to the targeted test.\n\n"
+            "## Open findings\n\n"
+            "None.\n\n"
             "## Evidence\n\n"
             "The targeted tests pass.\n",
             encoding="utf-8",

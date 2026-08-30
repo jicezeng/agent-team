@@ -221,9 +221,11 @@ v0.1 不承诺：
   Turn Filter 和机器可读审计输出；
 - Full Audit 要求所有业务 Role 为 External，Origin 只做控制面，Raw 或 Normalized
   Capture 截断必须产生技术 Block；
-- Full Audit（以及显式启用 rationale/evidence 合同的 Standard Audit）中的 Handoff、
-  Completion 和 Agent Block 必须包含非空 `Decision rationale` 与 `Evidence`，但不得
-  声称这是隐藏 Chain of Thought。
+- 新建 Full Audit（以及显式启用审计 Payload 合同的 Standard Audit）中的 Handoff、
+  Completion 和 Agent Block 必须包含非空 `Decision rationale`、`Acceptance
+  coverage`、`Open findings` 与 `Evidence`；Completion 必须逐项覆盖 Request/Protocol
+  的实质条件且无未关闭 Finding，但不得声称这些内容是隐藏 Chain of Thought。历史 Run
+  继续按其 `team.json` 冻结的旧合同读取。
 
 ### 6.6 安装与诊断
 

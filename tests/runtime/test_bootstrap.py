@@ -7,6 +7,8 @@ import pytest
 
 from agent_team.bootstrap import _assert_external_capability, initialize_run
 from agent_team.config import (
+    REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    ObservabilityPolicy,
     Role,
     make_team,
 )
@@ -48,6 +50,84 @@ def test_external_turn_prompt_disambiguates_skill_from_formal_cli(
     assert (
         "`/opt/agent-team/bin/agent-team handoff --to <role-id> --file <payload>`"
     ) in prompt
+
+
+def test_external_turn_prompt_explains_strengthened_payload_contract(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-prompt-coverage-contract",
+        observability=ObservabilityPolicy(
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    )
+
+    prompt = render_turn_prompt(
+        run_dir,
+        runtime,
+        cli_path="/opt/agent-team/bin/agent-team",
+        session_ref=None,
+    )
+
+    assert "`## Acceptance coverage`" in prompt
+    assert "`## Open findings`" in prompt
+    assert "map every material Request and Protocol condition" in prompt
+    assert "Completion with incomplete coverage" in prompt
+
+
+def test_external_turn_prompt_indexes_prior_formal_inputs(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-prompt-history-index",
+    )
+    prior_path = run_dir / "handoffs" / "0001-validator-to-developer.md"
+    prior_path.write_text("# Finding\n", encoding="utf-8")
+    current_event_id = runtime["input_event_id"]
+    monkeypatch.setattr(
+        "agent_team.turns.scan_journal",
+        lambda _run_dir: SimpleNamespace(
+            events=[
+                {
+                    "event_id": "handoff-0001",
+                    "event_seq": 1,
+                    "event_type": "handoff",
+                    "from_role": "validator",
+                    "to_role": "developer",
+                    "payload_path": "handoffs/0001-validator-to-developer.md",
+                },
+                {
+                    "event_id": current_event_id,
+                    "event_seq": 2,
+                    "event_type": "handoff",
+                    "from_role": "developer",
+                    "to_role": "reviewer",
+                    "payload_path": "handoffs/0002-developer-to-reviewer.md",
+                },
+            ]
+        ),
+    )
+
+    prompt = render_turn_prompt(
+        run_dir,
+        runtime,
+        cli_path="/opt/agent-team/bin/agent-team",
+        session_ref=None,
+    )
+
+    assert "Prior formal input index, earliest first" in prompt
+    assert str(prior_path) in prompt
+    assert "latest Handoff does not erase" in prompt
 
 
 def test_init_rejects_launcher_that_detaches_from_managed_group(

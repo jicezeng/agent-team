@@ -61,6 +61,9 @@ route or complete work.
 ## Completion condition
 
 Give an observable business condition and name the Completion Authority.
+Require its Completion payload to map every material Request and Protocol
+condition to current reproducible evidence under `## Acceptance coverage`, and
+to state `None` under `## Open findings` only after that full audit succeeds.
 
 ## Final delivery
 
@@ -84,17 +87,20 @@ mutation as progress.
 ## Shared context policy
 
 List the direct input and evidence each role receives. Kickoff, Handoff, and
-Resume payloads are all frozen as the next Turn's `input.md`. Disclose that
-multiple Origin roles share host context; use separate External sessions for
-independent or blind review.
+Resume payloads are all frozen as the next Turn's `input.md`. External prompts
+also index earlier formal inputs so intermediate summaries cannot silently drop
+findings; a Protocol-declared blind role must not inspect history the Protocol
+forbids. Disclose that multiple Origin roles share host context; use separate
+External sessions for independent or blind review.
 
 ## Observability policy
 
 Record `standard` or `full`, raw retention, redaction, and byte limits. Full
 audit requires every business role to be External and reserves Origin for
 control-plane work. Require non-empty `## Decision rationale` and
-`## Evidence` in every formal role payload. State that only Harness-exposed
-reasoning summaries can be captured, never private hidden chain-of-thought.
+`## Acceptance coverage`, `## Open findings`, and `## Evidence` in every
+formal role payload. State that only Harness-exposed reasoning summaries can
+be captured, never private hidden chain-of-thought.
 
 ## Block and resume policy
 

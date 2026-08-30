@@ -8,6 +8,7 @@ import pytest
 
 from agent_team.bootstrap import initialize_run, start_run
 from agent_team.config import (
+    LEGACY_AUDIT_PAYLOAD_SECTIONS,
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
     Role,
@@ -902,6 +903,52 @@ def test_full_audit_mode_accepts_external_roles_and_required_sections(
     assert team.roles["reviewer"].binding == "external"
 
 
+def test_new_full_audit_run_rejects_legacy_two_section_contract(
+    workspace: Path,
+) -> None:
+    with pytest.raises(InvalidArgument, match="Acceptance coverage"):
+        make_team(
+            run_id="at-test-full-audit-legacy-new-run",
+            workspace=workspace,
+            origin_harness="codex",
+            roles={
+                "reviewer": Role(
+                    "reviewer",
+                    "external",
+                    "codex",
+                    "fresh",
+                    "default",
+                    "0" * 64,
+                )
+            },
+            initial_role="reviewer",
+            max_turns=2,
+            max_wall_time_seconds=300,
+            observability=ObservabilityPolicy(
+                audit_mode="full",
+                required_payload_sections=LEGACY_AUDIT_PAYLOAD_SECTIONS,
+            ),
+        )
+
+
+def test_new_standard_audit_contract_rejects_legacy_two_sections(
+    workspace: Path,
+) -> None:
+    with pytest.raises(InvalidArgument, match="Acceptance coverage"):
+        make_team(
+            run_id="at-test-standard-audit-legacy-new-run",
+            workspace=workspace,
+            origin_harness="codex",
+            roles={"reviewer": Role("reviewer", "origin")},
+            initial_role="reviewer",
+            max_turns=2,
+            max_wall_time_seconds=300,
+            observability=ObservabilityPolicy(
+                required_payload_sections=LEGACY_AUDIT_PAYLOAD_SECTIONS,
+            ),
+        )
+
+
 def test_full_audit_required_sections_are_case_insensitive(
     workspace: Path,
 ) -> None:
@@ -924,13 +971,56 @@ def test_full_audit_required_sections_are_case_insensitive(
         max_wall_time_seconds=300,
         observability=ObservabilityPolicy(
             audit_mode="full",
-            required_payload_sections=("decision RATIONALE", "EVIDENCE"),
+            required_payload_sections=(
+                "decision RATIONALE",
+                "acceptance COVERAGE",
+                "OPEN findings",
+                "EVIDENCE",
+            ),
         ),
     )
 
     assert team.observability.required_payload_sections == (
         "decision RATIONALE",
+        "acceptance COVERAGE",
+        "OPEN findings",
         "EVIDENCE",
+    )
+
+
+def test_historical_full_audit_contract_remains_readable(
+    workspace: Path,
+) -> None:
+    value = make_team(
+        run_id="at-test-full-audit-legacy-contract",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "reviewer": Role(
+                "reviewer",
+                "external",
+                "codex",
+                "fresh",
+                "default",
+                "0" * 64,
+            )
+        },
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+        observability=ObservabilityPolicy(
+            audit_mode="full",
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    ).to_json()
+    value["observability"]["required_payload_sections"] = list(
+        LEGACY_AUDIT_PAYLOAD_SECTIONS
+    )
+
+    parsed = parse_team(value)
+
+    assert parsed.observability.required_payload_sections == (
+        LEGACY_AUDIT_PAYLOAD_SECTIONS
     )
 
 
@@ -968,7 +1058,13 @@ def test_full_audit_mode_rejects_raw_trace_deletion(
     [
         (b"# Complete\n\nDone.\n", "missing"),
         (
-            b"# Complete\n\n## Decision rationale\n\n## Evidence\n\nTests pass.\n",
+            (
+                b"# Complete\n\n"
+                b"## Decision rationale\n\n"
+                b"## Acceptance coverage\n\nAll requirements mapped.\n\n"
+                b"## Open findings\n\nNone.\n\n"
+                b"## Evidence\n\nTests pass.\n"
+            ),
             "empty",
         ),
     ],
@@ -985,12 +1081,16 @@ def test_audited_payload_contract_rejects_missing_or_empty_sections(
     assert getattr(rejected.value, "code", None) == "PAYLOAD_CONTRACT_VIOLATION"
 
 
-def test_audited_payload_contract_accepts_explicit_rationale_and_evidence() -> None:
+def test_audited_payload_contract_accepts_coverage_findings_and_evidence() -> None:
     validate_payload_contract(
         (
             b"# Completion\n\n"
             b"## Decision rationale\n\n"
             b"The implementation meets the declared invariants.\n\n"
+            b"## Acceptance coverage\n\n"
+            b"R1 is covered by the focused integration test.\n\n"
+            b"## Open findings\n\n"
+            b"None.\n\n"
             b"## Evidence\n\n"
             b"`uv run pytest` passed.\n"
         ),

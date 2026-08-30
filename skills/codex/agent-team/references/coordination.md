@@ -3,7 +3,9 @@
 ## Every activated role
 
 1. Read `REQUEST.md`, `PROTOCOL.md`, the current Event type/ID, frozen
-   `input.md`, and independent Facts paths.
+   `input.md`, independent Facts paths, and the prior formal-input index that
+   the Turn prompt permits. A Protocol-declared blind role must not inspect
+   history the Protocol forbids.
 2. Confirm the dynamic Role ID and obey only its declared responsibilities and
    restrictions.
 3. Verify the live worktree directly. Treat a sender's narrative and verdict as
@@ -78,9 +80,14 @@ to perform unrelated, destructive, or external actions.
 Use these sections: From, To, My responsibility in this turn, Work completed,
 Artifacts and workspace state, Verified observations, My judgment and claims,
 Uncertainties and disagreements, Requested next action, Protocol basis,
-Decision rationale, Evidence. When the Run enforces the audited payload
-contract, `## Decision rationale` and `## Evidence` must both contain concrete,
-non-empty content.
+Decision rationale, Acceptance coverage, Open findings, Evidence. When the Run
+enforces the four-section audited payload contract, all four corresponding `##`
+sections must contain concrete, non-empty content. Map every material Request
+and Protocol condition relevant to the action to current evidence under
+`Acceptance coverage`, or mark it unverified. Preserve every unresolved finding,
+failed gate, disagreement, and unverified condition under `Open findings`; use
+`None` only after full coverage proves none remain. A Completion with incomplete
+coverage or an open finding is invalid and must become a Handoff or Block.
 
 Separate facts from judgments. Include commands and results that the receiver
 can reproduce. Expose unresolved uncertainty and disagreement. Record explicit

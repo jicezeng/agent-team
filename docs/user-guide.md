@@ -451,6 +451,12 @@ The action copies and hashes its payload before acceptance. Ordinary model
 text, tmux Pane content, logs, and manual TUI input never move the execution
 token.
 
+Each External prompt also lists earlier formal Handoff, Block, and Resume
+payload paths. This is an index, not trusted evidence: roles verify permitted
+history directly, and a Protocol-declared blind role must not inspect history
+the Protocol forbids. Its purpose is to stop an intermediate summary from
+silently dropping an unresolved finding.
+
 A CLI command that returns `ROUTE_PREFLIGHT_REJECTED` did not accept an action:
 it created no Outbox or Event, so the same Turn remains actionable. This is
 intended for repairable target artifacts such as a malformed DSH Workspace
@@ -539,12 +545,24 @@ Each Run freezes its observability policy:
 
 Explain the decision and tradeoffs.
 
+## Acceptance coverage
+
+Map every material Request and Protocol condition relevant to the action to
+current reproducible evidence, or mark it unverified.
+
+## Open findings
+
+List every unresolved finding, failed gate, disagreement, and unverified
+condition. Write `None` only after full coverage proves none remain.
+
 ## Evidence
 
 List reproducible inspections, commands, results, and artifact paths.
 ```
 
-These sections are an auditable explanation, not hidden chain-of-thought.
+These sections are an auditable explanation, not hidden chain-of-thought. A
+Completion with incomplete coverage or an open finding is invalid. Historical
+Runs retain the exact older section contract frozen in their `team.json`.
 Agent-Team records a reasoning summary only when the Harness exposes one.
 
 ## Block, Resume, cancellation, and recovery

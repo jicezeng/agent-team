@@ -128,6 +128,13 @@ External business Turn inside an existing Run:
    selected model may need multiple long responses.
 7. Choose the observability policy. Use `full` only when every business role is
    External and Origin is control-plane only; otherwise use `standard`.
+   New Runs that enable the audited payload contract require four concrete
+   sections in every formal role payload: `## Decision rationale`,
+   `## Acceptance coverage`, `## Open findings`, and `## Evidence`. Require
+   Completion to map every
+   material Request and Protocol condition to current evidence and to state
+   that no findings remain only after that full audit. Historical Runs retain
+   their frozen older contract.
 8. Resolve `agent-team` once to its canonical absolute executable path and
    retain that literal path for the entire Origin loop. Substitute it for
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it
@@ -199,7 +206,9 @@ nested Harness processes. Save the Run ID and immediately call:
   limits require Cancel plus a new Run.
 - On `TEAM_COMPLETED`, inspect the Completion Package, final Facts, artifacts,
   tests, loop history, transcript, and trace manifests before reporting to the
-  user.
+  user. A terminal Journal state proves only that the authority submitted
+  Completion; if its coverage is incomplete or contradicted by direct evidence,
+  report the validation failure instead of claiming the objective succeeded.
 
 ## Structured control
 

@@ -158,7 +158,13 @@ existing Run:
    business role is External and the Origin is control-plane only; otherwise
    use `standard` and disclose that Origin role internals are not captured.
    Keep standard redaction and redacted raw retention unless the user
-   explicitly requests another privacy tradeoff.
+   explicitly requests another privacy tradeoff. New Runs that enable the
+   audited payload contract require four concrete sections in every formal role
+   payload: `## Decision rationale`, `## Acceptance coverage`,
+   `## Open findings`, and `## Evidence`. Require the
+   Completion Authority to map every material Request and Protocol condition to
+   current evidence, and to write `None` for open findings only after that full
+   audit. Historical Runs retain their frozen older payload contract.
 8. Resolve `agent-team` once to its canonical absolute executable path and
    retain that literal path for the entire Origin loop. Substitute it for
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it
@@ -222,7 +228,10 @@ step 5 has already occurred; never pass it speculatively.
   finalize an `exited` Origin runtime.
 - On `TEAM_COMPLETED`, inspect the Completion Package, final facts, artifacts,
   tests, loop history, `transcript --json`, and anchored trace manifests;
-  deliver an evidence-backed summary rather than forwarding one sentence.
+  deliver an evidence-backed summary rather than forwarding one sentence. A
+  terminal Journal state proves only that the authority submitted Completion;
+  if its coverage is incomplete or contradicted by direct evidence, report the
+  validation failure and do not present the business objective as achieved.
 - On `TEAM_BLOCKED`, show the Block to the user and end the Agent turn.
   Read-only diagnosis or deterministic `recover` may precede the response, but
   never Resume in the same turn.

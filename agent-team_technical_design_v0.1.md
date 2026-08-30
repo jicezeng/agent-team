@@ -857,6 +857,8 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
     "raw_retention": "redacted",
     "required_payload_sections": [
       "Decision rationale",
+      "Acceptance coverage",
+      "Open findings",
       "Evidence"
     ]
   }
@@ -946,8 +948,10 @@ Recovery Block，不能把不完整审计当作正常完成。
 `raw_retention=redacted|keep|delete` 分别固定派生 Trace 的启发式脱敏策略、每 Turn
 stdout/stderr Source Byte 与 Normalized Trace Byte 上限，以及 Raw Stream 在
 Trace 生成后的保留方式。`full` 不允许 `delete`。`required_payload_sections`
-是大小写不敏感、不可重复的 Markdown 标题闭集；Full Audit 至少要求
-`Decision rationale` 与 `Evidence`。Schema 1 的历史 Run 继续按
+是大小写不敏感、不可重复的 Markdown 标题闭集。新建 Full Audit Run 固定要求
+`Decision rationale`、`Acceptance coverage`、`Open findings` 与 `Evidence`；
+历史 Run 仍按其不可变 `team.json` 中冻结的旧标题合同校验，因此升级不会使已存在的
+Run 无法读取或恢复。Schema 1 的历史 Run 继续按
 `redaction=none, raw_retention=keep` 读取；Schema 1/2 External Role 的
 Harness Options 继续按未冻结的历史语义读取，Schema 3–5 的 Codex Role 没有冻结
 Provider 合同；Schema 6 Claude Role 的空 Provider 字段按直连 Anthropic 兼容执行，
@@ -1932,16 +1936,27 @@ Worker 崩溃时，已被当前 Turn Runtime 记录的 Supervisor 可以在 Run 
 7. 当前 Turn 目录；
 8. 正式 CLI 用法；
 9. 角色可用工具和权限；
-10. 要求 Turn 结束前调用 `handoff`、`complete` 或 `block`。
+10. 要求 Turn 结束前调用 `handoff`、`complete` 或 `block`；
+11. 早于当前 Input Event 的正式 Handoff、Block 与 Resume 索引，按 Event 顺序给出
+    ID、路由和不可变 Payload 路径。
 
 Input Event 是本 Turn 的直接输入。若它是 Resume，Prompt 必须明确标注该 Payload 对所引用 Block 的补充指令优先于 `PROTOCOL.md` 和旧 Handoff，但不能覆盖 `REQUEST.md`、仓库强制要求或不可变 Run 配置。
+
+历史索引只用于防止中间摘要静默丢失尚未关闭的 Finding，并不把旧叙述提升为事实；
+Role 仍须按当前 Workspace 和可复现实证独立核验。若 Protocol 声明某 Role 为盲审，
+Prompt 会明确要求它不得读取 Protocol 禁止的历史。该限制是协议责任边界，而不是新的
+文件系统安全边界。
 
 若 `required_payload_sections` 非空，Prompt 在动作说明前列出每个必需 Markdown
 Heading。CLI 在复制与 Hash Payload 之前执行同一 Validator：标题按大小写不敏感
 精确匹配，标题到下一标题之间必须有非空内容。缺失、空节或非 UTF-8 Payload 返回
-`PAYLOAD_CONTRACT_VIOLATION`，不创建 Outbox。Full Audit 固定要求
-`## Decision rationale` 和 `## Evidence`，用于保存可审计的显式判断与可复现实证，
-而不是要求 Agent 暴露隐藏 Chain of Thought。
+`PAYLOAD_CONTRACT_VIOLATION`，不创建 Outbox。新建 Full Audit Run 固定要求
+`## Decision rationale`、`## Acceptance coverage`、`## Open findings` 和
+`## Evidence`。Coverage 必须把 Request/Protocol 的实质条件映射到当前实证或明确标成
+未验证；Open Findings 保留尚未关闭的 Finding、失败 Gate、分歧和未验证条件，只有
+完整覆盖证明没有遗留项时才写 `None`。仍有开放项或覆盖不完整时不能 Completion，
+必须 Handoff 或 Block。该合同保存可审计的显式判断与可复现实证，不要求 Agent 暴露
+隐藏 Chain of Thought。历史 Run 继续执行自身 `team.json` 冻结的标题集合。
 
 不同 External Session 之间不默认注入其他角色的完整会话记录。绑定同一个 Origin Session 的多个逻辑角色天然共享宿主会话上下文，不具备这种隔离，具体边界见 19.3。
 
@@ -2657,6 +2672,15 @@ Coordination Skill 在同一 Origin Session 的下一次用户 Agent Turn 开始
 
 为何选择本次动作和目标角色；记录可审计的显式判断，不记录或声称隐藏思维链。
 
+## Acceptance coverage
+
+Request 与 Protocol 各项实质条件对应的当前实证，或明确的未验证状态。
+
+## Open findings
+
+尚未关闭的 Finding、失败 Gate、分歧和未验证条件；只有完整覆盖证明无遗留项时写
+`None`。
+
 ## Evidence
 
 接收方可复现的检查、命令、结果、Hash 与 Artifact 路径。
@@ -3239,9 +3263,9 @@ Adapter 闭集，省略时选择 `full-access`。`--role` 以及四类 role-scop
 `origin_harness=codex`、`max_turns=20`、`max_wall_time_seconds=7200`、
 `audit_mode=standard`、`trace_redaction=standard`、
 `max_trace_bytes=67108864` 和 `raw_retention=redacted`；未提供 `--run-id` 时由 CLI
-生成。Full Audit 总是启用 13.1 的 rationale/evidence Payload 合同；Standard Audit
-只在显式传入 `--require-rationale-evidence` 时启用。Model、Reasoning Effort、Fast
-Mode 与 Launch Mode 的继承和冻结规则见 13.1。
+生成。新建 Full Audit 总是启用 16.3/19.1 的四节审计 Payload 合同；Standard Audit
+只在显式传入兼容参数 `--require-rationale-evidence` 时启用同一合同。Model、
+Reasoning Effort、Fast Mode 与 Launch Mode 的继承和冻结规则见 13.1。
 
 CLI 的 `origin_harness=codex` 默认值只兼容手工调用。Bundled Origin Skill 必须显式
 传入调用方：Codex 为 `codex`、Claude Code 为 `claude-code`、OpenCode 为
@@ -4925,6 +4949,8 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
     "raw_retention": "redacted",
     "required_payload_sections": [
       "Decision rationale",
+      "Acceptance coverage",
+      "Open findings",
       "Evidence"
     ]
   }
@@ -4999,14 +5025,16 @@ Reviewer 即 Origin Codex，在完成后向用户交付实现结果、Review 轮
 
 ## Shared context policy
 
-两个角色都读取原始请求、协议、当前工作区和当前 Input Event。该输入可能是 Handoff，也可能是用户解除 Block 的 Resume 指令。Developer 的自述与 Reviewer 的 Finding 都只是待独立核验的判断，不传递私有推理。
+两个角色都读取原始请求、协议、当前工作区和当前 Input Event。该输入可能是 Handoff，也可能是用户解除 Block 的 Resume 指令。Prompt 同时索引 Protocol 允许读取的既往正式输入，避免中间摘要静默丢失 Finding；Developer 的自述与 Reviewer 的 Finding 都只是待独立核验的判断，不传递私有推理。
 
 ## Observability policy
 
 使用 Standard Audit、Standard Redaction、64 MiB 每 Turn 上限和 Redacted Raw
 Retention。External Developer 生成完整 Harness Trace；Origin Reviewer 只覆盖冻结输入、
 正式输出和 Workspace 边界。每个正式 Payload 都必须包含非空
-`## Decision rationale` 与 `## Evidence`；这些内容是显式审计说明，不是隐藏推理。
+`## Decision rationale`、`## Acceptance coverage`、`## Open findings` 与
+`## Evidence`；Completion 必须完整覆盖 Request/Protocol 且无开放项。这些内容是
+显式审计说明，不是隐藏推理。
 
 ## Block and resume policy
 

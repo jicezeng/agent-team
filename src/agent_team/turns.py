@@ -1206,6 +1206,34 @@ def render_turn_prompt(
         if item["event_id"] == runtime["input_event_id"]
     )
     turn_dir = run_dir / "turns" / runtime["turn_id"]
+    prior_formal_events = [
+        item
+        for item in projection.events
+        if item["event_seq"] < event["event_seq"]
+        and item["event_type"] in {"handoff", "block", "resume"}
+    ]
+    history_note = ""
+    if prior_formal_events:
+        history_lines = "\n".join(
+            "- "
+            f"`{item['event_id']}` ({item['event_type']}): "
+            f"`{item.get('from_role') or 'system/origin'}` → "
+            f"`{item.get('to_role') or 'terminal'}`; payload "
+            f"`{resolve_run_path(run_dir, item['payload_path'])}`"
+            for item in prior_formal_events
+        )
+        history_note = f"""
+Prior formal input index, earliest first:
+
+{history_lines}
+
+Use this index only as the Protocol permits. It prevents an intermediate
+summary from silently dropping an earlier finding; a Protocol-declared blind
+role must not inspect history that the Protocol forbids. Before closing a
+reported finding or completing the Run, account for every permitted prior
+finding with current reproducible evidence. The latest Handoff does not erase
+an older unresolved finding.
+"""
     input_note = ""
     if event["event_type"] == "resume":
         input_note = (
@@ -1261,6 +1289,19 @@ or Agent Block payload must contain:
 Record only explicit rationale and evidence. Do not claim or reconstruct private
 hidden chain-of-thought.
 """
+        folded_sections = {
+            section.casefold()
+            for section in team.observability.required_payload_sections
+        }
+        if {"acceptance coverage", "open findings"}.issubset(folded_sections):
+            payload_contract_note += """
+`## Acceptance coverage` must map every material Request and Protocol condition
+relevant to the action to current direct evidence, or explicitly mark it
+unverified. `## Open findings` must preserve every unresolved finding, failed
+gate, disagreement, and unverified condition; write `None` only after the full
+coverage audit proves that none remain. A Completion with incomplete coverage
+or any open finding is protocol-invalid and must be a Handoff or Block instead.
+"""
     return f"""# Agent-Team role turn
 
 You are the dynamic role `{runtime["role_id"]}` in Agent-Team run `{team.run_id}`.
@@ -1274,6 +1315,7 @@ Work only as that role. Read the authoritative inputs before acting:
 - Turn directory: `{turn_dir}`
 {input_note}
 {recovery_note}
+{history_note}
 {payload_contract_note}
 The live Git worktree is `{team.workspace}`. Verify it directly; a sender's claims are
 not facts. Obey host system/developer/safety instructions and repository instructions

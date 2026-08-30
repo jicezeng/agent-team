@@ -35,7 +35,13 @@ TEAM_V6_REQUIRED = TEAM_V5_REQUIRED
 TEAM_V7_REQUIRED = TEAM_V6_REQUIRED
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
-REQUIRED_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
+LEGACY_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
+REQUIRED_AUDIT_PAYLOAD_SECTIONS = (
+    "Decision rationale",
+    "Acceptance coverage",
+    "Open findings",
+    "Evidence",
+)
 MAX_MODEL_ID_LENGTH = 2048
 MODEL_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -850,15 +856,19 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 section.casefold()
                 for section in observability.required_payload_sections
             }
+            # The exact payload contract is frozen in every Run. Historical
+            # Runs used the two-section contract and must remain readable and
+            # recoverable after an upgrade; new Runs are strengthened by
+            # ``make_team`` below.
             missing_sections = [
                 section
-                for section in REQUIRED_AUDIT_PAYLOAD_SECTIONS
+                for section in LEGACY_AUDIT_PAYLOAD_SECTIONS
                 if section.casefold() not in folded_sections
             ]
             if missing_sections:
                 raise IntegrityError(
                     "full audit mode requires payload sections: "
-                    + ", ".join(REQUIRED_AUDIT_PAYLOAD_SECTIONS)
+                    + ", ".join(LEGACY_AUDIT_PAYLOAD_SECTIONS)
                 )
             if raw_retention == "delete":
                 raise IntegrityError(
@@ -919,6 +929,25 @@ def make_team(
         )
     if not origin_harness:
         raise InvalidArgument("origin harness must not be empty")
+    effective_observability = observability or ObservabilityPolicy()
+    if (
+        effective_observability.audit_mode == "full"
+        or effective_observability.required_payload_sections
+    ):
+        folded_sections = {
+            section.casefold()
+            for section in effective_observability.required_payload_sections
+        }
+        missing_sections = [
+            section
+            for section in REQUIRED_AUDIT_PAYLOAD_SECTIONS
+            if section.casefold() not in folded_sections
+        ]
+        if missing_sections:
+            raise InvalidArgument(
+                "new audited Runs require payload sections: "
+                + ", ".join(REQUIRED_AUDIT_PAYLOAD_SECTIONS)
+            )
     team = Team(
         run_id,
         workspace,
@@ -927,7 +956,7 @@ def make_team(
         initial_role,
         max_turns,
         max_wall_time_seconds,
-        observability or ObservabilityPolicy(),
+        effective_observability,
         7,
     )
     try:

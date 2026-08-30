@@ -698,6 +698,7 @@ def origin_action(
         validate_payload_contract(
             payload,
             required_sections=team.observability.required_payload_sections,
+            action=action,
         )
         try:
             before, after, recovery_message = _freeze_origin_after(run_dir, runtime)

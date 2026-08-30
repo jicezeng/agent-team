@@ -85,9 +85,10 @@ enforces the four-section audited payload contract, all four corresponding `##`
 sections must contain concrete, non-empty content. Map every material Request
 and Protocol condition relevant to the action to current evidence under
 `Acceptance coverage`, or mark it unverified. Preserve every unresolved finding,
-failed gate, disagreement, and unverified condition under `Open findings`; use
-`None` only after full coverage proves none remain. A Completion with incomplete
-coverage or an open finding is invalid and must become a Handoff or Block.
+failed gate, disagreement, and unverified condition under `Open findings`. A
+Completion must have exactly one such section whose only content is `None`;
+the CLI rejects anything else. Incomplete coverage or an open finding must
+become a Handoff or Block.
 
 Separate facts from judgments. Include commands and results that the receiver
 can reproduce. Expose unresolved uncertainty and disagreement. Record explicit

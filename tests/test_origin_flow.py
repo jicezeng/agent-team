@@ -8,7 +8,12 @@ import pytest
 
 from agent_team import observation
 from agent_team.bootstrap import initialize_run, start_run
-from agent_team.config import Role, make_team
+from agent_team.config import (
+    REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+    ObservabilityPolicy,
+    Role,
+    make_team,
+)
 from agent_team.errors import AgentTeamError, IntegrityError
 from agent_team.gitfacts import capture_workspace_facts, write_workspace_facts
 from agent_team.journal import scan_journal
@@ -90,6 +95,70 @@ def test_pure_origin_run_completes_and_releases_owner(
     assert repeated_start["status"] == "COMPLETED"
     assert repeated_start["kickoff_event"] is None
     assert read_owner(workspace) is None
+
+
+def test_origin_completion_rejects_open_findings(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    request, protocol = request_protocol
+    team = make_team(
+        run_id="at-test-origin-open-findings",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=600,
+        observability=ObservabilityPolicy(
+            required_payload_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        ),
+    )
+    run_dir = initialize_run(
+        team=team,
+        request_path=request,
+        protocol_path=protocol,
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    payload = run_dir / "turns" / claim["turn_id"] / "completion.md"
+    payload.write_text(
+        "# Completion\n\n"
+        "## Decision rationale\n\nComplete.\n\n"
+        "## Acceptance coverage\n\nR1 remains partial.\n\n"
+        "## Open findings\n\nR1 remains open.\n\n"
+        "## Evidence\n\nThe focused test passed.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AgentTeamError) as rejected:
+        origin_action(
+            run_dir,
+            action="complete",
+            turn_id=claim["turn_id"],
+            claim=claim["claim"],
+            from_role="reviewer",
+            source_file=payload,
+        )
+
+    assert rejected.value.code == "PAYLOAD_CONTRACT_VIOLATION"
+    assert scan_journal(run_dir).status == "RUNNING"
+    payload.write_text(
+        payload.read_text(encoding="utf-8")
+        .replace("R1 remains partial.", "R1 is fully verified.")
+        .replace("R1 remains open.", "None"),
+        encoding="utf-8",
+    )
+    completed = origin_action(
+        run_dir,
+        action="complete",
+        turn_id=claim["turn_id"],
+        claim=claim["claim"],
+        from_role="reviewer",
+        source_file=payload,
+    )
+    assert completed["code"] == "TEAM_COMPLETED"
+    wait_origin(run_dir, timeout=0, claim=claim["claim"])
 
 
 def test_origin_handoff_on_final_business_turn_becomes_nonresumable_limit_block(

@@ -434,9 +434,24 @@ def test_external_action_enforces_audited_rationale_and_evidence_contract(
             "## Acceptance coverage\n\n"
             "Every Request condition is mapped to the targeted test.\n\n"
             "## Open findings\n\n"
-            "None.\n\n"
+            "A cancellation finding remains.\n\n"
             "## Evidence\n\n"
             "The targeted tests pass.\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(AgentTeamError) as open_findings_rejected:
+            stage_external_action_locked(
+                run_dir,
+                runtime=runtime,
+                action="complete",
+                source_file=payload,
+                to_role=None,
+            )
+        assert open_findings_rejected.value.code == "PAYLOAD_CONTRACT_VIOLATION"
+        payload.write_text(
+            payload.read_text(encoding="utf-8").replace(
+                "A cancellation finding remains.", "None"
+            ),
             encoding="utf-8",
         )
         accepted = stage_external_action_locked(

@@ -131,10 +131,10 @@ External business Turn inside an existing Run:
    New Runs that enable the audited payload contract require four concrete
    sections in every formal role payload: `## Decision rationale`,
    `## Acceptance coverage`, `## Open findings`, and `## Evidence`. Require
-   Completion to map every
-   material Request and Protocol condition to current evidence and to state
-   that no findings remain only after that full audit. Historical Runs retain
-   their frozen older contract.
+   Completion to map every material Request and Protocol condition to current
+   evidence. Its only `## Open findings` section must contain exactly `None`;
+   the CLI rejects any other content. Historical Runs retain their frozen older
+   contract.
 8. Resolve `agent-team` once to its canonical absolute executable path and
    retain that literal path for the entire Origin loop. Substitute it for
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it

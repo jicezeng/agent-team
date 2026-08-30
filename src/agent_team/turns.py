@@ -145,6 +145,7 @@ def validate_payload_contract(
     payload: bytes,
     *,
     required_sections: tuple[str, ...],
+    action: str | None = None,
 ) -> None:
     if not required_sections:
         return
@@ -163,6 +164,7 @@ def validate_payload_contract(
     lines = text.splitlines()
     missing: list[str] = []
     empty: list[str] = []
+    section_bodies: dict[str, list[str]] = {}
     for required in required_sections:
         matches = [
             (position, line_index)
@@ -172,17 +174,16 @@ def validate_payload_contract(
         if not matches:
             missing.append(required)
             continue
-        has_content = False
+        bodies: list[str] = []
         for position, line_index in matches:
             next_heading = (
                 headings[position + 1][0]
                 if position + 1 < len(headings)
                 else len(lines)
             )
-            if any(line.strip() for line in lines[line_index + 1 : next_heading]):
-                has_content = True
-                break
-        if not has_content:
+            bodies.append("\n".join(lines[line_index + 1 : next_heading]).strip())
+        section_bodies[required.casefold()] = bodies
+        if not any(bodies):
             empty.append(required)
     if missing or empty:
         details = []
@@ -196,6 +197,14 @@ def validate_payload_contract(
             + "; ".join(details)
             + ")",
         )
+    if action == "complete" and "open findings" in section_bodies:
+        open_findings = section_bodies["open findings"]
+        if len(open_findings) != 1 or open_findings[0].casefold() != "none":
+            raise AgentTeamError(
+                "PAYLOAD_CONTRACT_VIOLATION",
+                "Completion requires exactly one Open findings section whose "
+                "only content is `None`",
+            )
 
 
 def is_deadline_before_claim_pending(value: dict[str, Any]) -> bool:
@@ -1298,9 +1307,11 @@ hidden chain-of-thought.
 `## Acceptance coverage` must map every material Request and Protocol condition
 relevant to the action to current direct evidence, or explicitly mark it
 unverified. `## Open findings` must preserve every unresolved finding, failed
-gate, disagreement, and unverified condition; write `None` only after the full
-coverage audit proves that none remain. A Completion with incomplete coverage
-or any open finding is protocol-invalid and must be a Handoff or Block instead.
+gate, disagreement, and unverified condition. For Completion, it must appear
+exactly once and its only content must be `None`, after the full coverage audit
+proves that none remain; the CLI rejects any other content. A Completion with
+incomplete coverage or any open finding is protocol-invalid and must be a
+Handoff or Block instead.
 """
     return f"""# Agent-Team role turn
 
@@ -1490,6 +1501,7 @@ def stage_external_action_locked(
     validate_payload_contract(
         source_bytes,
         required_sections=team.observability.required_payload_sections,
+        action=action,
     )
     payload_hash = sha256_bytes(source_bytes)
     requested = {

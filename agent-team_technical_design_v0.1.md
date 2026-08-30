@@ -1954,9 +1954,11 @@ Heading。CLI 在复制与 Hash Payload 之前执行同一 Validator：标题按
 `## Decision rationale`、`## Acceptance coverage`、`## Open findings` 和
 `## Evidence`。Coverage 必须把 Request/Protocol 的实质条件映射到当前实证或明确标成
 未验证；Open Findings 保留尚未关闭的 Finding、失败 Gate、分歧和未验证条件，只有
-完整覆盖证明没有遗留项时才写 `None`。仍有开放项或覆盖不完整时不能 Completion，
-必须 Handoff 或 Block。该合同保存可审计的显式判断与可复现实证，不要求 Agent 暴露
-隐藏 Chain of Thought。历史 Run 继续执行自身 `team.json` 冻结的标题集合。
+完整覆盖证明没有遗留项时才能 Completion。Completion Payload 必须恰有一个
+`Open findings` 节且其正文去除首尾空白后严格等于 `None`，否则 CLI 返回
+`PAYLOAD_CONTRACT_VIOLATION`，不创建 Outbox。仍有开放项或覆盖不完整时必须 Handoff
+或 Block。该合同保存可审计的显式判断与可复现实证，不要求 Agent 暴露隐藏 Chain of
+Thought。历史 Run 继续执行自身 `team.json` 冻结的标题集合。
 
 不同 External Session 之间不默认注入其他角色的完整会话记录。绑定同一个 Origin Session 的多个逻辑角色天然共享宿主会话上下文，不具备这种隔离，具体边界见 19.3。
 
@@ -2678,8 +2680,8 @@ Request 与 Protocol 各项实质条件对应的当前实证，或明确的未�
 
 ## Open findings
 
-尚未关闭的 Finding、失败 Gate、分歧和未验证条件；只有完整覆盖证明无遗留项时写
-`None`。
+尚未关闭的 Finding、失败 Gate、分歧和未验证条件。Completion 时必须恰有一个本节，
+且唯一正文为 `None`；其他动作保留实际开放项。
 
 ## Evidence
 

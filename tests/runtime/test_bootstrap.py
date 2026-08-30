@@ -77,7 +77,8 @@ def test_external_turn_prompt_explains_strengthened_payload_contract(
     assert "`## Acceptance coverage`" in prompt
     assert "`## Open findings`" in prompt
     assert "map every material Request and Protocol condition" in prompt
-    assert "Completion with incomplete coverage" in prompt
+    assert "its only content must be `None`" in prompt
+    assert "the CLI rejects any other content" in prompt
 
 
 def test_external_turn_prompt_indexes_prior_formal_inputs(

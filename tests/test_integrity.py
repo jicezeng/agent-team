@@ -1081,7 +1081,7 @@ def test_audited_payload_contract_rejects_missing_or_empty_sections(
     assert getattr(rejected.value, "code", None) == "PAYLOAD_CONTRACT_VIOLATION"
 
 
-def test_audited_payload_contract_accepts_coverage_findings_and_evidence() -> None:
+def test_audited_completion_contract_accepts_exactly_no_open_findings() -> None:
     validate_payload_contract(
         (
             b"# Completion\n\n"
@@ -1090,12 +1090,52 @@ def test_audited_payload_contract_accepts_coverage_findings_and_evidence() -> No
             b"## Acceptance coverage\n\n"
             b"R1 is covered by the focused integration test.\n\n"
             b"## Open findings\n\n"
-            b"None.\n\n"
+            b"None\n\n"
             b"## Evidence\n\n"
             b"`uv run pytest` passed.\n"
         ),
         required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        action="complete",
     )
+
+
+def test_audited_handoff_contract_preserves_open_findings() -> None:
+    validate_payload_contract(
+        (
+            b"# Handoff\n\n"
+            b"## Decision rationale\n\nMore work is needed.\n\n"
+            b"## Acceptance coverage\n\nR1 remains unverified.\n\n"
+            b"## Open findings\n\nR1 has no integration evidence.\n\n"
+            b"## Evidence\n\nThe focused gate was not run.\n"
+        ),
+        required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+        action="handoff",
+    )
+
+
+@pytest.mark.parametrize(
+    "open_findings",
+    ["A cancellation finding remains.", "None.", "None\n\n## Open findings\n\nNone"],
+)
+def test_audited_completion_contract_rejects_noncanonical_open_findings(
+    open_findings: str,
+) -> None:
+    payload = (
+        "# Completion\n\n"
+        "## Decision rationale\n\nComplete.\n\n"
+        "## Acceptance coverage\n\nAll conditions are verified.\n\n"
+        f"## Open findings\n\n{open_findings}\n\n"
+        "## Evidence\n\nThe full gate passed.\n"
+    ).encode()
+
+    with pytest.raises(AgentTeamError, match="only content is `None`") as rejected:
+        validate_payload_contract(
+            payload,
+            required_sections=REQUIRED_AUDIT_PAYLOAD_SECTIONS,
+            action="complete",
+        )
+
+    assert rejected.value.code == "PAYLOAD_CONTRACT_VIOLATION"
 
 
 def test_unstarted_run_has_no_owner(

@@ -224,8 +224,9 @@ v0.1 不承诺：
 - 新建 Full Audit（以及显式启用审计 Payload 合同的 Standard Audit）中的 Handoff、
   Completion 和 Agent Block 必须包含非空 `Decision rationale`、`Acceptance
   coverage`、`Open findings` 与 `Evidence`；Completion 必须逐项覆盖 Request/Protocol
-  的实质条件且无未关闭 Finding，但不得声称这些内容是隐藏 Chain of Thought。历史 Run
-  继续按其 `team.json` 冻结的旧合同读取。
+  的实质条件且无未关闭 Finding，其唯一的 `Open findings` 节必须只包含 `None`，否则
+  CLI 拒绝该动作；不得声称这些内容是隐藏 Chain of Thought。历史 Run 继续按其
+  `team.json` 冻结的旧合同读取。
 
 ### 6.6 安装与诊断
 

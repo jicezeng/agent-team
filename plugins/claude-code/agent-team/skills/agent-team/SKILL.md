@@ -163,8 +163,9 @@ existing Run:
    payload: `## Decision rationale`, `## Acceptance coverage`,
    `## Open findings`, and `## Evidence`. Require the
    Completion Authority to map every material Request and Protocol condition to
-   current evidence, and to write `None` for open findings only after that full
-   audit. Historical Runs retain their frozen older payload contract.
+   current evidence. Its Completion must contain exactly one `## Open findings`
+   section whose only content is `None`; the CLI rejects any other content.
+   Historical Runs retain their frozen older payload contract.
 8. Resolve `agent-team` once to its canonical absolute executable path and
    retain that literal path for the entire Origin loop. Substitute it for
    `<absolute-agent-team-cli>` in every command below; do not re-resolve it

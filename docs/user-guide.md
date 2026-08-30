@@ -553,7 +553,8 @@ current reproducible evidence, or mark it unverified.
 ## Open findings
 
 List every unresolved finding, failed gate, disagreement, and unverified
-condition. Write `None` only after full coverage proves none remain.
+condition. For Completion, use exactly one `Open findings` section whose only
+content is `None`, and only after full coverage proves none remain.
 
 ## Evidence
 
@@ -561,8 +562,9 @@ List reproducible inspections, commands, results, and artifact paths.
 ```
 
 These sections are an auditable explanation, not hidden chain-of-thought. A
-Completion with incomplete coverage or an open finding is invalid. Historical
-Runs retain the exact older section contract frozen in their `team.json`.
+Completion with incomplete coverage or an open finding is invalid; the CLI
+rejects Completion unless that section contains exactly `None`. Historical Runs
+retain the exact older section contract frozen in their `team.json`.
 Agent-Team records a reasoning summary only when the Harness exposes one.
 
 ## Block, Resume, cancellation, and recovery

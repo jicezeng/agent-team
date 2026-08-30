@@ -63,7 +63,8 @@ route or complete work.
 Give an observable business condition and name the Completion Authority.
 Require its Completion payload to map every material Request and Protocol
 condition to current reproducible evidence under `## Acceptance coverage`, and
-to state `None` under `## Open findings` only after that full audit succeeds.
+to contain exactly one `## Open findings` section whose only content is `None`
+after that full audit succeeds. State that the CLI rejects any other content.
 
 ## Final delivery
 

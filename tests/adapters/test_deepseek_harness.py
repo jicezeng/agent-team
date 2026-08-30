@@ -255,6 +255,45 @@ def test_dsh_launch_omits_model_flags_for_native_defaults(
     assert "--reasoning-effort" not in launch.argv
 
 
+def test_dsh_finalization_allows_workspace_dependency_symlinks_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    run_dir = workspace / ".agent-team" / "runs" / "at-symlink-test"
+    run_dir.mkdir(parents=True)
+    adapter = DeepSeekHarnessAdapter()
+    _stub_runtime(monkeypatch, tmp_path, adapter)
+    adapter.prepare_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    home = adapter._home(run_dir, "developer")
+
+    workspace_dependency = workspace / "node_modules" / "workspace-dependency"
+    workspace_dependency.mkdir(parents=True)
+    workspace_link = home / "profiles" / "workspace-dependency"
+    workspace_link.symlink_to(workspace_dependency, target_is_directory=True)
+
+    adapter.finalize_run_state(
+        run_dir=run_dir,
+        role_id="developer",
+        launch_mode="interactive",
+    )
+    assert workspace_link.resolve(strict=True) == workspace_dependency.resolve()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "profiles" / "outside").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(IntegrityError, match="symlink escapes managed roots"):
+        adapter.finalize_run_state(
+            run_dir=run_dir,
+            role_id="developer",
+            launch_mode="interactive",
+        )
+
+
 def test_dsh_role_installs_and_freezes_workspace_bundle_on_activation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

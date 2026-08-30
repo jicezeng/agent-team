@@ -917,6 +917,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 f"DeepSeek Harness state is unavailable for role: {role_id}"
             )
         resolved_runtime = managed_dsh_runtime().resolve(strict=True)
+        resolved_workspace = load_team(run_dir).workspace.resolve(strict=True)
         for generation, home in homes:
             info = home.lstat()
             if home.is_symlink() or not stat.S_ISDIR(info.st_mode):
@@ -945,6 +946,7 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                             if not (
                                 target.is_relative_to(resolved_home)
                                 or target.is_relative_to(resolved_runtime)
+                                or target.is_relative_to(resolved_workspace)
                             ):
                                 raise ValueError
                         except (OSError, RuntimeError, ValueError) as exc:

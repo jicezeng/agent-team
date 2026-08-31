@@ -51,7 +51,13 @@ existing Run:
    ambiguity. Do not silently serialize a requested parallel topology.
 4. Record every inference under `Assumptions made during bootstrap`. Keep
    business conditions in natural-language `PROTOCOL.md`; do not invent a
-   workflow DSL or machine-parse reviewer verdicts.
+   workflow DSL or machine-parse reviewer verdicts. If the user explicitly
+   requires hard role-to-role boundaries, repeat `--allow-handoff FROM=TO` for
+   every permitted role-selected edge; supplying any edge closes the allowlist
+   and gives unlisted sources no outgoing edge. Omit it when routing should stay
+   dynamic. If a role is explicitly forbidden to change candidate files, add
+   `--read-only-role ROLE`. This is a Git-visible Turn-boundary guard, not a
+   business verdict, OS sandbox, or reason to infer a restricted Launch Profile.
 5. Choose each External Launch Profile from `agent-team doctor` output. A new
    External role defaults to `full-access` (YOLO) unless the user explicitly
    selects the restricted `default` or `trusted-workspace` Profile. Before
@@ -75,8 +81,9 @@ existing Run:
    network access; `default` and `trusted-workspace` are identical in v0.1.
    `full-access` removes the host sandbox and is appropriate only on a
    controlled machine or VM. Never infer elevated access from a role name, a
-   request to run tests, or a natural-language `read-only` restriction, and
-   never treat mutable local Harness settings as the selected Profile. Doctor
+   request to run tests, or a natural-language `read-only` restriction; the
+   latter may select the separate `--read-only-role` guard but does not select
+   a Launch Profile. Never treat mutable local Harness settings as the selected Profile. Doctor
    shows the Agent-Team-supplied mapping, not the final effect of
    administrator-managed Harness policy. On a managed host, use a
    workspace-contained Claude Profile only after verifying that policy adds no
@@ -185,7 +192,8 @@ existing Run:
    contains a DSH External role, stop before `init` and ask the user to activate
    `$DSH_HOME/plugins/agent-team-origin` in the current DSH Profile.
    Write Request and Protocol outside `.agent-team`,
-   select the explicit Origin metadata from the managed shell, then run:
+   select the explicit Origin metadata from the managed shell, add the workflow
+   flags chosen in step 4 to the `init` invocation, then run:
 
 ```bash
 if [ "${DSH_SHELL:-}" = "1" ]; then

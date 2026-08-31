@@ -12,6 +12,7 @@ from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
     Role,
+    WorkflowPolicy,
     make_team,
 )
 from agent_team.errors import AgentTeamError, IntegrityError
@@ -159,6 +160,94 @@ def test_origin_completion_rejects_open_findings(
     )
     assert completed["code"] == "TEAM_COMPLETED"
     wait_origin(run_dir, timeout=0, claim=claim["claim"])
+
+
+def test_origin_action_rejects_handoff_outside_frozen_graph(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    request, protocol = request_protocol
+    team = make_team(
+        run_id="at-test-origin-disallowed-handoff",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role("developer", "origin"),
+            "reviewer": Role("reviewer", "origin"),
+        },
+        initial_role="developer",
+        max_turns=4,
+        max_wall_time_seconds=600,
+        workflow=WorkflowPolicy(
+            allowed_handoffs={"developer": (), "reviewer": ("developer",)},
+        ),
+    )
+    run_dir = initialize_run(
+        team=team,
+        request_path=request,
+        protocol_path=protocol,
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    payload = run_dir / "turns" / claim["turn_id"] / "handoff.md"
+    payload.write_text("# Handoff\n\nReview the candidate.\n", encoding="utf-8")
+
+    with pytest.raises(AgentTeamError) as rejected:
+        origin_action(
+            run_dir,
+            action="handoff",
+            turn_id=claim["turn_id"],
+            claim=claim["claim"],
+            from_role="developer",
+            source_file=payload,
+            to_role="reviewer",
+            wait_timeout=0,
+        )
+
+    assert rejected.value.code == "HANDOFF_NOT_ALLOWED"
+    projection = scan_journal(run_dir)
+    assert projection.status == "RUNNING"
+    assert projection.current_role == "developer"
+
+
+def test_read_only_origin_role_blocks_workspace_mutation(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+) -> None:
+    request, protocol = request_protocol
+    team = make_team(
+        run_id="at-test-origin-read-only-mutation",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={"reviewer": Role("reviewer", "origin")},
+        initial_role="reviewer",
+        max_turns=2,
+        max_wall_time_seconds=600,
+        workflow=WorkflowPolicy(read_only_roles=("reviewer",)),
+    )
+    run_dir = initialize_run(
+        team=team,
+        request_path=request,
+        protocol_path=protocol,
+    )
+    start_run(run_dir)
+    claim = wait_origin(run_dir, timeout=0)
+    payload = run_dir / "turns" / claim["turn_id"] / "completion.md"
+    payload.write_text("# Completion\n\nReview complete.\n", encoding="utf-8")
+    (workspace / "tracked.txt").write_text("changed\n", encoding="utf-8")
+
+    blocked = origin_action(
+        run_dir,
+        action="complete",
+        turn_id=claim["turn_id"],
+        claim=claim["claim"],
+        from_role="reviewer",
+        source_file=payload,
+    )
+
+    assert blocked["code"] == "TEAM_BLOCKED"
+    assert blocked["event"]["block_reason"] == "permission"
+    assert scan_journal(run_dir).status == "BLOCKED"
 
 
 def test_origin_handoff_on_final_business_turn_becomes_nonresumable_limit_block(

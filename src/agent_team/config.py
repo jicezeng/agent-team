@@ -33,6 +33,7 @@ TEAM_V4_REQUIRED = TEAM_V3_REQUIRED
 TEAM_V5_REQUIRED = TEAM_V4_REQUIRED
 TEAM_V6_REQUIRED = TEAM_V5_REQUIRED
 TEAM_V7_REQUIRED = TEAM_V6_REQUIRED
+TEAM_V8_REQUIRED = TEAM_V7_REQUIRED | {"workflow"}
 MAX_LIMIT_VALUE = (1 << 31) - 1
 DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024
 LEGACY_AUDIT_PAYLOAD_SECTIONS = ("Decision rationale", "Evidence")
@@ -161,6 +162,27 @@ class ObservabilityPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowPolicy:
+    """Small, immutable control-plane constraints for role-selected actions."""
+
+    allowed_handoffs: dict[str, tuple[str, ...]] | None = None
+    read_only_roles: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "allowed_handoffs": (
+                None
+                if self.allowed_handoffs is None
+                else {
+                    role_id: list(self.allowed_handoffs[role_id])
+                    for role_id in sorted(self.allowed_handoffs)
+                }
+            ),
+            "read_only_roles": list(self.read_only_roles),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Role:
     role_id: str
     binding: str
@@ -224,11 +246,19 @@ class Team:
     max_turns: int
     max_wall_time_seconds: int
     observability: ObservabilityPolicy = field(default_factory=ObservabilityPolicy)
-    config_schema_version: int = 7
+    workflow: WorkflowPolicy = field(default_factory=WorkflowPolicy)
+    config_schema_version: int = 8
+
+    def allows_handoff(self, from_role: str, to_role: str) -> bool:
+        allowed = self.workflow.allowed_handoffs
+        return allowed is None or to_role in allowed.get(from_role, ())
+
+    def workspace_is_read_only(self, role_id: str) -> bool:
+        return role_id in self.workflow.read_only_roles
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": 7,
+            "schema_version": 8,
             "run_id": self.run_id,
             "workspace": str(self.workspace),
             "origin": {
@@ -244,6 +274,7 @@ class Team:
                 "max_wall_time_seconds": self.max_wall_time_seconds,
             },
             "observability": self.observability.to_json(),
+            "workflow": self.workflow.to_json(),
         }
 
     def canonical_bytes(self) -> bytes:
@@ -505,7 +536,7 @@ def _require_exact(
 def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
     schema_version = require_schema_version(
         value,
-        (1, 2, 3, 4, 5, 6, 7),
+        (1, 2, 3, 4, 5, 6, 7, 8),
         subject="team.json",
     )
     if schema_version == 1:
@@ -522,6 +553,8 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         _require_exact(value, TEAM_V6_REQUIRED, "team.json")
     elif schema_version == 7:
         _require_exact(value, TEAM_V7_REQUIRED, "team.json")
+    elif schema_version == 8:
+        _require_exact(value, TEAM_V8_REQUIRED, "team.json")
     run_id = value["run_id"]
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise IntegrityError("team.json run_id is invalid")
@@ -874,6 +907,49 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
                 raise IntegrityError(
                     "full audit mode cannot delete the retained Harness stream"
                 )
+    workflow = WorkflowPolicy()
+    if schema_version >= 8:
+        workflow_value = value["workflow"]
+        if not isinstance(workflow_value, dict):
+            raise IntegrityError("team.json workflow must be an object")
+        _require_exact(
+            workflow_value,
+            {"allowed_handoffs", "read_only_roles"},
+            "team.json workflow",
+        )
+        allowed_value = workflow_value["allowed_handoffs"]
+        allowed_handoffs: dict[str, tuple[str, ...]] | None
+        if allowed_value is None:
+            allowed_handoffs = None
+        else:
+            if not isinstance(allowed_value, dict) or set(allowed_value) != set(roles):
+                raise IntegrityError(
+                    "workflow.allowed_handoffs must contain every configured role"
+                )
+            allowed_handoffs = {}
+            for role_id, targets in allowed_value.items():
+                if (
+                    not isinstance(targets, list)
+                    or not all(isinstance(target, str) for target in targets)
+                    or targets != sorted(set(targets))
+                    or any(target not in roles for target in targets)
+                ):
+                    raise IntegrityError(
+                        f"workflow.allowed_handoffs for {role_id} is invalid"
+                    )
+                allowed_handoffs[role_id] = tuple(targets)
+        read_only_value = workflow_value["read_only_roles"]
+        if (
+            not isinstance(read_only_value, list)
+            or not all(isinstance(role_id, str) for role_id in read_only_value)
+            or read_only_value != sorted(set(read_only_value))
+            or any(role_id not in roles for role_id in read_only_value)
+        ):
+            raise IntegrityError("workflow.read_only_roles is invalid")
+        workflow = WorkflowPolicy(
+            allowed_handoffs=allowed_handoffs,
+            read_only_roles=tuple(read_only_value),
+        )
     return Team(
         run_id,
         workspace,
@@ -883,6 +959,7 @@ def parse_team(value: dict[str, Any], *, run_dir: Path | None = None) -> Team:
         max_turns,
         wall,
         observability,
+        workflow,
         schema_version,
     )
 
@@ -901,6 +978,7 @@ def make_team(
     max_turns: int,
     max_wall_time_seconds: int,
     observability: ObservabilityPolicy | None = None,
+    workflow: WorkflowPolicy | None = None,
 ) -> Team:
     validate_run_id(run_id)
     try:
@@ -957,7 +1035,8 @@ def make_team(
         max_turns,
         max_wall_time_seconds,
         effective_observability,
-        7,
+        workflow or WorkflowPolicy(),
+        8,
     )
     try:
         return parse_team(team.to_json())

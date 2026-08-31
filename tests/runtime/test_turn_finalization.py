@@ -9,6 +9,7 @@ from agent_team.adapters.base import ExitInfo
 from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
+    WorkflowPolicy,
 )
 from agent_team.errors import AgentTeamError, IntegrityError, RoutePreflightError
 from agent_team.journal import scan_journal
@@ -181,6 +182,7 @@ def test_output_limit_automatically_continues_available_resume_session(
         run_id="at-worker-output-limit-continuation",
         max_turns=4,
         developer_session_policy="resume",
+        workflow=WorkflowPolicy(allowed_handoffs={"developer": ()}),
     )
     session_ref = f"thread-{runtime['turn_id']}"
 
@@ -463,6 +465,79 @@ def test_external_action_enforces_audited_rationale_and_evidence_contract(
         )
 
     assert accepted["code"] == "ACTION_ACCEPTED"
+
+
+def test_external_action_rejects_handoff_outside_frozen_graph(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-disallowed-handoff",
+        include_external_reviewer=True,
+        workflow=WorkflowPolicy(
+            allowed_handoffs={"developer": (), "reviewer": ("developer",)},
+        ),
+    )
+    payload = run_dir / "turns" / runtime["turn_id"] / "handoff-source.md"
+    payload.write_text("# Handoff\n\nReview the candidate.\n", encoding="utf-8")
+
+    with locked_run(run_dir, exclusive=True):
+        with pytest.raises(AgentTeamError) as rejected:
+            stage_external_action_locked(
+                run_dir,
+                runtime=runtime,
+                action="handoff",
+                source_file=payload,
+                to_role="reviewer",
+            )
+
+    assert rejected.value.code == "HANDOFF_NOT_ALLOWED"
+    assert not (run_dir / "turns" / runtime["turn_id"] / "outbox.json").exists()
+    projection = scan_journal(run_dir)
+    assert projection.status == "RUNNING"
+    assert projection.current_role == "developer"
+
+
+def test_read_only_external_role_blocks_workspace_mutation(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-read-only-mutation",
+        workflow=WorkflowPolicy(read_only_roles=("developer",)),
+    )
+    payload = run_dir / "turns" / runtime["turn_id"] / "completion-source.md"
+    payload.write_text("# Completion\n\nDone.\n", encoding="utf-8")
+
+    with locked_run(run_dir, exclusive=True):
+        accepted = stage_external_action_locked(
+            run_dir,
+            runtime=runtime,
+            action="complete",
+            source_file=payload,
+            to_role=None,
+        )
+        assert accepted["code"] == "ACTION_ACCEPTED"
+        (workspace / "tracked.txt").write_text("changed\n", encoding="utf-8")
+        _persist_process_chain(run_dir, runtime)
+        event = finalize_external_turn_locked(
+            run_dir,
+            runtime,
+            allow_after_capture=True,
+        )
+
+    assert event is not None
+    assert event["event_type"] == "block"
+    assert event["block_reason"] == "permission"
+    assert scan_journal(run_dir).status == "BLOCKED"
 
 
 def test_full_audit_mode_blocks_a_turn_when_capture_is_truncated(
@@ -807,6 +882,9 @@ def test_candidate_activation_crash_returns_finding_to_sending_role(
         monkeypatch,
         run_id="at-worker-candidate-activation-finding",
         include_external_reviewer=True,
+        workflow=WorkflowPolicy(
+            allowed_handoffs={"developer": ("reviewer",), "reviewer": ()},
+        ),
     )
     adapter = _CandidateActivationAdapter()
     monkeypatch.setattr("agent_team.worker.get_adapter", lambda _adapter: adapter)

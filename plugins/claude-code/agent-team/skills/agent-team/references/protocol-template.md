@@ -33,6 +33,15 @@ Describe natural-language routing, loops, disagreement handling, and required
 rechecks. Every route is selected by the active role and committed through the
 CLI. Do not compile business verdicts into machine state.
 
+If the user requires an exact structural route boundary, list every permitted
+role-selected edge and state that bootstrap freezes it with repeated
+`--allow-handoff FROM=TO`; all other role-selected edges are rejected before an
+action is staged. If a role must not change candidate files, state that
+bootstrap freezes `--read-only-role ROLE` and that any Git-visible boundary
+change becomes a Permission Block. These controls constrain actions but do not
+decide when a review passes. Omit them when the team needs unrestricted dynamic
+routing or write-capable roles.
+
 Require each full-review cycle to compare the complete current candidate with
 the entire original Request and authoritative acceptance sources. Findings from
 the preceding Turn do not narrow review scope, and no role may close a finding
@@ -128,7 +137,8 @@ List every inference explicitly.
 
 Record positive max-turn and wall-time bounds, the single Git worktree, chosen
 explicit Launch Profiles, no-concurrent-manual-edit premise, External hard
-versus Origin cooperative deadline behavior, and manual cancellation. By
+versus Origin cooperative deadline behavior, any frozen Handoff allowlist and
+read-only roles, and manual cancellation. By
 default, record `full-access`, its Adapter-specific trust boundary, and the
 user's one-time confirmation for this new Run. If the user explicitly selects
 the restricted `default` or `trusted-workspace`, record that choice instead.

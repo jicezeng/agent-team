@@ -41,7 +41,7 @@ Stage 1 的核心取舍是：
 即：
 
 - 角色 ID、Harness、会话、当前执行权、消息目标等运行时信息使用最小机器结构；
-- 角色职责、动态拓扑、Handoff 条件、退出条件仍保存在自然语言 `PROTOCOL.md` 中，由 Agent 根据共享 Skill 理解并执行；
+- 角色职责、动态拓扑、Handoff 条件、退出条件仍保存在自然语言 `PROTOCOL.md` 中，由 Agent 根据共享 Skill 理解并执行；显式需要硬边界时，`team.json` 只冻结允许的角色间边和只读角色集合，不解析业务判定；
 - 不开发独立的 LLM Manager，不引入通用工作流引擎，不在第一阶段解析自然语言 Verdict；
 - 使用 tmux 只承载当前 External Role 的惰性 Worker，并通过 Harness 原生 Session Resume 保持角色会话连续性；
 - Agent 主动调用 `agent-team handoff` / `complete` 或对应的 Origin 命令完成正式交接，系统不从终端输出中猜测下一步。
@@ -355,7 +355,7 @@ Stage 1 中：
 - 路由元数据结构化；
 - Handoff 内容自然语言化；
 - 语义正确性由 Agent 和 Skill 负责；
-- 系统只校验目标角色存在、当前角色拥有执行权、每 Turn 只能产生一个终止动作。
+- 系统校验目标角色存在、当前角色拥有执行权、可选的冻结 Handoff Allowlist，以及每 Turn 只能产生一个终止动作；不解析为何应当选择该目标。
 
 ### 6.10 Completion Authority
 
@@ -808,13 +808,13 @@ Resume 指令只能补充“如何在同一 Run 内继续”，不能覆盖前�
 
 ## 13. 最小运行时结构
 
-Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和技术生命周期。这里的 Event / Turn 状态只回答“谁持有 Token、进程执行到哪里”，不表达 Review 是否通过等业务条件。
+Stage 1 不结构化工作流业务语义，但必须结构化传输、会话映射和技术生命周期。这里的 Event / Turn 状态只回答“谁持有 Token、进程执行到哪里”，不表达 Review 是否通过等业务条件。可选 Handoff Allowlist 与只读角色集合只是不可变安全包络，不是 Verdict 或工作流引擎。
 
 ## 13.1 `team.json`
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "run_id": "at-20260725-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -861,6 +861,13 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
       "Open findings",
       "Evidence"
     ]
+  },
+  "workflow": {
+    "allowed_handoffs": {
+      "developer": ["reviewer"],
+      "reviewer": ["developer"]
+    },
+    "read_only_roles": ["reviewer"]
   }
 }
 ```
@@ -869,6 +876,21 @@ Stage 1 不结构化工作流语义，但必须结构化传输、会话映射和
 `launch_profile_sha256` 必须是 Adapter Probe 返回的 64 个小写十六进制字符。
 
 `REQUEST.md`、`PROTOCOL.md` 和 `team.json` 在 Kickoff Event 提交后不可变。需要改变原始请求、协议、团队定义或安全上限时创建新 Run，不在运行中修改这些配置。
+
+`workflow.allowed_handoffs` 为 `null` 时，角色可向任一已配置 Role 发起 Handoff，
+动态路由完全由自然语言 Protocol 决定；为对象时必须精确包含所有 Role ID，每个值是
+排序去重的目标 Role ID 列表。CLI 只要收到至少一个 `--allow-handoff FROM=TO` 就构造
+这个闭合对象，未列出出边的 Role 得到空列表。该 Guard 只约束业务角色选择并暂存的
+Handoff；`output_limit` Automatic Continuation 与 Candidate Activation Failure Return
+是带结构标记的系统恢复动作，不借此获得新的业务权限。
+
+`workflow.read_only_roles` 是排序去重的 Role ID 列表。对应 Harness 进程组已经静止、
+After Facts 已冻结且正式动作尚未交付时，Runtime 比较 Before/After 的 Git 可见状态；
+若不同则提交 `block_reason=permission`，保留 Outbox 和边界证据但不交付动作。Origin
+Binding 在提交动作前执行同一检查。该边界覆盖 Git HEAD、tracked 与未 ignore 的
+untracked 内容，排除 `.agent-team/` 和 ignored 路径；它只证明 Turn 最终边界，不声称
+捕获“写入后恢复”的瞬时行为，也不替代 Launch Profile 或 OS Sandbox。Schema 1–7
+历史 Run 在内存中规范化为 `allowed_handoffs=null`、`read_only_roles=[]`。
 
 `roles.<role-id>` 是由 `binding` 区分的闭合集合：
 
@@ -1974,6 +1996,11 @@ agent-team handoff --to reviewer --file handoff.md
 
 该命令先在 Run 锁内检查 Journal Tail、Deadline、`can_create_business_turn`，以及目标 External Role 的 Launch Profile Fingerprint，并调用 Adapter 为目标 Session Generation 做路由预检。Deadline 已到时不创建 Outbox，直接提交 `block_reason=limit, limit_reason=deadline`；仅 Max-Turn 守卫失败时直接提交 `block_reason=limit, limit_reason=max_turns`；目标 Profile 已漂移时提交 `block_reason=profile_changed`。三种情况都返回 `TEAM_BLOCKED`。
 
+若 `workflow.allowed_handoffs` 非空对象且目标不在当前 Role 的列表中，CLI 返回
+`HANDOFF_NOT_ALLOWED`，不读取或复制 Payload、不创建 Outbox/Event；当前 Turn 继续持有
+Token，可选择另一个结构允许且符合 Protocol 的动作。交付阶段再次验证已暂存 Outbox，
+不满足时固定提交 Recovery Block，避免旧实现或损坏制品绕过 Guard。
+
 Adapter 只有在发现可由业务角色修复的 Workspace 候选制品缺陷时，才可抛出
 `RoutePreflightError`。CLI 将其映射为同步错误
 `ROUTE_PREFLIGHT_REJECTED`，且不复制 Payload、不创建 Outbox、不追加 Handoff/Event；
@@ -2009,9 +2036,10 @@ Worker 才继续交付：Headless 要求 Adapter 的结构化完成证据与成�
 
 1. 确认只有一个终止动作；
 2. 原子创建不可变的 `workspace-facts-after.json`，并把其 Hash 写入 Turn Runtime；
-3. 只用不可变 Outbox Payload、`workspace-facts-before.json` 和 `workspace-facts-after.json` 生成附带 System Facts 的最终 Payload；
-4. 原子提交 Handoff；
-5. 若目标是外部角色，最佳努力发送 tmux 变更提示。
+3. 若当前 Role 在 `workflow.read_only_roles` 且 Before/After 不同，提交 Permission Block，不交付 Outbox；
+4. 只用不可变 Outbox Payload、`workspace-facts-before.json` 和 `workspace-facts-after.json` 生成附带 System Facts 的最终 Payload；
+5. 原子提交 Handoff；
+6. 若目标是外部角色，最佳努力发送 tmux 变更提示。
 
 最终 Facts 是 Deferred Delivery 事务的一部分。若 After Facts 或其 Runtime Hash 未持久化完整，即使进程已正常退出且 Outbox 有效，也只能提交 Recovery Block；恢复过程不得重新扫描当前 Workspace 来补造 Turn 结束时的事实。
 
@@ -3075,7 +3103,7 @@ Event 是唯一语义提交点，但恢复判断还依赖完整的技术快照�
 版本值必须是精确的非 Boolean JSON Integer，`true`、`1.0`、字符串或缺失值均不兼容；
 不支持的版本明确失败，不根据 Pane、日志、当前 Workspace 或相邻快照猜测缺失字段，
 也不就地改写已经提交的 Run JSON。允许的兼容行为必须逐项写入规范并使用闭合前置
-条件：Schema 1–5 `team.json` 缺失后续版本字段时的只读规范化、LaunchSpec Schema 1 的 Headless 读取，
+条件：Schema 1–7 `team.json` 缺失后续版本字段时的只读规范化、LaunchSpec Schema 1 的 Headless 读取，
 以及 Team Schema 1 Runtime 缺少 `trace_manifest_sha256` 时只在内存中补为
 `null`。后一项不会伪造 Manifest；Schema 2+ Team 中已经执行并 Finalize 的 External
 Turn 仍必须具有非空 Anchor。Adapter 私有状态的受控迁移另按 17.4 执行，不属于 Run
@@ -3241,6 +3269,8 @@ agent-team init \
   [--role-fast <role-id>] \
   [--role-launch-mode <role-id>=<interactive|headless>] \
   [--role-dsh-plugin <role-id>=<workspace-package-directory>] \
+  [--allow-handoff <from-role>=<to-role>] \
+  [--read-only-role <role-id>] \
   --initial-role <role-id> \
   [--origin-harness <harness>] \
   [--max-turns <count>] \
@@ -3265,7 +3295,8 @@ agent-team unlock --workspace <path> --expect-run <run-id> [--confirm-origin-sto
 
 `<role-spec>` 固定为 `<role-id>=origin` 或
 `<role-id>=<codex|claude-code|opencode|deepseek-harness>:<resume|fresh>[:<profile>]`；Profile 必须来自 13.1 的
-Adapter 闭集，省略时选择 `full-access`。`--role` 以及四类 role-scoped 选项都可重复。
+Adapter 闭集，省略时选择 `full-access`。`--role`、role-scoped 选项、
+`--allow-handoff` 与 `--read-only-role` 都可重复。
 `init` 的默认值是当前目录、
 `origin_harness=codex`、`max_turns=20`、`max_wall_time_seconds=7200`、
 `audit_mode=standard`、`trace_redaction=standard`、
@@ -4913,7 +4944,7 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "run_id": "at-feature-7f3a",
   "workspace": "/repo/project",
   "origin": {
@@ -4960,6 +4991,13 @@ Developer 每轮的修改要交由 Reviewer 审查，Reviewer 只审查不修改
       "Open findings",
       "Evidence"
     ]
+  },
+  "workflow": {
+    "allowed_handoffs": {
+      "developer": ["reviewer"],
+      "reviewer": ["developer"]
+    },
+    "read_only_roles": ["reviewer"]
   }
 }
 ```

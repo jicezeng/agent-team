@@ -110,7 +110,9 @@ def test_harness_skill_variants_have_only_the_intended_origin_differences() -> N
         1,
     )
     expected = expected.replace(
-        """   select the explicit Origin metadata from the managed shell, then run:
+        """   Write Request and Protocol outside `.agent-team`,
+   select the explicit Origin metadata from the managed shell, add the workflow
+   flags chosen in step 4 to the `init` invocation, then run:
 
 ```bash
 if [ "${DSH_SHELL:-}" = "1" ]; then
@@ -119,7 +121,8 @@ else
   origin_harness=codex
 fi
 """,
-        """   then run:
+        """   Write Request and Protocol outside `.agent-team`, add the workflow flags
+   chosen in step 4 to the `init` invocation, then run:
 
 ```bash
 """,

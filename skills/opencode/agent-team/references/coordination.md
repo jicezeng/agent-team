@@ -15,6 +15,14 @@
    Turn directory and invoke exactly one formal CLI action.
 6. Stop business work after that command succeeds.
 
+Obey the frozen control-plane policy printed in the Turn prompt. A
+`HANDOFF_NOT_ALLOWED` response means no action was staged and the same Turn
+still owns the token; choose another Protocol-valid action. A role marked
+read-only must not change Git-visible candidate content. Agent-Team checks its
+frozen before/after state after the Harness is quiescent and Blocks rather than
+delivering an action when it changed. This boundary does not turn ignored files
+into durable evidence and does not replace the Launch Profile.
+
 A rejected CLI invocation did not commit the Turn's formal action. In
 particular, `ROUTE_PREFLIGHT_REJECTED` means target activation found a fixable
 artifact problem before any Outbox or Handoff Event was staged. The active Turn

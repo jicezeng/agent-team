@@ -13,6 +13,7 @@ from agent_team.bootstrap import initialize_run, start_run
 from agent_team.config import (
     ObservabilityPolicy,
     Role,
+    WorkflowPolicy,
     make_team,
 )
 from agent_team.journal import scan_journal
@@ -158,6 +159,7 @@ def _external_run(
     include_origin_reviewer: bool = False,
     include_external_reviewer: bool = False,
     observability: ObservabilityPolicy | None = None,
+    workflow: WorkflowPolicy | None = None,
     launch_mode: str = "headless",
     developer_session_policy: str = "fresh",
 ) -> tuple[Path, dict[str, Any]]:
@@ -246,6 +248,7 @@ def _external_run(
         max_turns=max_turns,
         max_wall_time_seconds=max_wall_time_seconds,
         observability=observability,
+        workflow=workflow,
     )
     run_dir = initialize_run(
         team=team,

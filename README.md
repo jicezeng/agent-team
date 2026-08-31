@@ -45,8 +45,10 @@ Limits: at most 12 role turns and 7200 seconds.
 
 The Skill freezes a readable collaboration contract, creates each role process
 only when first routed, and follows formal Handoff events until Completion or a
-user-visible Block. There is no graph DSL to prebuild and no permanent manager
-Agent consuming the context window.
+user-visible Block. Business decisions stay in natural language, so there is no
+graph DSL to prebuild and no permanent manager Agent consuming the context
+window. When a task needs harder structural boundaries, bootstrap can also
+freeze a small Handoff allowlist and make selected roles Git-worktree read-only.
 
 ## Why Agent-Team
 

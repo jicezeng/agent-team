@@ -7,6 +7,7 @@ import pytest
 
 from agent_team.bootstrap import start_run
 from agent_team.cli import (
+    _handoff_edges,
     _permission_report,
     _resume_help_supported,
     _role_flags,
@@ -54,6 +55,12 @@ def test_init_parser_accepts_role_scoped_harness_options() -> None:
             "reviewer",
             "--role-launch-mode",
             "developer=headless",
+            "--allow-handoff",
+            "developer=reviewer",
+            "--allow-handoff",
+            "reviewer=developer",
+            "--read-only-role",
+            "reviewer",
             "--initial-role",
             "developer",
         ]
@@ -75,6 +82,13 @@ def test_init_parser_accepts_role_scoped_harness_options() -> None:
         args.role_launch_mode,
         option="--role-launch-mode",
     ) == {"developer": "headless"}
+    assert _handoff_edges(args.allow_handoff) == {
+        ("developer", "reviewer"),
+        ("reviewer", "developer"),
+    }
+    assert _role_flags(args.read_only_role, option="--read-only-role") == {
+        "reviewer"
+    }
 
 
 def test_start_parser_accepts_one_time_full_access_confirmation() -> None:

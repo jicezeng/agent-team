@@ -564,6 +564,16 @@ def origin_action(
                 "ROLE_NOT_FOUND",
                 f"target role {to_role!r} does not exist",
             )
+        if (
+            action == "handoff"
+            and not team.allows_handoff(from_role, to_role or "")
+        ):
+            raise AgentTeamError(
+                "HANDOFF_NOT_ALLOWED",
+                f"role {from_role!r} cannot hand off to {to_role!r} under the "
+                "frozen workflow policy; the current Origin Turn still owns "
+                "the token",
+            )
         if action not in {"handoff", "complete", "block"}:
             raise InvalidArgument(f"invalid Origin action: {action}")
         if action != "handoff" and to_role is not None:
@@ -727,6 +737,30 @@ def origin_action(
                 runtime=runtime,
                 reason="recovery",
                 message=recovery_message,
+            )
+            runtime.update(
+                {
+                    "phase": "exited",
+                    "outcome": "failed",
+                    "terminal_event_id": event["event_id"],
+                }
+            )
+            save_runtime(run_dir / "turns" / turn_id, runtime, team=team)
+            return {"code": "TEAM_BLOCKED", "event": event}
+        if team.workspace_is_read_only(from_role) and not same_workspace_state(
+            before,
+            after,
+        ):
+            event = commit_technical_block_locked(
+                run_dir,
+                runtime=runtime,
+                reason="permission",
+                message=(
+                    f"Role {from_role!r} is configured read-only, but the "
+                    "Git-visible workspace changed during this Turn. Frozen "
+                    "before/after facts were preserved and no formal action "
+                    "was delivered."
+                ),
             )
             runtime.update(
                 {

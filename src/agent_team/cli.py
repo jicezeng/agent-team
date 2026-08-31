@@ -32,6 +32,7 @@ from .config import (
     EXTERNAL_ADAPTER_IDS,
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
+    WorkflowPolicy,
     generate_run_id,
     load_team,
     make_team,
@@ -158,6 +159,23 @@ def _role_flags(values: Sequence[str] | None, *, option: str) -> set[str]:
         if role_id in parsed:
             raise InvalidArgument(f"duplicate {option} for role: {role_id}")
         parsed.add(role_id)
+    return parsed
+
+
+def _handoff_edges(values: Sequence[str] | None) -> set[tuple[str, str]]:
+    parsed: set[tuple[str, str]] = set()
+    for spec in values or ():
+        if "=" not in spec:
+            raise InvalidArgument(f"--allow-handoff must be FROM=TO: {spec!r}")
+        from_role, to_role = spec.split("=", 1)
+        validate_role_id(from_role)
+        validate_role_id(to_role)
+        edge = (from_role, to_role)
+        if edge in parsed:
+            raise InvalidArgument(
+                f"duplicate --allow-handoff route: {from_role}={to_role}"
+            )
+        parsed.add(edge)
     return parsed
 
 
@@ -917,6 +935,24 @@ def build_parser() -> argparse.ArgumentParser:
             "load one workspace-local DSH bundle when the role is first activated"
         ),
     )
+    init.add_argument(
+        "--allow-handoff",
+        action="append",
+        metavar="FROM=TO",
+        help=(
+            "allow one role-selected Handoff edge; repeat to freeze an exact "
+            "role graph, or omit for unrestricted dynamic routing"
+        ),
+    )
+    init.add_argument(
+        "--read-only-role",
+        action="append",
+        metavar="ROLE",
+        help=(
+            "fail closed if this role changes the Git-visible workspace during "
+            "its turn"
+        ),
+    )
     init.add_argument("--initial-role", required=True)
     init.add_argument("--origin-harness", default="codex")
     init.add_argument("--max-turns", type=int, default=20)
@@ -1095,6 +1131,11 @@ def dispatch(args: argparse.Namespace) -> int:
             args.role_dsh_plugin,
             option="--role-dsh-plugin",
         )
+        handoff_edges = _handoff_edges(args.allow_handoff)
+        read_only_roles = _role_flags(
+            args.read_only_role,
+            option="--read-only-role",
+        )
         roles = {}
         for spec in args.role:
             candidate = spec.split("=", 1)[0] if "=" in spec else ""
@@ -1124,6 +1165,33 @@ def dispatch(args: argparse.Namespace) -> int:
                 "role launch options reference unknown roles: "
                 + ", ".join(sorted(unknown_options))
             )
+        workflow_roles = {
+            role_id
+            for edge in handoff_edges
+            for role_id in edge
+        } | read_only_roles
+        unknown_workflow_roles = workflow_roles - set(roles)
+        if unknown_workflow_roles:
+            raise InvalidArgument(
+                "workflow options reference unknown roles: "
+                + ", ".join(sorted(unknown_workflow_roles))
+            )
+        allowed_handoffs = None
+        if args.allow_handoff is not None:
+            allowed_handoffs = {
+                role_id: tuple(
+                    sorted(
+                        to_role
+                        for from_role, to_role in handoff_edges
+                        if from_role == role_id
+                    )
+                )
+                for role_id in roles
+            }
+        workflow = WorkflowPolicy(
+            allowed_handoffs=allowed_handoffs,
+            read_only_roles=tuple(sorted(read_only_roles)),
+        )
         run_id = args.run_id or generate_run_id()
         required_sections = (
             REQUIRED_AUDIT_PAYLOAD_SECTIONS
@@ -1146,6 +1214,7 @@ def dispatch(args: argparse.Namespace) -> int:
             max_turns=args.max_turns,
             max_wall_time_seconds=args.max_wall_time_seconds,
             observability=observability,
+            workflow=workflow,
         )
         run_dir = initialize_run(
             team=team,

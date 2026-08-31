@@ -223,6 +223,8 @@ a Session for each Turn. External roles default to `interactive` launch and
 --role-fast ROLE
 --role-launch-mode ROLE=<interactive|headless>
 --role-dsh-plugin ROLE=<workspace-package-directory>
+--allow-handoff FROM=TO
+--read-only-role ROLE
 ```
 
 Omitted model, Provider, and effort values inherit the relevant Harness default
@@ -255,6 +257,26 @@ fallback model.
 `--role-fast` is Codex-only. DSH External roles support only `interactive`;
 requesting `headless` fails before Kickoff. Launch mode, Profile, model, Codex
 or Claude Provider Route, effort, and fast mode cannot change after Kickoff.
+
+Business routing conditions remain natural language in `PROTOCOL.md`. For a
+task that explicitly needs a structural safety envelope, repeat
+`--allow-handoff FROM=TO` for every permitted role-selected edge. Supplying at
+least one edge closes the allowlist: configured roles with no listed outgoing
+edge may only Complete or Block. Omitting the option preserves unrestricted
+dynamic routing. Agent-Team-owned recovery routes, including output-limit
+continuation and candidate-activation return, are not role-selected Handoffs
+and do not use this allowlist.
+
+Repeat `--read-only-role ROLE` when a role must not change candidate files.
+After the Harness process group is quiescent and before its formal action is
+delivered, Agent-Team compares the frozen before/after Git-visible workspace
+facts; a change produces a `permission` Block. The boundary covers tracked and
+unignored untracked content plus Git HEAD, excludes `.agent-team/` and ignored
+build/cache files, and detects final state rather than transient write-and-
+restore activity. It is an action-delivery invariant, not an OS sandbox or a
+replacement for the Launch Profile. Both controls are immutable in
+`team.json`, surfaced in each External Turn prompt, and never interpret review
+verdicts or other business prose.
 
 For a custom Codex Provider, Agent-Team freezes only its safe structural
 definition: display name, HTTP(S) base URL, Responses wire API, retry/timeout

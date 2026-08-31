@@ -10,6 +10,7 @@ from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
     Role,
+    WorkflowPolicy,
     make_team,
 )
 from agent_team.errors import AgentTeamError
@@ -79,6 +80,35 @@ def test_external_turn_prompt_explains_strengthened_payload_contract(
     assert "map every material Request and Protocol condition" in prompt
     assert "its only content must be `None`" in prompt
     assert "the CLI rejects any other content" in prompt
+
+
+def test_external_turn_prompt_surfaces_frozen_workflow_policy(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, runtime = _external_run(
+        workspace,
+        request_protocol,
+        monkeypatch,
+        run_id="at-worker-prompt-workflow-policy",
+        include_external_reviewer=True,
+        workflow=WorkflowPolicy(
+            allowed_handoffs={"developer": ("reviewer",), "reviewer": ()},
+            read_only_roles=("developer",),
+        ),
+    )
+
+    prompt = render_turn_prompt(
+        run_dir,
+        runtime,
+        cli_path="/opt/agent-team/bin/agent-team",
+        session_ref=None,
+    )
+
+    assert "Role-selected Handoff targets: `reviewer`" in prompt
+    assert "Workspace access: read-only" in prompt
+    assert "Any Git-visible workspace change" in prompt
 
 
 def test_external_turn_prompt_indexes_prior_formal_inputs(

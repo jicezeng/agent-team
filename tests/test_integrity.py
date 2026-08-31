@@ -13,6 +13,7 @@ from agent_team.config import (
     ObservabilityPolicy,
     Role,
     Team,
+    WorkflowPolicy,
     make_team,
     parse_team,
 )
@@ -299,7 +300,7 @@ def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
         max_wall_time_seconds=300,
     )
 
-    assert team.config_schema_version == 7
+    assert team.config_schema_version == 8
     assert team.to_json()["roles"]["developer"]["harness_options"] == {
         "model": "gpt-5.6-sol",
         "reasoning_effort": "max",
@@ -312,6 +313,56 @@ def test_team_schema_preserves_frozen_harness_options(workspace: Path) -> None:
     assert team.roles["developer"].fast_mode is True
     assert team.roles["developer"].model_provider == "openai"
     assert team.roles["developer"].launch_mode == "interactive"
+
+
+def test_team_schema_preserves_frozen_workflow_policy(workspace: Path) -> None:
+    team = make_team(
+        run_id="at-test-workflow-policy",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role("developer", "origin"),
+            "reviewer": Role("reviewer", "origin"),
+            "validator": Role("validator", "origin"),
+        },
+        initial_role="developer",
+        max_turns=6,
+        max_wall_time_seconds=300,
+        workflow=WorkflowPolicy(
+            allowed_handoffs={
+                "developer": ("reviewer",),
+                "reviewer": ("developer", "validator"),
+                "validator": ("developer",),
+            },
+            read_only_roles=("reviewer", "validator"),
+        ),
+    )
+
+    parsed = parse_team(team.to_json())
+
+    assert parsed.allows_handoff("developer", "reviewer") is True
+    assert parsed.allows_handoff("developer", "validator") is False
+    assert parsed.workspace_is_read_only("reviewer") is True
+    assert parsed.workspace_is_read_only("developer") is False
+
+
+def test_team_schema_rejects_partial_handoff_graph(workspace: Path) -> None:
+    value = make_team(
+        run_id="at-test-partial-workflow",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            "developer": Role("developer", "origin"),
+            "reviewer": Role("reviewer", "origin"),
+        },
+        initial_role="developer",
+        max_turns=2,
+        max_wall_time_seconds=300,
+    ).to_json()
+    value["workflow"]["allowed_handoffs"] = {"developer": ["reviewer"]}
+
+    with pytest.raises(IntegrityError, match="contain every configured role"):
+        parse_team(value)
 
 
 def test_team_schema_preserves_frozen_codex_model_provider(
@@ -378,6 +429,7 @@ def test_team_schema_v5_remains_readable_without_model_provider(
         max_wall_time_seconds=300,
     ).to_json()
     value["schema_version"] = 5
+    value.pop("workflow")
     options = value["roles"]["developer"]["harness_options"]
     options.pop("model_provider")
     options.pop("model_provider_config")
@@ -560,6 +612,7 @@ def test_team_schema_v6_claude_route_remains_direct_anthropic(
         max_wall_time_seconds=300,
     ).to_json()
     value["schema_version"] = 6
+    value.pop("workflow")
     options = value["roles"]["reviewer"]["harness_options"]
     options["model_provider"] = None
     options["model_provider_config"] = None
@@ -625,6 +678,7 @@ def test_legacy_team_schema_has_no_frozen_harness_options(
         max_wall_time_seconds=300,
     ).to_json()
     value["schema_version"] = 2
+    value.pop("workflow")
     value["roles"]["developer"].pop("harness_options")
     value["roles"]["developer"].pop("launch_mode")
     value["roles"]["developer"].pop("dsh_plugin")
@@ -844,6 +898,7 @@ def test_legacy_team_schema_preserves_pre_observability_semantics(
     ).to_json()
     value["schema_version"] = 1
     value.pop("observability")
+    value.pop("workflow")
 
     parsed = parse_team(value)
 

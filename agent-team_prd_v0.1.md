@@ -53,7 +53,7 @@ v0.1 的核心取舍是：
 
 v0.1 必须做到：
 
-1. 用户以一次自然语言请求定义临时团队，不需要预先编写图或状态机；
+1. 用户以一次自然语言请求定义临时团队，不需要预先编写图或状态机；明确需要硬边界时，Bootstrap 可把最小 Handoff Allowlist 和只读角色集合冻结为安全包络；
 2. 支持任意名称的动态角色、Origin/External Binding，以及 Codex、Claude Code、
    OpenCode、DeepSeek Harness External Adapter；DeepSeek Harness 也可作为 Origin；
 3. 任意时刻只有一个业务角色持有执行 Token，Handoff 目标显式且可审计；
@@ -84,10 +84,10 @@ v0.1 不承诺：
 - 保存用户原始请求为 `REQUEST.md`；
 - 生成可读的自然语言 `PROTOCOL.md`，明确角色、路由、循环、Completion Authority、
   Block/Resume 规则、假设和安全上限；
-- 生成 Schema 7 `team.json`，冻结 Role Binding、Session Policy、Launch Mode、
+- 生成 Schema 8 `team.json`，冻结 Role Binding、Session Policy、Launch Mode、
   Launch Profile、role-scoped Model / Reasoning Effort / Codex 或 Claude Provider /
   Codex Fast Mode、可选 DSH Plugin、Wall Time、最大 Turn 数和 Observability
-  Policy；
+  Policy，以及可选的 Role Handoff Allowlist 与 Git-visible Read-only Role；
 - `init` 必须原子创建完整 UNSTARTED Run，`start` 才获取 Workspace Ownership 并
   提交唯一 Kickoff；
 - Kickoff 后不得在线修改 Request、Protocol、Team、Profile 或安全上限。
@@ -95,6 +95,10 @@ v0.1 不承诺：
 ### 6.2 动态角色与执行权
 
 - Role ID 由本次任务定义，不从 `developer`、`reviewer` 等名称推断权限；
+- 默认路由继续由自然语言 Protocol 动态决定；用户显式要求硬路由边界时，Bootstrap
+  可冻结允许边，CLI 在 Outbox 暂存前拒绝其他 Role-selected Handoff；显式只读 Role
+  在 Turn 交付前若改变 Git 可见状态则进入 Permission Block。两者都不解析 Reviewer
+  Verdict，也不替代 Launch Profile；
 - Binding 支持 `origin` 与 `external`；External Adapter 支持 `codex`、
   `claude-code`、`opencode` 和 `deepseek-harness`；
 - External Role 支持 `resume` 与 `fresh`；
@@ -326,7 +330,7 @@ DeepSeek Harness External Role 当前只支持交互式 Launch；其 restricted 
 文件写效果，不约束读取、进程和网络。Agent-Team 不采集 DSH Origin 的私有内部过程，
 也不保存 External TUI 输出中的私有 reasoning 正文。
 
-- Workflow IR、Typed Handoff 和机器可验证 Transition Guard；
+- 通用 Workflow IR、Typed Handoff 和机器可验证的业务语义 Transition Guard；
 - 宿主 API/SDK 集成与可靠唤醒；
 - SQLite 索引、可配置保留策略和远程可观测性；
 - Fan-out/Join、多 Worktree、多机器 Worker 和合并策略。

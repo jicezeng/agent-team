@@ -49,7 +49,13 @@ External business Turn inside an existing Run:
    ambiguity. Do not silently serialize requested parallel work.
 4. Record every inference under `Assumptions made during bootstrap`. Keep
    business behavior in natural-language `PROTOCOL.md`; do not invent a
-   workflow DSL or parse reviewer prose as machine state.
+   workflow DSL or parse reviewer prose as machine state. If the user
+   explicitly requires hard role-to-role boundaries, repeat
+   `--allow-handoff FROM=TO` for every permitted role-selected edge; supplying
+   any edge closes the allowlist and gives unlisted sources no outgoing edge.
+   Omit it for dynamic routing. If a role is explicitly forbidden to change
+   candidate files, add `--read-only-role ROLE`; this is a Git-visible
+   Turn-boundary guard, not a verdict, OS sandbox, or Launch Profile.
 5. Choose each External Launch Profile from `agent-team doctor` output. Each
    new External role defaults to `full-access` unless the user explicitly selects
    `default` or `trusted-workspace`. Before every new Run containing a
@@ -151,7 +157,8 @@ External business Turn inside an existing Run:
    every Agent-Team command when the Run contains DSH External roles. Ordinary
    DSH Bash scrubs the provider credential. If the tool is unavailable, stop
    before `init` and ask the user to activate the installed Origin Bundle in
-   the current DSH Profile.
+   the current DSH Profile. Add the workflow flags chosen in step 4 to the
+   `init` invocation.
 
 ```bash
 "<absolute-agent-team-cli>" init \

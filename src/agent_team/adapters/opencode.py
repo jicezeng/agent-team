@@ -7,6 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from agent_team.assets import effective_agent_team_cli
 from agent_team.config import valid_opencode_model_id, valid_opencode_variant
@@ -14,10 +15,12 @@ from agent_team.errors import AgentTeamError, IntegrityError, InvalidArgument
 from agent_team.state import fixed_state_dir
 from agent_team.util import (
     atomic_json,
+    atomic_write,
     canonical_json_bytes,
     ensure_dir,
     path_entry_exists,
     read_json,
+    read_regular,
     sha256_bytes,
 )
 
@@ -32,10 +35,17 @@ from .base import (
     TurnLaunchContext,
     workspace_from_run_dir,
 )
+from .capability_snapshot import (
+    assert_capability_path,
+    copy_capability_path,
+    environment_reference_names,
+)
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _RUNTIME_AGENT = "agent-team-runtime"
 _PROVIDER_SNAPSHOT = "agent-team-provider.json"
+_CAPABILITY_SNAPSHOT = "agent-team-capabilities.json"
+_NATIVE_CONFIG_RELATIVE = Path("opencode", "opencode.json")
 _ENV_REFERENCE_RE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
 _SENSITIVE_PROVIDER_KEY_SUFFIXES = (
     "apikey",
@@ -48,6 +58,18 @@ _SENSITIVE_PROVIDER_KEY_SUFFIXES = (
     "refreshtoken",
     "secret",
     "secretkey",
+)
+_SENSITIVE_ENVIRONMENT_NAME_PARTS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "secret",
+        "token",
+    }
 )
 _TERMINAL_FINISH_REASONS = frozenset({"stop", "length", "content-filter", "unknown"})
 
@@ -162,7 +184,7 @@ class OpenCodeAdapter(HarnessAdapter):
         launch_mode: str = "headless",
     ) -> dict[str, dict[str, list[str]]]:
         self.assert_launch_mode(launch_mode)
-        fixed = ["--pure", "--auto", "--agent", _RUNTIME_AGENT]
+        fixed = ["--auto", "--agent", _RUNTIME_AGENT]
         return {
             profile: {"start": fixed.copy(), "resume": fixed.copy()}
             for profile in ("default", "trusted-workspace", "full-access")
@@ -174,7 +196,8 @@ class OpenCodeAdapter(HarnessAdapter):
         details["runtime_isolation"] = {
             "xdg_config_home": "private per Run and role",
             "project_config": "disabled",
-            "external_plugins": "disabled by --pure",
+            "external_plugins": "copied into private config before kickoff",
+            "mcp": "copied into private config before kickoff",
             "user_data_and_auth": "OpenCode account data remains available",
         }
         details["inline_config_mappings"] = {
@@ -219,6 +242,11 @@ class OpenCodeAdapter(HarnessAdapter):
             "provider_environment_bridge": {
                 "scope": "environment names referenced by the frozen provider",
                 "persistence": "values are injected only into the tmux Worker",
+            },
+            "user_capabilities": {
+                "schema_version": 1,
+                "source": "effective user config with project config disabled",
+                "plugin_mcp": "private immutable snapshot",
             },
         }
         components = [base.encode(), canonical_json_bytes(contract)]
@@ -423,6 +451,49 @@ class OpenCodeAdapter(HarnessAdapter):
         ]
         return tuple(sorted(candidates, key=lambda item: (-len(item[1]), item[0])))
 
+    @staticmethod
+    def _sensitive_environment_name(name: str) -> bool:
+        parts = {
+            part.casefold()
+            for part in re.split(r"[^A-Za-z0-9]+", name)
+            if part
+        }
+        normalized = re.sub(r"[^a-z0-9]", "", name.casefold())
+        return bool(parts & _SENSITIVE_ENVIRONMENT_NAME_PARTS) or any(
+            normalized.endswith(marker)
+            for marker in _SENSITIVE_PROVIDER_KEY_SUFFIXES
+        )
+
+    @classmethod
+    def _restore_capability_environment_references(cls, value: object) -> object:
+        candidates = tuple(
+            (name, candidate)
+            for name, candidate in cls._environment_candidates()
+            if cls._sensitive_environment_name(name)
+        )
+
+        def restore(item: object) -> object:
+            if isinstance(item, dict):
+                return {
+                    key: restore(child)
+                    for key, child in item.items()
+                    if isinstance(key, str)
+                }
+            if isinstance(item, list):
+                return [restore(child) for child in item]
+            if not isinstance(item, str):
+                return item
+            for name, candidate in candidates:
+                if item == candidate:
+                    return f"{{env:{name}}}"
+            restored = item
+            for name, candidate in candidates:
+                if len(candidate) >= 8 and candidate in restored:
+                    restored = restored.replace(candidate, f"{{env:{name}}}")
+            return restored
+
+        return restore(value)
+
     @classmethod
     def _sanitize_provider_value(
         cls,
@@ -492,10 +563,15 @@ class OpenCodeAdapter(HarnessAdapter):
         *,
         run_dir: Path,
         role_id: str,
+        resolved_config: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         model = self._role_model(run_dir, role_id)
         provider_id = model.partition("/")[0]
-        config = self._resolved_user_config(workspace_from_run_dir(run_dir))
+        config = (
+            resolved_config
+            if resolved_config is not None
+            else self._resolved_user_config(workspace_from_run_dir(run_dir))
+        )
         providers = config.get("provider")
         provider: object = None
         if isinstance(providers, dict):
@@ -602,7 +678,14 @@ class OpenCodeAdapter(HarnessAdapter):
             role_id=role_id,
             home=home,
         )
-        return self._provider_environment_names(snapshot["provider"])
+        names = set(self._provider_environment_names(snapshot["provider"]))
+        capabilities = self._read_capability_snapshot(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
+        names.update(capabilities["environment_names"])
+        return tuple(sorted(names))
 
     @classmethod
     def _home_marker(cls, run_dir: Path, role_id: str) -> dict[str, object]:
@@ -625,19 +708,162 @@ class OpenCodeAdapter(HarnessAdapter):
             home,
         )
 
-    def prepare_run_state(
+    def _new_capability_snapshot(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+        resolved_config: dict[str, Any] | None = None,
+    ) -> dict[str, object]:
+        workspace = workspace_from_run_dir(run_dir)
+        resolved = (
+            resolved_config
+            if resolved_config is not None
+            else self._resolved_user_config(workspace)
+        )
+        configured_plugins = resolved.get("plugin", [])
+        configured_mcp = self._restore_capability_environment_references(
+            resolved.get("mcp", {})
+        )
+        if not isinstance(configured_plugins, list) or not all(
+            isinstance(plugin, str) and plugin for plugin in configured_plugins
+        ):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "OpenCode user config plugin must be an array of non-empty strings",
+            )
+        if not isinstance(configured_mcp, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "OpenCode user config mcp must be an object",
+            )
+
+        plugins: list[str] = []
+        local_snapshots: list[dict[str, object]] = []
+        for index, plugin in enumerate(configured_plugins):
+            parsed = urlparse(plugin)
+            if parsed.scheme != "file":
+                plugins.append(plugin)
+                continue
+            if parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"OpenCode local Plugin URI is invalid: {plugin!r}",
+                )
+            source = Path(unquote(parsed.path))
+            try:
+                resolved_source = source.expanduser().resolve(strict=True)
+            except OSError as exc:
+                raise AgentTeamError(
+                    "HARNESS_CAPABILITY_UNAVAILABLE",
+                    f"OpenCode local Plugin is unavailable: {plugin}",
+                ) from exc
+            suffix = resolved_source.suffix if resolved_source.is_file() else ""
+            target = home / "agent-team-plugins" / f"{index:04d}{suffix}"
+            descriptor = copy_capability_path(resolved_source, target)
+            plugins.append(target.as_uri())
+            local_snapshots.append(
+                {
+                    "source": plugin,
+                    "path": target.relative_to(home).as_posix(),
+                    "snapshot": descriptor,
+                }
+            )
+
+        capability_config: dict[str, object] = {}
+        if plugins:
+            capability_config["plugin"] = plugins
+        if configured_mcp:
+            capability_config["mcp"] = configured_mcp
+        config_bytes = canonical_json_bytes(capability_config)
+        atomic_write(
+            home / _NATIVE_CONFIG_RELATIVE,
+            config_bytes,
+            immutable=True,
+        )
+        return {
+            "schema_version": 1,
+            "adapter": self.adapter_id,
+            "run_dir": str(run_dir.resolve(strict=True)),
+            "role_id": role_id,
+            "config_sha256": sha256_bytes(config_bytes),
+            "local_plugins": local_snapshots,
+            "environment_names": list(
+                environment_reference_names(capability_config)
+            ),
+        }
+
+    def _read_capability_snapshot(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, Any]:
+        value = read_json(home / _CAPABILITY_SNAPSHOT)
+        required = {
+            "schema_version",
+            "adapter",
+            "run_dir",
+            "role_id",
+            "config_sha256",
+            "local_plugins",
+            "environment_names",
+        }
+        local_plugins = value.get("local_plugins")
+        environment_names = value.get("environment_names")
+        if (
+            set(value) != required
+            or value.get("schema_version") != 1
+            or value.get("adapter") != self.adapter_id
+            or value.get("run_dir") != str(run_dir.resolve(strict=True))
+            or value.get("role_id") != role_id
+            or not isinstance(value.get("config_sha256"), str)
+            or len(value["config_sha256"]) != 64
+            or not isinstance(local_plugins, list)
+            or not isinstance(environment_names, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                for name in environment_names
+            )
+        ):
+            raise IntegrityError("OpenCode capability snapshot is invalid")
+        if (
+            sha256_bytes(read_regular(home / _NATIVE_CONFIG_RELATIVE))
+            != value["config_sha256"]
+        ):
+            raise IntegrityError("OpenCode Plugin/MCP config changed after snapshot")
+        for plugin in local_plugins:
+            if (
+                not isinstance(plugin, dict)
+                or set(plugin) != {"source", "path", "snapshot"}
+                or not isinstance(plugin.get("source"), str)
+                or not isinstance(plugin.get("path"), str)
+                or Path(plugin["path"]).is_absolute()
+                or any(part in {"", ".", ".."} for part in plugin["path"].split("/"))
+                or not isinstance(plugin.get("snapshot"), dict)
+            ):
+                raise IntegrityError("OpenCode local Plugin snapshot is invalid")
+            assert_capability_path(
+                home / plugin["path"],
+                plugin["snapshot"],
+                subject=f"OpenCode local Plugin {plugin['source']!r}",
+            )
+        return value
+
+    def prepare_capability_state(
         self,
         *,
         run_dir: Path,
         role_id: str,
         launch_mode: str,
-        session_generation: int = 1,
     ) -> None:
-        super().prepare_run_state(
+        super().prepare_capability_state(
             run_dir=run_dir,
             role_id=role_id,
             launch_mode=launch_mode,
-            session_generation=session_generation,
         )
         for directory in self._home_hierarchy(run_dir, role_id):
             ensure_dir(directory)
@@ -657,8 +883,16 @@ class OpenCodeAdapter(HarnessAdapter):
                 )
         else:
             atomic_json(marker_path, marker, immutable=True)
-        snapshot_path = self._provider_snapshot_path(home)
-        if path_entry_exists(snapshot_path):
+        provider_path = self._provider_snapshot_path(home)
+        capability_path = home / _CAPABILITY_SNAPSHOT
+        needs_provider = not path_entry_exists(provider_path)
+        needs_capabilities = not path_entry_exists(capability_path)
+        resolved_config = (
+            self._resolved_user_config(workspace_from_run_dir(run_dir))
+            if needs_provider or needs_capabilities
+            else None
+        )
+        if path_entry_exists(provider_path):
             self._read_provider_snapshot(
                 run_dir=run_dir,
                 role_id=role_id,
@@ -666,13 +900,51 @@ class OpenCodeAdapter(HarnessAdapter):
             )
         else:
             atomic_json(
-                snapshot_path,
+                provider_path,
                 self._new_provider_snapshot(
                     run_dir=run_dir,
                     role_id=role_id,
+                    resolved_config=resolved_config,
                 ),
                 immutable=True,
             )
+        if path_entry_exists(capability_path):
+            self._read_capability_snapshot(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+        else:
+            atomic_json(
+                capability_path,
+                self._new_capability_snapshot(
+                    run_dir=run_dir,
+                    role_id=role_id,
+                    home=home,
+                    resolved_config=resolved_config,
+                ),
+                immutable=True,
+            )
+
+    def prepare_run_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+        session_generation: int = 1,
+    ) -> None:
+        super().prepare_run_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+            session_generation=session_generation,
+        )
+        self.prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
 
     def _assert_config_home(
         self,
@@ -697,6 +969,11 @@ class OpenCodeAdapter(HarnessAdapter):
                 "HARNESS_STATE_NOT_PREPARED",
                 f"OpenCode configuration state is not prepared for {context.role_id}",
             )
+        self._read_capability_snapshot(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            home=home,
+        )
         return home, self._read_provider_snapshot(
             run_dir=run_dir,
             role_id=context.role_id,
@@ -731,6 +1008,11 @@ class OpenCodeAdapter(HarnessAdapter):
             raise IntegrityError(
                 f"OpenCode configuration state is not owned by this Run: {home}"
             )
+        self._read_capability_snapshot(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
         resolved_home = home.resolve(strict=True)
         for directory, child_dirs, files in os.walk(
             home,

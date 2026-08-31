@@ -97,7 +97,7 @@ def test_opencode_profiles_are_equivalent_and_do_not_claim_a_shell_sandbox(
 
     assert set(mappings) == {"default", "trusted-workspace", "full-access"}
     assert all(item["start"] == item["resume"] for item in mappings.values())
-    assert all("--pure" in item["start"] for item in mappings.values())
+    assert all("--pure" not in item["start"] for item in mappings.values())
     assert all("--auto" in item["start"] for item in mappings.values())
     assert default["bash"]["*"] == "deny"
     assert trusted["bash"]["*"] == "deny"

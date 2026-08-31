@@ -332,6 +332,11 @@ def _preflight_start(run_dir: Path) -> Team:
                 role.launch_mode or "headless",
             )
             adapter.assert_launch_prerequisites(options)
+            adapter.prepare_capability_state(
+                run_dir=run_dir,
+                role_id=role.role_id,
+                launch_mode=role.launch_mode or "headless",
+            )
     initial = team.roles[team.initial_role]
     if initial.binding == "external":
         get_adapter(initial.adapter or "").prepare_run_state(

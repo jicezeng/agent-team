@@ -359,6 +359,36 @@ trust is missing, `start` fails before Kickoff with
 `HARNESS_WORKSPACE_TRUST_REQUIRED`; establish trust and retry the same
 UNSTARTED Run. Headless Claude roles do not require this TUI preflight.
 
+## Plugin and MCP inheritance
+
+Before the first Kickoff, Agent-Team freezes native Plugin and MCP capabilities
+for every External role, including roles that are reached only by a later
+Handoff. A source configuration change after `start` does not alter the Run;
+missing source artifacts or later changes inside the private snapshot fail
+closed.
+
+| Harness | Frozen source and launch behavior |
+| --- | --- |
+| Codex | Copies every enabled `[plugins]` entry, its installed cache tree, a filtered private marketplace, and `[mcp_servers]` from the active user `CODEX_HOME`. Headless and interactive launches both use the private `CODEX_HOME`. |
+| Claude Code | Resolves `enabledPlugins` through user, Workspace, and local settings, copies the matching installed Plugin trees, and merges user/project MCP state with Workspace `.mcp.json`. Claude receives explicit private `--plugin-dir` and strict `--mcp-config` arguments. |
+| OpenCode | Resolves `plugin` and `mcp` from the effective user configuration with project config disabled. Local `file://` Plugins are copied; package specifications are retained in the private native config. Runtime launches no longer use `--pure`. |
+| DeepSeek Harness | Copies the extra bundles, required package trees, and Cordis patch layers from the `headless` source Profile, then clones that frozen state into every later Session generation. Set `AGENT_TEAM_DSH_SOURCE_PROFILE` to select another source Profile. |
+
+A capability can be frozen for multiple roles without making its live Session
+state transferable. For Chrome or another browser-control Plugin, the Protocol
+must designate one capable External `resume` role as the browser owner. Only
+that role operates tabs; other roles Handoff browser requests to it. Tab
+persistence or Handoff markers keep state for the owner's Session and do not
+transfer ownership to another role or Session.
+
+Only referenced environment variable names cross the tmux Worker boundary;
+their values are not written to `team.json`, the Journal, `LaunchSpec`, or
+traces. Codex/Claude/OpenCode permissions, Hooks, Rules, model routing, Agents,
+credentials, and Session stores are not imported with these capabilities. DSH
+uses complete Cordis patch layers because native Plugin and MCP configuration
+is expressed there; those layers are therefore trusted user capability input,
+while Agent-Team still supplies the outer managed Profile and permission mode.
+
 ## Permission profiles
 
 | Profile | Codex | Claude Code | OpenCode | DeepSeek Harness |
@@ -387,11 +417,12 @@ general shell commands—including test commands—are denied. Use an OpenCode
 `full-access` role when the task requires arbitrary commands, after the Run's
 YOLO confirmation. Agent-Team launches OpenCode with a private per-Run/Role
 `XDG_CONFIG_HOME`, inline permission/agent config,
-`OPENCODE_DISABLE_PROJECT_CONFIG=1`, and `--pure`. This excludes mutable user
-and project permission, MCP, agent, and external-plugin config while preserving
-the machine-local OpenCode credential and Session stores. If the selected model
-uses a custom provider, Agent-Team freezes only that provider definition on the
-role's first activation. Expanded credentials are converted back to
+and `OPENCODE_DISABLE_PROJECT_CONFIG=1`. The private native config contains the
+frozen user Plugin/MCP subset; mutable user and project permission and Agent
+configuration remain excluded while machine-local OpenCode credential and
+Session stores stay available. If the selected model uses a custom provider,
+Agent-Team freezes only that provider definition on the role's first
+activation. Expanded credentials are converted back to
 `{env:VARIABLE}` references; a literal credential that cannot be represented
 safely fails before launch instead of entering managed state or traces. At
 Worker creation, Agent-Team injects only the environment names referenced by
@@ -404,13 +435,14 @@ DSH's sandbox is a file-effect boundary, not a complete host sandbox.
 `default` and `trusted-workspace` prevent writes outside the worktree, but reads,
 process execution, credentials in the environment, and network access remain
 available. The two restricted DSH Profiles are therefore identical in v0.1.
-The private profile disables DSH permission switching, user profiles, Skills,
-subagents, workflows, telemetry, and title-model calls; formal Agent-Team
-actions and the Journal remain the only collaboration control path.
+The private profile disables DSH permission switching, Skills, subagents,
+workflows, telemetry, and title-model calls. It imports only the frozen
+Plugin/MCP bundle and patch layers from the selected source Profile; formal
+Agent-Team actions and the Journal remain the only collaboration control path.
 
 Agent-Team freezes the supplied mapping and `launch_profile_sha256`, excludes
-mutable user permission settings, isolates OpenCode project config and external
-plugins, and sets Codex `features.hooks=false`.
+mutable user permission settings, isolates OpenCode project config, and sets
+Codex `features.hooks=false`.
 Managed administrator policy remains higher authority: it can reject a launch,
 force managed hooks, add paths or side effects, merge Claude sandbox arrays,
 or override scalars. `doctor` reports Agent-Team's mapping but cannot prove the
@@ -609,8 +641,9 @@ still be alive. Run `diagnose --json` first.
 Each worktree contains `.agent-team/` with immutable inputs, Events, Runtime
 snapshots, traces, retained raw streams, and completion artifacts. A separate
 fixed account directory contains workspace ownership, operation locks, private
-interactive Codex Homes, private OpenCode configuration Homes, private DSH
-Homes, and the pinned managed DSH runtime.
+Codex Homes, private Claude Code Homes, private OpenCode configuration Homes,
+private DSH Homes, frozen Plugin/MCP snapshots, and the pinned managed DSH
+runtime.
 
 Formal action and Resume source files must live inside their Turn directory.
 When accepted, Agent-Team reads them without following symlinks, rejects hard

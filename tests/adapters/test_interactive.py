@@ -153,7 +153,7 @@ def test_codex_interactive_custom_provider_does_not_copy_openai_auth(
     assert "provider-secret" not in json.dumps(launch.to_json())
 
 
-def test_codex_interactive_launch_uses_isolated_native_tui_state(
+def test_codex_interactive_launch_uses_isolated_native_tui_and_mcp_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -164,7 +164,7 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     source_home = tmp_path / "user-codex-home"
     source_home.mkdir()
     (source_home / "config.toml").write_text(
-        "[mcp_servers.must_not_load]\ncommand = 'unsafe'\n",
+        "[mcp_servers.copied]\ncommand = 'test-mcp'\n",
         encoding="utf-8",
     )
     source_auth = source_home / "auth.json"
@@ -210,6 +210,7 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
     assert tomllib.loads(
         (isolated_home / "config.toml").read_text(encoding="utf-8")
     ) == {
+        "mcp_servers": {"copied": {"command": "test-mcp"}},
         "projects": {str(workspace): {"trust_level": "trusted"}},
         "tui": {"model_availability_nux": {"gpt-5.6-sol": 4}},
     }
@@ -274,17 +275,16 @@ def test_codex_interactive_launch_uses_isolated_native_tui_state(
 
 
 @pytest.mark.parametrize(
-    ("legacy_config", "should_migrate"),
+    "partial_config",
     [
-        (b"", True),
-        (b"[mcp_servers.must_not_replace]\ncommand = 'unsafe'\n", False),
+        b"",
+        b"[mcp_servers.must_not_replace]\ncommand = 'unsafe'\n",
     ],
 )
-def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
+def test_codex_capability_snapshot_rejects_a_preexisting_partial_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    legacy_config: bytes,
-    should_migrate: bool,
+    partial_config: bytes,
 ) -> None:
     workspace = tmp_path / "workspace"
     run_dir = workspace / ".agent-team" / "runs" / "at-adapter-legacy"
@@ -316,27 +316,16 @@ def test_codex_interactive_run_state_only_migrates_owned_legacy_empty_config(
     )
     marker_path.chmod(0o600)
     config_path = home / "config.toml"
-    config_path.write_bytes(legacy_config)
+    config_path.write_bytes(partial_config)
     config_path.chmod(0o600)
 
-    if should_migrate:
+    with pytest.raises(IntegrityError, match="immutable file already exists"):
         adapter.prepare_run_state(
             run_dir=run_dir,
             role_id="developer",
             launch_mode="interactive",
         )
-        assert config_path.read_bytes() == adapter._interactive_config(
-            run_dir,
-            "developer",
-        )
-    else:
-        with pytest.raises(IntegrityError, match="unexpected content"):
-            adapter.prepare_run_state(
-                run_dir=run_dir,
-                role_id="developer",
-                launch_mode="interactive",
-            )
-        assert config_path.read_bytes() == legacy_config
+    assert config_path.read_bytes() == partial_config
 
 
 @pytest.mark.parametrize(
@@ -388,7 +377,7 @@ def test_codex_interactive_config_rejects_any_post_prepare_drift(
     unexpected = unexpected.format(workspace=workspace)
     config_path.write_text(unexpected, encoding="utf-8")
 
-    with pytest.raises(IntegrityError, match="unexpected content"):
+    with pytest.raises(IntegrityError, match="private config changed"):
         adapter.prepare_run_state(
             run_dir=run_dir,
             role_id="developer",
@@ -460,6 +449,11 @@ def test_claude_interactive_launch_uses_native_tui_and_known_session(
         adapter,
         "_assert_runtime_home",
         lambda **_kwargs: Path("/private/claude"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_capability_launch_args",
+        lambda **_kwargs: (),
     )
 
     launch = adapter.prepare_launch(

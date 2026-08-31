@@ -917,6 +917,16 @@ def test_claude_elevated_profiles_apply_to_start_and_resume(
         "agent_team.adapters.claude_code.claude_internal_tmpdir",
         lambda: Path("/tmp/claude-501"),
     )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda **_kwargs: Path("/private/claude"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_capability_launch_args",
+        lambda **_kwargs: (),
+    )
     start = adapter.prepare_launch(
         launch_context(
             adapter=adapter,
@@ -1002,6 +1012,11 @@ def test_codex_launch_uses_frozen_permissions_for_start_and_resume(
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
     monkeypatch.setattr(adapter, "executable_version", lambda: "0.145.0")
     monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda _context: Path("/private/codex"),
+    )
 
     start = adapter.prepare_launch(
         launch_context(

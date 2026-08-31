@@ -115,21 +115,25 @@ v0.1 不承诺：
   用户级 Claude 状态；Interactive
   Workspace Trust 是 Claude 独立的一次性工作区前提，缺失时仍在 Kickoff 前拒绝；
 - Launch Profile 不继承 Codex 或 Claude 的用户级可变权限配置；Claude 额外排除
-  User/Project/Local Setting Sources；Codex Headless 忽略 User Config 与
-  User/Project Rules，Interactive 使用私有 Home，两种模式都冻结权限键并设置
-  `features.hooks=false`。受信任 Workspace 内其余 Project Config、Instruction 与
+  User/Project/Local Setting Sources；Codex Headless 忽略 User/Project Rules，
+  Headless 与 Interactive 都使用私有 Home，两种模式都冻结权限键并设置
+  `features.hooks=false`。首次 Kickoff 前，Codex 与 Claude 只把原生启用的 Plugin/MCP
+  配置及对应 Plugin 制品复制到 Run 私有快照；权限、Hook、Rule、Credential 与 Session
+  Store 不随能力快照继承。受信任 Workspace 内其余 Project Config、Instruction 与
   Extension 仍属于 Workspace Trust Boundary；Start/Resume 参数及 Hash 在 Kickoff
   前冻结，`full-access` 明确表示关闭 Harness 宿主沙箱；
 - OpenCode 使用每个 Run/Role 独立的 `XDG_CONFIG_HOME`、内联高优先级配置、
-  `OPENCODE_DISABLE_PROJECT_CONFIG=1` 与 `--pure`，不继承用户/项目 Permission、MCP、
-  Agent 或外部 Plugin；认证与 Session Data 仍使用本机 OpenCode Store。OpenCode
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1`，不继承用户/项目 Permission 或 Agent；首次
+  Kickoff 前把有效用户配置中的 Plugin/MCP 子集冻结到私有原生配置，本地 Plugin 制品
+  同步复制，运行时不使用 `--pure`。认证与 Session Data 仍使用本机 OpenCode Store。OpenCode
   没有 Bash OS Sandbox，因此 `default`/`trusted-workspace` 只开放工作区内置文件工具
   和三类 Formal Action，任意 Bash 保持 Deny；`trusted-workspace` 额外开放内置 Web
   工具，`full-access` 才开放 Host Shell；
 - DeepSeek Harness 使用 Agent-Team 固定版本的受管 Runtime、每个 Run/Role 独立的
-  `DSH_HOME` 和 bundled 最小交互式 TUI，不载入用户 Profile、Skill、Subagent 或
-  Workflow。Session 以私有 JSONL Store 持久化并通过 DSH 原生 Resume 恢复；认证只从
-  环境读取。DSH Sandbox 只约束文件写效果，因此 `default` 与
+  `DSH_HOME` 和 bundled 最小交互式 TUI，不直接运行或修改用户 Profile，也不载入
+  Skill、Subagent 或 Workflow；首次 Kickoff 前只把所选源 Profile 的 Plugin/MCP Bundle、
+  依赖和 Cordis patch 复制为私有快照。Session 以私有 JSONL Store 持久化并通过 DSH
+  原生 Resume 恢复；认证只从环境读取。DSH Sandbox 只约束文件写效果，因此 `default` 与
   `trusted-workspace` 都限制写入 Workspace，但不限制读取、进程或网络；
 - 声明 Workspace DSH Plugin 的候选消费 Role 必须使用 `fresh`；每次进入该 Role 都按
   Session Generation 创建新的私有 Home，冻结当前候选 Bundle，保留旧代制品和证据；

@@ -475,6 +475,18 @@ class HarnessAdapter(abc.ABC):
             raise IntegrityError("session generation must be a positive integer")
         self.assert_launch_mode(launch_mode)
 
+    def prepare_capability_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        """Freeze user Plugin and MCP capabilities before Run kickoff."""
+
+        del run_dir, role_id
+        self.assert_launch_mode(launch_mode)
+
     def worker_environment_names(
         self,
         *,

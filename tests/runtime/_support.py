@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from agent_team.adapters.base import LaunchSpec
+from agent_team.adapters.base import HarnessAdapter, LaunchSpec
+from agent_team.adapters.codex import CodexAdapter
 from agent_team.bootstrap import initialize_run, start_run
 from agent_team.config import (
     ObservabilityPolicy,
@@ -39,9 +40,11 @@ class _BootstrapAdapter:
         self,
         launch_mode: str = "headless",
         session_policy: str = "fresh",
+        capability_adapter: CodexAdapter | None = None,
     ) -> None:
         self.launch_mode = launch_mode
         self.session_policy = session_policy
+        self.capability_adapter = capability_adapter
 
     def probe(self) -> SimpleNamespace:
         return SimpleNamespace(
@@ -72,6 +75,23 @@ class _BootstrapAdapter:
     def assert_launch_prerequisites(self, options: Any) -> None:
         self.assert_launch_options(options)
 
+    def prepare_capability_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        assert run_dir.name.startswith("at-")
+        assert role_id in {"developer", "reviewer"}
+        assert launch_mode == self.launch_mode
+        if self.capability_adapter is not None:
+            self.capability_adapter.prepare_capability_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                launch_mode=launch_mode,
+            )
+
     def authentication_required(self, options: Any) -> bool:
         self.assert_launch_options(options)
         return True
@@ -88,6 +108,13 @@ class _BootstrapAdapter:
         assert role_id in {"developer", "reviewer"}
         assert launch_mode == self.launch_mode
         assert session_generation >= 1
+        if self.capability_adapter is not None:
+            self.capability_adapter.prepare_run_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                launch_mode=launch_mode,
+                session_generation=session_generation,
+            )
 
     def finalize_run_state(
         self,
@@ -99,6 +126,20 @@ class _BootstrapAdapter:
         assert run_dir.name.startswith("at-")
         assert role_id in {"developer", "reviewer"}
         assert launch_mode == self.launch_mode
+
+    @staticmethod
+    def assert_launch_mode(launch_mode: str) -> None:
+        HarnessAdapter.assert_launch_mode(launch_mode)
+
+    def classify_result(self, result: Any, evidence: Any) -> Any:
+        return HarnessAdapter.classify_result(self, result, evidence)
+
+    def recoverable_termination_kind(
+        self,
+        result: Any,
+        evidence: Any,
+    ) -> None:
+        del result, evidence
 
 
 class _Logger:
@@ -121,9 +162,42 @@ def _external_run(
     developer_session_policy: str = "fresh",
 ) -> tuple[Path, dict[str, Any]]:
     request, protocol = request_protocol
-    adapter = _BootstrapAdapter(launch_mode, developer_session_policy)
+    source_home = workspace.parent / "codex-source"
+    source_home.mkdir(mode=0o700)
+    source_auth = source_home / "auth.json"
+    source_auth.write_text("{}\n", encoding="utf-8")
+    source_auth.chmod(0o600)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    monkeypatch.setattr(
+        "agent_team.adapters.codex.fixed_state_dir",
+        lambda: workspace.parent / "adapter-state",
+    )
+    monkeypatch.setattr(
+        CodexAdapter,
+        "authentication_status",
+        lambda _self: True,
+    )
+    monkeypatch.setattr(
+        CodexAdapter,
+        "_assert_interactive_authentication",
+        lambda _self, _home: None,
+    )
+    adapter = _BootstrapAdapter(
+        launch_mode,
+        developer_session_policy,
+        CodexAdapter(),
+    )
     monkeypatch.setattr("agent_team.bootstrap.get_adapter", lambda _adapter: adapter)
     monkeypatch.setattr("agent_team.ownership.get_adapter", lambda _adapter: adapter)
+    from agent_team import adapters as adapters_module
+    from agent_team import management, turns, worker
+
+    if management.get_adapter is adapters_module.get_adapter:
+        monkeypatch.setattr(management, "get_adapter", lambda _adapter: adapter)
+    if turns.get_adapter is adapters_module.get_adapter:
+        monkeypatch.setattr(turns, "get_adapter", lambda _adapter: adapter)
+    if worker.get_adapter is adapters_module.get_adapter:
+        monkeypatch.setattr(worker, "get_adapter", lambda _adapter: adapter)
     monkeypatch.setattr("agent_team.bootstrap.tmux_executable", lambda: "/bin/true")
     empty_tmux = {
         "session": "test-session",

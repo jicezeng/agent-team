@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from agent_team.config import (
     CODEX_BUILTIN_MODEL_PROVIDERS,
@@ -21,6 +23,7 @@ from agent_team.state import fixed_state_dir
 from agent_team.util import (
     atomic_json,
     atomic_write,
+    canonical_json_bytes,
     ensure_dir,
     fsync_dir,
     open_regular,
@@ -40,6 +43,11 @@ from .base import (
     TurnLaunchContext,
     workspace_from_run_dir,
 )
+from .capability_snapshot import (
+    assert_capability_path,
+    copy_capability_path,
+    environment_reference_names,
+)
 
 # Codex 0.147.0 treats this field as the number of times its startup model
 # availability tooltip has been shown and stops persisting updates at four.
@@ -47,6 +55,7 @@ from .base import (
 # cannot mutate the otherwise frozen security-boundary config between Turns.
 _MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT = 4
 _IGNORED_MODEL_PROVIDER_FIELDS = frozenset({"env_key_instructions"})
+_CAPABILITY_STATE_FILE = "agent-team-capabilities.json"
 
 
 class CodexAdapter(HarnessAdapter):
@@ -92,15 +101,10 @@ class CodexAdapter(HarnessAdapter):
         launch_mode: str = "headless",
     ) -> dict[str, dict[str, list[str]]]:
         self.assert_launch_mode(launch_mode)
-        # These two isolation flags are intentionally scoped to `codex exec`
-        # and are rejected by the interactive CLI. Interactive Runs instead
-        # receive a private CODEX_HOME prepared by `prepare_run_state`.
+        # Rules stay disabled in headless mode. User config is not ignored: both
+        # modes point CODEX_HOME at the same Run-owned Plugin/MCP-only snapshot.
         common = [
-            *(
-                ["--ignore-user-config", "--ignore-rules"]
-                if launch_mode == "headless"
-                else []
-            ),
+            *(["--ignore-rules"] if launch_mode == "headless" else []),
             # Codex merges hooks from every active config layer instead of
             # replacing lower-precedence hook sources. Freeze the feature off
             # so a trusted Workspace cannot add an unrecorded host process to
@@ -141,6 +145,7 @@ class CodexAdapter(HarnessAdapter):
         components = [
             base.encode("utf-8"),
             b"codex-frozen-model-provider-v1:env-name-only-bridge",
+            b"codex-user-capabilities-v1:plugin-mcp-private-snapshot",
         ]
         if launch_mode == "interactive":
             components.append(
@@ -204,17 +209,36 @@ class CodexAdapter(HarnessAdapter):
         return cls._role_launch_options(run_dir, role_id).model
 
     @classmethod
-    def _interactive_config(cls, run_dir: Path, role_id: str) -> bytes:
+    def _interactive_config(
+        cls,
+        run_dir: Path,
+        role_id: str,
+        capabilities: dict[str, object] | None = None,
+    ) -> bytes:
         workspace = workspace_from_run_dir(run_dir)
         model = cls._role_model(run_dir, role_id)
         quoted_workspace = json.dumps(str(workspace), ensure_ascii=False)
-        lines = [
-            f"[projects.{quoted_workspace}]",
-            'trust_level = "trusted"',
-        ]
-        expected: dict[str, object] = {
-            "projects": {str(workspace): {"trust_level": "trusted"}}
-        }
+        expected: dict[str, object] = {}
+        capability_config = capabilities or {}
+        lines: list[str] = []
+        for key in ("marketplaces", "plugins", "mcp_servers"):
+            value = capability_config.get(key)
+            if value is not None:
+                if not isinstance(value, dict):
+                    raise IntegrityError(
+                        f"Codex capability config {key} must be a table"
+                    )
+                expected[key] = value
+                lines.append(f"{key} = {cls._toml_literal(value)}")
+        if lines:
+            lines.append("")
+        lines.extend(
+            [
+                f"[projects.{quoted_workspace}]",
+                'trust_level = "trusted"',
+            ]
+        )
+        expected["projects"] = {str(workspace): {"trust_level": "trusted"}}
         if model is not None:
             quoted_model = json.dumps(model, ensure_ascii=False)
             lines.extend(
@@ -230,12 +254,9 @@ class CodexAdapter(HarnessAdapter):
                 }
             }
         config = ("\n".join(lines) + "\n").encode()
-        # Keep this generated security boundary both minimal and syntactically
-        # valid. The frozen model's native availability counter is preseeded
-        # at its terminal value so Codex does not mutate config.toml after a
-        # fresh interactive launch.
-        # No mutable user MCP, Hook, Plugin, or permission setting is copied
-        # into the isolated interactive home.
+        # Keep this generated security boundary syntactically exact. Only the
+        # selected Plugin/MCP tables are imported; hooks, permissions, rules,
+        # models, and mutable project settings remain owned by Agent-Team.
         parsed = tomllib.loads(config.decode("utf-8"))
         if parsed != expected:
             raise IntegrityError("generated Codex interactive config is invalid")
@@ -265,30 +286,6 @@ class CodexAdapter(HarnessAdapter):
             directory.chmod(0o700)
         return home
 
-    def _prepare_interactive_config(
-        self,
-        run_dir: Path,
-        role_id: str,
-        home: Path,
-    ) -> None:
-        config_path = home / "config.toml"
-        expected = self._interactive_config(run_dir, role_id)
-        if not path_entry_exists(config_path):
-            atomic_write(config_path, expected, immutable=True)
-            return
-        existing = read_regular(config_path)
-        if existing == expected:
-            return
-        if existing != b"":
-            raise IntegrityError(
-                f"Codex interactive config has unexpected content: {config_path}"
-            )
-        # Versions before the trust-only config created an empty config after
-        # committing this Run-owned marker. prepare_run_state is called only
-        # for an UNSTARTED Run, so that exact legacy state can be migrated
-        # without accepting or replacing any other pre-existing content.
-        atomic_write(config_path, expected)
-
     @staticmethod
     def _source_codex_home() -> Path:
         configured = os.environ.get("CODEX_HOME")
@@ -305,7 +302,12 @@ class CodexAdapter(HarnessAdapter):
                 f"cannot resolve Codex home: {supplied}",
             ) from exc
 
+    def _assert_private_authentication(self, home: Path) -> None:
+        self._assert_interactive_authentication(home)
+
     def _assert_interactive_authentication(self, home: Path) -> None:
+        """Compatibility seam for the native login-status probe."""
+
         env = os.environ.copy()
         env["CODEX_HOME"] = str(home)
         try:
@@ -320,13 +322,398 @@ class CodexAdapter(HarnessAdapter):
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise AgentTeamError(
                 "HARNESS_AUTH_PROBE_FAILED",
-                "cannot verify authentication in the isolated Codex home",
+                "cannot verify authentication in the private Codex home",
             ) from exc
         if result.returncode != 0:
             raise AgentTeamError(
                 "HARNESS_NOT_AUTHENTICATED",
-                "Codex is not authenticated in the isolated interactive home",
+                "Codex is not authenticated in the private Run home",
             )
+
+    @staticmethod
+    def _replace_source_home(value: object, source: Path, target: Path) -> object:
+        if isinstance(value, dict):
+            return {
+                key: CodexAdapter._replace_source_home(item, source, target)
+                for key, item in value.items()
+                if isinstance(key, str)
+            }
+        if isinstance(value, list):
+            return [
+                CodexAdapter._replace_source_home(item, source, target)
+                for item in value
+            ]
+        if isinstance(value, str):
+            return value.replace(str(source), str(target))
+        return value
+
+    @classmethod
+    def _plugin_cache_relative(cls, source_home: Path, plugin_id: str) -> Path:
+        plugin_name, separator, marketplace = plugin_id.rpartition("@")
+        parts = (*marketplace.split("/"), *plugin_name.split("/"))
+        if (
+            not separator
+            or not plugin_name
+            or not marketplace
+            or any(part in {"", ".", ".."} for part in parts)
+            or any("\\" in part for part in parts)
+        ):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"Codex Plugin id is invalid: {plugin_id!r}",
+            )
+        root = Path(
+            "plugins",
+            "cache",
+            *marketplace.split("/"),
+            *plugin_name.split("/"),
+        )
+        if path_entry_exists(source_home / root / "latest"):
+            return root / "latest"
+        try:
+            candidates = [
+                child.name
+                for child in (source_home / root).iterdir()
+                if not child.name.startswith(".")
+                and path_entry_exists(child)
+                and child.resolve(strict=True).is_dir()
+            ]
+        except OSError:
+            # Preserve the conventional path in the eventual error so a
+            # partially installed enabled Plugin fails closed and points at
+            # the native cache location users expect.
+            return root / "latest"
+        if not candidates:
+            return root / "latest"
+
+        def version_key(value: str) -> tuple[tuple[int, object], ...]:
+            return tuple(
+                (0, int(part)) if part.isdigit() else (1, part.casefold())
+                for part in re.split(r"(\d+)", value)
+                if part
+            )
+
+        # Codex does not always create a `latest` alias (bundled Plugins
+        # commonly have only a version directory). Select the greatest native
+        # cache version deterministically and retain that version in the
+        # private cache layout.
+        return root / max(candidates, key=lambda item: (version_key(item), item))
+
+    @classmethod
+    def _source_capabilities(
+        cls,
+        *,
+        source_home: Path,
+        target_home: Path,
+    ) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
+        config_path = source_home / "config.toml"
+        try:
+            raw = read_regular(config_path)
+        except FileNotFoundError:
+            value: dict[str, Any] = {}
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_UNREADABLE",
+                f"cannot read Codex user config {config_path}",
+            ) from exc
+        else:
+            try:
+                parsed = tomllib.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Codex user config is invalid: {config_path}",
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    "Codex user config must be a table",
+                )
+            value = parsed
+
+        configured_plugins = value.get("plugins", {})
+        if not isinstance(configured_plugins, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Codex user config plugins must be a table",
+            )
+        plugins: dict[str, object] = {}
+        selected: list[tuple[str, str, str, Path, Path]] = []
+        for plugin_id, plugin_config in sorted(configured_plugins.items()):
+            if not isinstance(plugin_id, str) or not isinstance(plugin_config, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    "Codex Plugin configuration is invalid",
+                )
+            enabled = plugin_config.get("enabled", False)
+            if not isinstance(enabled, bool):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Codex Plugin {plugin_id!r} enabled must be a boolean",
+                )
+            if not enabled:
+                continue
+            relative = cls._plugin_cache_relative(source_home, plugin_id)
+            source = source_home / relative
+            target = target_home / relative
+            plugins[plugin_id] = dict(plugin_config)
+            plugin_name, _, marketplace = plugin_id.rpartition("@")
+            selected.append((plugin_id, plugin_name, marketplace, source, target))
+
+        marketplace_roots = {
+            marketplace: target_home / "agent-team-marketplaces" / f"{index:04d}"
+            for index, marketplace in enumerate(
+                sorted({item[2] for item in selected})
+            )
+        }
+        paths: list[dict[str, object]] = []
+        for plugin_id, plugin_name, marketplace, source, target in selected:
+            market_target = marketplace_roots[marketplace] / "plugins" / Path(
+                *plugin_name.split("/")
+            )
+            paths.append(
+                {
+                    "id": plugin_id,
+                    "name": plugin_name,
+                    "marketplace": marketplace,
+                    "source": source,
+                    "cache_target": target,
+                    "market_target": market_target,
+                }
+            )
+
+        configured_mcp = value.get("mcp_servers", {})
+        if not isinstance(configured_mcp, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Codex user config mcp_servers must be a table",
+            )
+        rewritten_mcp = cls._replace_source_home(
+            configured_mcp,
+            source_home,
+            target_home,
+        )
+        assert isinstance(rewritten_mcp, dict)
+        capabilities: dict[str, object] = {}
+        if marketplace_roots:
+            capabilities["marketplaces"] = {
+                marketplace: {
+                    "source_type": "local",
+                    "source": str(root),
+                }
+                for marketplace, root in sorted(marketplace_roots.items())
+            }
+        if plugins:
+            capabilities["plugins"] = plugins
+        if rewritten_mcp:
+            capabilities["mcp_servers"] = rewritten_mcp
+        return capabilities, tuple(paths)
+
+    @classmethod
+    def _read_capability_state(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, Any]:
+        state = read_json(home / _CAPABILITY_STATE_FILE)
+        required = {
+            "schema_version",
+            "adapter",
+            "run_dir",
+            "role_id",
+            "config_sha256",
+            "plugins",
+            "marketplace_manifests",
+            "environment_names",
+        }
+        plugins = state.get("plugins")
+        marketplace_manifests = state.get("marketplace_manifests")
+        environment_names = state.get("environment_names")
+        if (
+            set(state) != required
+            or state.get("schema_version") != 1
+            or state.get("adapter") != cls.adapter_id
+            or state.get("run_dir") != str(run_dir.resolve(strict=True))
+            or state.get("role_id") != role_id
+            or not isinstance(state.get("config_sha256"), str)
+            or len(state["config_sha256"]) != 64
+            or not isinstance(plugins, list)
+            or not isinstance(marketplace_manifests, list)
+            or not isinstance(environment_names, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                for name in environment_names
+            )
+        ):
+            raise IntegrityError("Codex capability snapshot is invalid")
+        config_path = home / "config.toml"
+        if sha256_bytes(read_regular(config_path)) != state["config_sha256"]:
+            raise IntegrityError("Codex private config changed after capability snapshot")
+        for plugin in plugins:
+            if (
+                not isinstance(plugin, dict)
+                or set(plugin)
+                != {"id", "cache_path", "cache_snapshot", "market_path", "market_snapshot"}
+                or not isinstance(plugin.get("id"), str)
+                or any(
+                    not isinstance(plugin.get(key), str)
+                    or Path(plugin[key]).is_absolute()
+                    or any(
+                        part in {"", ".", ".."}
+                        for part in plugin[key].split("/")
+                    )
+                    for key in ("cache_path", "market_path")
+                )
+                or not isinstance(plugin.get("cache_snapshot"), dict)
+                or not isinstance(plugin.get("market_snapshot"), dict)
+            ):
+                raise IntegrityError("Codex Plugin capability snapshot is invalid")
+            assert_capability_path(
+                home / plugin["cache_path"],
+                plugin["cache_snapshot"],
+                subject=f"Codex Plugin {plugin['id']!r}",
+            )
+            assert_capability_path(
+                home / plugin["market_path"],
+                plugin["market_snapshot"],
+                subject=f"Codex marketplace Plugin {plugin['id']!r}",
+            )
+        for marketplace in marketplace_manifests:
+            if (
+                not isinstance(marketplace, dict)
+                or set(marketplace) != {"name", "path", "sha256"}
+                or not isinstance(marketplace.get("name"), str)
+                or not isinstance(marketplace.get("path"), str)
+                or Path(marketplace["path"]).is_absolute()
+                or any(
+                    part in {"", ".", ".."}
+                    for part in marketplace["path"].split("/")
+                )
+                or not isinstance(marketplace.get("sha256"), str)
+                or len(marketplace["sha256"]) != 64
+                or sha256_bytes(read_regular(home / marketplace["path"]))
+                != marketplace["sha256"]
+            ):
+                raise IntegrityError("Codex marketplace snapshot is invalid")
+        return state
+
+    def prepare_capability_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        home = self._ensure_private_interactive_home(run_dir, role_id)
+        marker_path = home / "agent-team-home.json"
+        marker = self._interactive_marker(run_dir, role_id)
+        if path_entry_exists(marker_path):
+            if read_json(marker_path) != marker:
+                raise IntegrityError(
+                    f"Codex private home belongs to a different Run: {home}"
+                )
+        else:
+            atomic_json(marker_path, marker, immutable=True)
+        capability_path = home / _CAPABILITY_STATE_FILE
+        if path_entry_exists(capability_path):
+            self._read_capability_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+            return
+
+        source_home = self._source_codex_home()
+        capabilities, plugin_paths = self._source_capabilities(
+            source_home=source_home,
+            target_home=home,
+        )
+        plugin_snapshots: list[dict[str, object]] = []
+        marketplace_entries: dict[str, list[dict[str, object]]] = {}
+        marketplace_roots: dict[str, Path] = {}
+        for plugin in plugin_paths:
+            plugin_id = str(plugin["id"])
+            source = plugin["source"]
+            cache_target = plugin["cache_target"]
+            market_target = plugin["market_target"]
+            assert isinstance(source, Path)
+            assert isinstance(cache_target, Path)
+            assert isinstance(market_target, Path)
+            plugin_snapshots.append(
+                {
+                    "id": plugin_id,
+                    "cache_path": cache_target.relative_to(home).as_posix(),
+                    "cache_snapshot": copy_capability_path(source, cache_target),
+                    "market_path": market_target.relative_to(home).as_posix(),
+                    "market_snapshot": copy_capability_path(source, market_target),
+                }
+            )
+            marketplace = str(plugin["marketplace"])
+            marketplace_roots[marketplace] = market_target.parents[
+                len(Path(str(plugin["name"])).parts)
+            ]
+            marketplace_entries.setdefault(marketplace, []).append(
+                {
+                    "name": str(plugin["name"]),
+                    "source": {
+                        "source": "local",
+                        "path": "./plugins/" + str(plugin["name"]),
+                    },
+                    "policy": {
+                        "installation": "AVAILABLE",
+                        "authentication": "ON_INSTALL",
+                    },
+                }
+            )
+        marketplace_manifests: list[dict[str, object]] = []
+        for marketplace, entries in sorted(marketplace_entries.items()):
+            manifest_path = (
+                marketplace_roots[marketplace]
+                / ".agents"
+                / "plugins"
+                / "marketplace.json"
+            )
+            manifest_bytes = canonical_json_bytes(
+                {
+                    "name": marketplace,
+                    "interface": {"displayName": marketplace},
+                    "plugins": entries,
+                }
+            )
+            atomic_write(manifest_path, manifest_bytes, immutable=True)
+            marketplace_manifests.append(
+                {
+                    "name": marketplace,
+                    "path": manifest_path.relative_to(home).as_posix(),
+                    "sha256": sha256_bytes(manifest_bytes),
+                }
+            )
+        config = self._interactive_config(run_dir, role_id, capabilities)
+        atomic_write(home / "config.toml", config, immutable=True)
+        atomic_json(
+            capability_path,
+            {
+                "schema_version": 1,
+                "adapter": self.adapter_id,
+                "run_dir": str(run_dir.resolve(strict=True)),
+                "role_id": role_id,
+                "config_sha256": sha256_bytes(config),
+                "plugins": plugin_snapshots,
+                "marketplace_manifests": marketplace_manifests,
+                "environment_names": list(
+                    environment_reference_names(capabilities)
+                ),
+            },
+            immutable=True,
+        )
 
     def prepare_run_state(
         self,
@@ -344,22 +731,12 @@ class CodexAdapter(HarnessAdapter):
         )
         options = self._role_launch_options(run_dir, role_id)
         self.assert_launch_prerequisites(options)
-        if launch_mode != "interactive":
-            return
+        self.prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
         home = self._ensure_private_interactive_home(run_dir, role_id)
-        marker_path = home / "agent-team-home.json"
-        marker = self._interactive_marker(run_dir, role_id)
-        if path_entry_exists(marker_path):
-            if read_json(marker_path) != marker:
-                raise IntegrityError(
-                    f"Codex interactive home belongs to a different Run: {home}"
-                )
-        else:
-            atomic_json(marker_path, marker, immutable=True)
-        # A trust-only immutable config bypasses Codex's native workspace
-        # confirmation without importing mutable user MCP, Hook, Plugin, or
-        # permission settings into this Run-owned interactive home.
-        self._prepare_interactive_config(run_dir, role_id, home)
         if not self.authentication_required(options):
             return
         source_auth = self._source_codex_home() / "auth.json"
@@ -399,7 +776,7 @@ class CodexAdapter(HarnessAdapter):
             # safely refresh a stale copy without changing an active Session.
             atomic_write(target_auth, read_regular(source_real), mode=0o600)
             fsync_dir(home)
-        self._assert_interactive_authentication(home)
+        self._assert_private_authentication(home)
 
     def finalize_run_state(
         self,
@@ -413,25 +790,28 @@ class CodexAdapter(HarnessAdapter):
             role_id=role_id,
             launch_mode=launch_mode,
         )
-        if launch_mode != "interactive":
-            return
         home = self._interactive_home(run_dir, role_id)
         try:
             home_info = home.lstat()
         except OSError as exc:
             raise IntegrityError(
-                f"Codex interactive state is unavailable: {home}"
+                f"Codex private state is unavailable: {home}"
             ) from exc
         if home.is_symlink() or not stat.S_ISDIR(home_info.st_mode):
-            raise IntegrityError(f"Codex interactive state is unsafe: {home}")
+            raise IntegrityError(f"Codex private state is unsafe: {home}")
         marker_path = home / "agent-team-home.json"
         if (
             not path_entry_exists(marker_path)
             or read_json(marker_path) != self._interactive_marker(run_dir, role_id)
         ):
             raise IntegrityError(
-                f"Codex interactive state is not owned by this Run: {home}"
+                f"Codex private state is not owned by this Run: {home}"
             )
+        self._read_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
         for directory in (
             fixed_state_dir(),
             fixed_state_dir() / "harness-homes",
@@ -442,7 +822,7 @@ class CodexAdapter(HarnessAdapter):
             info = directory.lstat()
             if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
                 raise IntegrityError(
-                    f"Codex interactive state directory is unsafe: {directory}"
+                    f"Codex private state directory is unsafe: {directory}"
                 )
             directory.chmod(0o700)
         # Codex creates per-process wrapper symlinks below tmp and may assign
@@ -454,7 +834,7 @@ class CodexAdapter(HarnessAdapter):
             temporary_info = temporary.lstat()
             if temporary.is_symlink() or not stat.S_ISDIR(temporary_info.st_mode):
                 raise IntegrityError(
-                    f"Codex interactive temporary state is unsafe: {temporary}"
+                    f"Codex private temporary state is unsafe: {temporary}"
                 )
             shutil.rmtree(temporary)
             fsync_dir(home)
@@ -472,7 +852,7 @@ class CodexAdapter(HarnessAdapter):
                     stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
                 ):
                     raise IntegrityError(
-                        f"Codex interactive state entry is unsafe: {path}"
+                        f"Codex private state entry is unsafe: {path}"
                     )
                 if stat.S_ISDIR(info.st_mode):
                     path.chmod(0o700)
@@ -489,22 +869,20 @@ class CodexAdapter(HarnessAdapter):
         launch_mode: str,
     ) -> bool:
         self.assert_launch_mode(launch_mode)
-        return launch_mode == "interactive" and path_entry_exists(
-            self._interactive_home(run_dir, role_id)
-        )
+        return path_entry_exists(self._interactive_home(run_dir, role_id))
 
-    def _assert_interactive_home(self, context: TurnLaunchContext) -> Path:
+    def _assert_runtime_home(self, context: TurnLaunchContext) -> Path:
         run_dir = Path(context.turn_dir).parent.parent
         home = self._interactive_home(run_dir, context.role_id)
         try:
             home_info = home.lstat()
         except OSError as exc:
             raise AgentTeamError(
-                "INTERACTIVE_STATE_NOT_PREPARED",
-                f"Codex interactive state is unavailable for {context.role_id}",
+                "HARNESS_STATE_NOT_PREPARED",
+                f"Codex private state is unavailable for {context.role_id}",
             ) from exc
         if home.is_symlink() or not stat.S_ISDIR(home_info.st_mode):
-            raise IntegrityError("Codex interactive home is unsafe")
+            raise IntegrityError("Codex private home is unsafe")
         marker_path = home / "agent-team-home.json"
         if (
             not path_entry_exists(marker_path)
@@ -512,20 +890,14 @@ class CodexAdapter(HarnessAdapter):
             != self._interactive_marker(run_dir, context.role_id)
         ):
             raise AgentTeamError(
-                "INTERACTIVE_STATE_NOT_PREPARED",
-                f"Codex interactive state is not prepared for {context.role_id}",
+                "HARNESS_STATE_NOT_PREPARED",
+                f"Codex private state is not prepared for {context.role_id}",
             )
-        config = home / "config.toml"
-        if not path_entry_exists(config) or config.is_symlink():
-            raise IntegrityError("Codex interactive config is missing or unsafe")
-        config_info = config.lstat()
-        if (
-            not stat.S_ISREG(config_info.st_mode)
-            or stat.S_IMODE(config_info.st_mode) & 0o077
-            or read_regular(config)
-            != self._interactive_config(run_dir, context.role_id)
-        ):
-            raise IntegrityError("Codex interactive config is not isolated")
+        self._read_capability_state(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            home=home,
+        )
         return home
 
     def interactive_session_refs(self, launch: LaunchSpec) -> set[str]:
@@ -688,7 +1060,19 @@ class CodexAdapter(HarnessAdapter):
     ) -> tuple[str, ...]:
         selected = options or self._role_launch_options(run_dir, role_id)
         self.assert_launch_options(selected)
-        return self._provider_environment_names(selected)
+        names = set(self._provider_environment_names(selected))
+        home = self._interactive_home(run_dir, role_id)
+        # Provider-only callers may inspect Worker forwarding before Run
+        # preflight. Once a capability snapshot exists it is always validated;
+        # launch preparation still requires the complete private home.
+        if path_entry_exists(home / _CAPABILITY_STATE_FILE):
+            state = self._read_capability_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+            names.update(state["environment_names"])
+        return tuple(sorted(names))
 
     @staticmethod
     def _user_config_path() -> Path:
@@ -893,8 +1277,14 @@ class CodexAdapter(HarnessAdapter):
             return "true" if value else "false"
         if isinstance(value, int):
             return str(value)
+        if isinstance(value, float):
+            if not (-float("inf") < value < float("inf")):
+                raise IntegrityError("Codex capability config contains a non-finite float")
+            return repr(value)
         if isinstance(value, str):
             return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, list):
+            return "[" + ", ".join(cls._toml_literal(item) for item in value) + "]"
         if isinstance(value, dict):
             entries = []
             for key, item in sorted(value.items()):
@@ -963,11 +1353,11 @@ class CodexAdapter(HarnessAdapter):
             "AGENT_TEAM_TURN_DIR": context.turn_dir,
             "AGENT_TEAM_CLI": context.agent_team_cli,
         }
+        home = self._assert_runtime_home(context)
+        env["CODEX_HOME"] = str(home)
         prompt_file: str | None = None
         expected_session_ref: str | None = None
         if context.launch_mode == "interactive":
-            home = self._assert_interactive_home(context)
-            env["CODEX_HOME"] = str(home)
             prompt_file = str(Path(context.turn_dir) / "process" / "prompt.md")
             if context.session_ref and context.session_policy == "resume":
                 argv = (

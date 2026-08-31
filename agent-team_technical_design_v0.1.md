@@ -921,7 +921,7 @@ Provider 的安全定义；Claude Code 先读取
 Provider 显式声明该 Model 时补全为 `provider/model`，否则要求显式 `--role-model`，不以
 隔离环境重新猜测 Last-used Model。补全或显式选择后的 Model 还必须出现在同一有效配置下
 `opencode models <provider>` 的本地 Catalog 中，未知 Provider/Model 在创建 Run 前拒绝。
-DeepSeek Harness 不读取用户 Profile；省略 Model 或 Reasoning Effort 时在
+DeepSeek Harness 不从用户 Profile 继承 Model 或 Reasoning Effort；省略这两项时在
 `team.json` 中保持 `null`，启动参数不增加对应覆盖，由固定私有 Profile 的原生
 `agentDefaultModel` 与 Model Adapter 选择。Agent-Team 不为 DSH 发明模型环境变量或
 回退值。Codex/Claude 的 Model 或 Reasoning Effort 没有用户值时同样保持 `null`，由
@@ -930,8 +930,8 @@ Harness 使用账户或模型默认值。Claude Enterprise Managed Settings 仍�
 CLI 新建 Schema 7 Codex Role 时则把 Fast
 Mode 冻结为有效布尔值：用户配置的 `service_tier="fast"` 且
 `features.fast_mode` 未显式关闭时为 `true`，其他情况为 `false`；`null` 只保留为
-Schema 兼容值，表示不增加 Fast Mode 启动覆盖。不得为了继承这些选择而加载用户
-Permission、MCP、Hook 或其他可变设置。
+Schema 兼容值，表示不增加 Fast Mode 启动覆盖。不得为了继承这些模型选择而加载用户
+Permission、Hook 或其他可变设置；Plugin/MCP 走 Kickoff 前独立的私有能力快照合同。
 
 固定 Validator 还必须保证：`run_id` 与最终 Run 目录名完全相同；规范化 `workspace` 与 `.agent-team/root.json` 相同；`roles` 非空且所有 Key 都满足 Role ID 规则；`initial_role` 正好引用其中一个 Role；`origin.session_mode` 在 Stage 1 固定为 `embedded`。任一不变量在 Kickoff 前失败都拒绝 `start`，Kickoff 后被改写则由配置 Hash 直接进入 `CORRUPTED`。
 
@@ -981,8 +981,9 @@ OpenCode 1.x 不提供围绕 Bash 的 OS Sandbox；`external_directory` 约束�
 DeepSeek Harness 的 Sandbox 只约束文件写效果，不限制读取、进程执行或网络。因而
 `default` 与 `trusted-workspace` 都只能声明 Workspace Write Boundary，不能描述为完整
 Host Containment。其私有 Profile 固定 `approval=never`，禁用会话内 Permission 切换、
-用户 Profile、Skill、Subagent、Workflow、Telemetry 与 Title LLM；这些隔离不扩大
-DSH Sandbox 的上游能力。
+Skill、Subagent、Workflow、Telemetry 与 Title LLM，不直接运行或修改用户 Profile；
+所选源 Profile 中的 Plugin/MCP Bundle 与 Cordis patch 会先复制为 Run 私有快照。
+这些隔离不扩大 DSH Sandbox 的上游能力。
 
 这里的 Workspace 边界允许受控的运行时例外，但不允许任意宿主写入：Codex 保留
 `/tmp` 与 `$TMPDIR` Scratch Root；Claude 只额外允许
@@ -997,9 +998,9 @@ Source Path 和不可变 Outbox。Codex 的 Formal Action 以只读方式打开�
 
 每个 Profile 必须显式设置 Agent-Team 能控制的所有权限相关参数，不能把可变的用户
 默认配置当作 Profile 的一部分。Claude 排除 User/Project/Local Setting Sources；
-Codex Headless 忽略 User Config 与 User/Project Rules，Interactive 使用私有 Home，
-两种模式都冻结权限键并设置 `features.hooks=false`，从而关闭 User、Project、Session
-与 Plugin 的非受管 Hook。受信任 Workspace 内其余 Project Config、Instruction 与
+Codex Headless 忽略 User/Project Rules，Headless 与 Interactive 都使用只含冻结
+Plugin/MCP 能力的私有 Home；两种模式都冻结权限键并设置 `features.hooks=false`，从而
+关闭 User、Project、Session 与 Plugin 的非受管 Hook。受信任 Workspace 内其余 Project Config、Instruction 与
 Extension 仍属于 Workspace Trust Boundary，不能误报成 Profile 已消除的输入。Codex 的
 Admin-enforced Requirements 可以约束允许的 Sandbox、Approval、Permission Profile
 和 Feature，并拒绝不兼容的启动选择；它们不是用户配置，不能被 Profile 绕过，也可以
@@ -1007,9 +1008,10 @@ Admin-enforced Requirements 可以约束允许的 Sandbox、Approval、Permissio
 Enterprise Managed Settings 优先级高于命令行且不能由
 `--setting-sources ""` 排除；数组型权限设置还会合并。因此上述 Claude Workspace
 边界只描述 Agent-Team 提供的 Mapping。OpenCode 通过每个 Run/Role 私有
-`XDG_CONFIG_HOME`、`OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure` 和
-`OPENCODE_CONFIG_CONTENT` 排除可变 User/Project Permission、MCP、Agent 和 External
-Plugin。所选 `provider/model` 若依赖 User Config 中的自定义 Provider，Adapter 在该 Role
+`XDG_CONFIG_HOME`、`OPENCODE_DISABLE_PROJECT_CONFIG=1` 和
+`OPENCODE_CONFIG_CONTENT` 排除可变 User/Project Permission 与 Agent；有效 User Config
+中的 Plugin/MCP 子集在 Kickoff 前冻结到私有原生配置，实际运行不使用 `--pure`。所选
+`provider/model` 若依赖 User Config 中的自定义 Provider，Adapter 在该 Role
 首次激活时只冻结对应 Provider 片段，并把已展开的 Credential 重新表示为 `{env:VAR}`；
 不能安全映射到环境变量或 OpenCode Credential Store 的明文 Credential Fail Closed，
 不得进入 Run State、LaunchSpec 或 Trace。创建该 Role 的 tmux Worker 时，Adapter 从不可变
@@ -2364,10 +2366,12 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
   `Error: Session not found` 只有在 stderr 精确结构出现且执行尚未开始时才进入
   Session-unavailable 降级合同；
 - 每个 Run/Role 在固定账号状态目录下拥有私有 `XDG_CONFIG_HOME` 和 Ownership Marker。
-  Adapter 不复制通用用户配置或明文凭据，使用 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、`--pure`、
+  Adapter 不复制通用用户配置或明文凭据，使用 `OPENCODE_DISABLE_PROJECT_CONFIG=1`、
   `OPENCODE_DISABLE_AUTOUPDATE=1` 与规范化 `OPENCODE_CONFIG_CONTENT` 创建唯一 Primary
-  Agent；这隔离 User/Project Config、Instruction、Agent、MCP 与 External Plugin，
-  OpenCode 的账号 Data/Auth 和 Session Store 仍保持机器本地可用；
+  Agent；User/Project Permission、Instruction 与 Agent 保持隔离。首次 Kickoff 前，
+  Adapter 从 `opencode debug config --pure` 的有效 User Config 只提取 Plugin/MCP 子集，
+  复制本地 `file://` Plugin 并写入私有原生 Config；真实 Turn 不使用 `--pure`，OpenCode
+  的账号 Data/Auth 和 Session Store 仍保持机器本地可用；
 - Adapter 在 Role 首次激活时从禁用 Project Config 后的有效 User Config 中只抽取所选
   Model 对应的 Provider 定义，写入私有 Home 的不可变快照，后续 Turn 复用同一快照。
   Credential 字段只允许 `{env:VAR}` 形式；有效配置已经展开的环境值会被重新引用，
@@ -2380,10 +2384,11 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
   Todo 和精确 Formal Action Bash Pattern；`trusted-workspace` 额外允许 WebFetch/
   WebSearch；`full-access` 允许 Host Tools/Bash，但显式 Deny Agent-Team 管理命令 Pattern；
 - OpenCode `--auto` 只自动批准未显式 Deny 的 Ask，不覆盖 Deny；三种 Profile 都使用
-  `--pure` 关闭 External Plugin。Managed OpenCode Config 的优先级高于 Inline Config，
+  同一套私有 Plugin/MCP 快照。Managed OpenCode Config 的优先级高于 Inline Config，
   仍属于本规范不能摘要或覆盖的管理员边界；
 - Model 必须在 `init` 冻结为 `provider/model`。显式值优先；省略时 Adapter 在目标
-  Workspace 禁用 Project Config 后执行只读 `opencode debug config --pure`，只抽取 Model。
+  Workspace 禁用 Project Config 后执行只读 `opencode debug config --pure`；模型解析只使用
+  Model/Provider 字段，能力预检另行只使用同一有效配置的 Plugin/MCP 字段。
   未限定 Provider 的默认值只在一个已配置 Provider 声明该 Model 时唯一补全；缺失、歧义或
   仍不完整的 ID Fail Closed。Adapter 随后用 `opencode models <provider>` 的有效本地
   Catalog 校验完整 ID，防止未知 Provider/Model 延迟到业务 Turn 才失败。执行时同一冻结值
@@ -2405,10 +2410,10 @@ Session 但忽略新 Prompt，无法形成可验证的 Resume Turn；`run --inte
 ```bash
 OPENCODE_DISABLE_PROJECT_CONFIG=1 \
 OPENCODE_CONFIG_CONTENT='<frozen-config>' \
-opencode run --pure --auto --agent agent-team-runtime \
+opencode run --auto --agent agent-team-runtime \
   --format json --dir <workspace> --model <provider/model> [--variant <variant>]
 
-opencode run --interactive --pure --auto --agent agent-team-runtime \
+opencode run --interactive --auto --agent agent-team-runtime \
   --dir <workspace> --model <provider/model> [--variant <variant>] \
   [--session <ref>] '<immutable-prompt-pointer>'
 ```

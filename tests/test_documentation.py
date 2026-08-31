@@ -33,6 +33,15 @@ ORIGIN_SKILLS = (
     "plugins/claude-code/agent-team/skills/agent-team/SKILL.md",
     "skills/opencode/agent-team/SKILL.md",
 )
+BROWSER_OWNER_GUIDES = ORIGIN_SKILLS + (
+    "skills/codex/agent-team/references/protocol-template.md",
+    (
+        "plugins/claude-code/agent-team/skills/agent-team/references/"
+        "protocol-template.md"
+    ),
+    "skills/opencode/agent-team/references/protocol-template.md",
+    "docs/user-guide.md",
+)
 
 
 def _strict_json(value: str) -> Any:
@@ -360,6 +369,18 @@ def test_origin_skills_keep_full_access_consent_before_init(
     assert consent < initialization
     assert "If the user declines, do not create or start the Run." in content
     assert "Omit `--confirm-full-access`" in content
+
+
+@pytest.mark.parametrize("relative_path", BROWSER_OWNER_GUIDES)
+def test_browser_guidance_keeps_tabs_with_one_resumable_owner(
+    relative_path: str,
+) -> None:
+    content = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert re.search(r"browser\s+owner", content, flags=re.IGNORECASE)
+    assert "`resume`" in content
+    assert "Handoff" in content
+    assert re.search(r"do not\s+transfer ownership", content)
 
 
 @pytest.mark.parametrize("relative_path", PROFILE_GUIDES)

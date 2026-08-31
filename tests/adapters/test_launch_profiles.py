@@ -23,7 +23,7 @@ def test_codex_start_and_resume_freeze_equivalent_permissions() -> None:
 
     assert mappings["start"] == mappings["resume"]
     rendered = " ".join(mappings["start"])
-    assert "--ignore-user-config" in mappings["start"]
+    assert "--ignore-user-config" not in mappings["start"]
     assert "--ignore-rules" in mappings["start"]
     assert 'sandbox_mode="workspace-write"' in rendered
     assert 'approval_policy="never"' in rendered
@@ -48,7 +48,7 @@ def test_codex_exposes_explicit_elevated_profiles(
     assert set(mappings) == {"default", "trusted-workspace", "full-access"}
     assert all(mapping["start"] == mapping["resume"] for mapping in mappings.values())
     assert all(
-        "--ignore-user-config" in mapping["start"]
+        "--ignore-user-config" not in mapping["start"]
         and "--ignore-rules" in mapping["start"]
         for mapping in mappings.values()
     )
@@ -131,6 +131,16 @@ def test_claude_launch_reads_text_prompt_from_stdin(monkeypatch) -> None:
         "agent_team.adapters.claude_code.claude_internal_tmpdir",
         lambda: Path("/tmp/claude-501"),
     )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda **_kwargs: Path("/private/claude"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_capability_launch_args",
+        lambda **_kwargs: (),
+    )
 
     start = adapter.prepare_launch(
         launch_context(adapter=adapter, session_policy="resume", session_ref=None)
@@ -201,6 +211,11 @@ def test_codex_launch_applies_model_effort_and_fast_to_start_and_resume(
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
     monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
     monkeypatch.setattr(adapter, "authentication_status", lambda: True)
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda _context: Path("/private/codex"),
+    )
     contexts = [
         launch_context(
             adapter=adapter,
@@ -235,6 +250,11 @@ def test_codex_launch_freezes_custom_provider_for_start_and_resume(
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/codex"))
     monkeypatch.setattr(adapter, "executable_version", lambda: "0.146.0")
     monkeypatch.setattr(adapter, "authentication_status", lambda: False)
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda _context: Path("/private/codex"),
+    )
     provider_config = {
         "name": "Company Proxy",
         "base_url": "https://proxy.example.test/v1",
@@ -291,6 +311,16 @@ def test_claude_launch_applies_model_and_effort_to_start_and_resume(
         "agent_team.adapters.claude_code.claude_internal_tmpdir",
         lambda: Path("/tmp/claude-501"),
     )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda **_kwargs: Path("/private/claude"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_capability_launch_args",
+        lambda **_kwargs: (),
+    )
     contexts = [
         launch_context(
             adapter=adapter,
@@ -309,6 +339,7 @@ def test_claude_launch_applies_model_and_effort_to_start_and_resume(
 
 def test_claude_launch_freezes_gateway_route_for_start_and_resume(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     adapter = ClaudeCodeAdapter()
     monkeypatch.setattr(adapter, "executable", lambda: Path("/bin/claude"))
@@ -321,6 +352,16 @@ def test_claude_launch_freezes_gateway_route_for_start_and_resume(
     monkeypatch.setattr(
         "agent_team.adapters.claude_code.claude_internal_tmpdir",
         lambda: Path("/tmp/claude-501"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_assert_runtime_home",
+        lambda **_kwargs: Path("/private/claude"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_capability_launch_args",
+        lambda **_kwargs: (),
     )
     provider_config = {
         "settings": {
@@ -356,8 +397,10 @@ def test_claude_launch_freezes_gateway_route_for_start_and_resume(
         model_provider="gateway",
         model_provider_config=provider_config,
     )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
     assert adapter.worker_environment_names(
-        run_dir=Path("/unused"),
+        run_dir=run_dir,
         role_id="developer",
         options=options,
     ) == ("ANTHROPIC_AUTH_TOKEN",)

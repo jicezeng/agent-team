@@ -52,13 +52,24 @@ from .base import (
     StreamRecord,
     TurnLaunchContext,
 )
+from .capability_snapshot import (
+    assert_capability_path,
+    copy_capability_path,
+    environment_reference_names,
+)
 
 _SESSION_NAMESPACE = uuid.UUID("a02f363b-039e-4a17-af70-639179544261")
 _PROFILE_NAME = "agent-team"
 _PLUGIN_PACKAGE = "@agent-team/dsh-tui"
 _PLUGIN_STATE_FILE = "agent-team-dsh-plugin.json"
+_CAPABILITY_STATE_FILE = "agent-team-user-capabilities.json"
 _OUTPUT_LIMIT_EXIT_CODE = 75
 _RESERVED_PLUGIN_PACKAGES = {"@deepseek-ai/dsh-base", _PLUGIN_PACKAGE}
+_SOURCE_SURFACE_BUNDLES = {
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-headless",
+    "@deepseek-ai/dsh-web-app",
+}
 _PACKAGE_NAME_RE = re.compile(
     r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$"
 )
@@ -171,7 +182,9 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                 "runtime_isolation": {
                     "dsh_home": "private per Run, role, and Session generation",
                     "credentials": "environment only",
-                    "user_profiles": "not loaded",
+                    "user_profiles": (
+                        "headless profile Plugin/MCP layers copied before kickoff"
+                    ),
                     "session_resume": "native agents.resume over private JSONL",
                 },
             },
@@ -184,7 +197,11 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         launch_mode: str = "interactive",
     ) -> str:
         base = super().profile_fingerprint(profile, session_policy, launch_mode)
-        components = [base.encode(), canonical_json_bytes(self._plugin_contract())]
+        components = [
+            base.encode(),
+            canonical_json_bytes(self._plugin_contract()),
+            b"dsh-user-capabilities-v1:headless-profile-plugin-mcp-snapshot",
+        ]
         framed = b"".join(
             len(component).to_bytes(8, "big") + component
             for component in components
@@ -365,10 +382,23 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
     @staticmethod
     def _profile_manifest(
         candidate: dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         bundles = ["@deepseek-ai/dsh-base"]
-        dependencies: dict[str, str] = {}
+        dependencies = {
+            dependency["name"]: dependency["version"]
+            for dependency in (capabilities or {}).get("dependencies", [])
+        }
+        copied_bundles = (capabilities or {}).get("bundles", [])
+        bundles.extend(copied_bundles)
         if candidate is not None:
+            if (
+                candidate["package"] in dependencies
+                or candidate["package"] in copied_bundles
+            ):
+                raise IntegrityError(
+                    "workspace DSH plugin conflicts with a copied user Plugin"
+                )
             bundles.append(candidate["package"])
             dependencies[candidate["package"]] = candidate["version"]
         bundles.append(_PLUGIN_PACKAGE)
@@ -597,6 +627,420 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             if path_entry_exists(temporary):
                 shutil.rmtree(temporary)
 
+    @staticmethod
+    def _source_dsh_home() -> Path:
+        configured = os.environ.get("DSH_HOME")
+        supplied = (
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".dsh"
+        )
+        try:
+            return supplied.resolve(strict=path_entry_exists(supplied))
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_UNREADABLE",
+                f"cannot resolve DeepSeek Harness home: {supplied}",
+            ) from exc
+
+    @staticmethod
+    def _source_profile_name() -> str:
+        name = os.environ.get("AGENT_TEAM_DSH_SOURCE_PROFILE", "headless")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "AGENT_TEAM_DSH_SOURCE_PROFILE is not a valid profile name",
+            )
+        return name
+
+    @staticmethod
+    def _optional_regular(path: Path, *, default: bytes) -> bytes:
+        try:
+            return read_regular(path)
+        except FileNotFoundError:
+            return default
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_UNREADABLE",
+                f"cannot read DeepSeek Harness capability config: {path}",
+            ) from exc
+
+    @classmethod
+    def _resolve_source_package(
+        cls,
+        *,
+        source_home: Path,
+        source_profile: Path,
+        package_name: str,
+    ) -> Path:
+        relative = Path(*package_name.split("/"))
+        candidates = (
+            source_profile / "node_modules" / relative,
+            source_home / "profiles" / "node_modules" / relative,
+        )
+        for candidate in candidates:
+            if path_entry_exists(candidate):
+                try:
+                    return candidate.resolve(strict=True)
+                except OSError as exc:
+                    raise AgentTeamError(
+                        "HARNESS_CAPABILITY_UNAVAILABLE",
+                        f"cannot resolve DeepSeek Harness Plugin {package_name!r}",
+                    ) from exc
+        raise AgentTeamError(
+            "HARNESS_CAPABILITY_UNAVAILABLE",
+            f"DeepSeek Harness Plugin is not installed in the source profile: "
+            f"{package_name}",
+        )
+
+    @classmethod
+    def _package_version(cls, package_root: Path, package_name: str) -> str:
+        try:
+            manifest = json.loads(read_regular(package_root / "package.json"))
+        except (OSError, json.JSONDecodeError, IntegrityError) as exc:
+            raise AgentTeamError(
+                "HARNESS_CAPABILITY_UNAVAILABLE",
+                f"DeepSeek Harness Plugin has no valid package manifest: {package_name}",
+            ) from exc
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        if not isinstance(version, str) or not version:
+            raise AgentTeamError(
+                "HARNESS_CAPABILITY_UNAVAILABLE",
+                f"DeepSeek Harness Plugin has no version: {package_name}",
+            )
+        return version
+
+    @classmethod
+    def _new_user_capabilities(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, object]:
+        source_home = cls._source_dsh_home()
+        if source_home == home or source_home.is_relative_to(cls._run_home_root(run_dir)):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "DeepSeek Harness source home cannot be an Agent-Team private home",
+            )
+        profile_name = cls._source_profile_name()
+        source_profile = source_home / "profiles" / profile_name
+        manifest_path = source_profile / "package.json"
+        if path_entry_exists(manifest_path):
+            try:
+                manifest = json.loads(read_regular(manifest_path))
+            except (OSError, json.JSONDecodeError, IntegrityError) as exc:
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"DeepSeek Harness source profile is invalid: {source_profile}",
+                ) from exc
+            if not isinstance(manifest, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    "DeepSeek Harness source profile manifest must be an object",
+                )
+        else:
+            manifest = {}
+        configured_dependencies = manifest.get("dependencies", {})
+        dsh = manifest.get("dsh", {})
+        profile = dsh.get("profile", {}) if isinstance(dsh, dict) else {}
+        configured_bundles = (
+            profile.get("bundles", []) if isinstance(profile, dict) else []
+        )
+        if not isinstance(configured_dependencies, dict) or not all(
+            isinstance(name, str) and isinstance(spec, str)
+            for name, spec in configured_dependencies.items()
+        ):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "DeepSeek Harness source profile dependencies are invalid",
+            )
+        if not isinstance(configured_bundles, list) or not all(
+            isinstance(name, str) for name in configured_bundles
+        ):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "DeepSeek Harness source profile bundles are invalid",
+            )
+        bundles: list[str] = []
+        for package_name in configured_bundles:
+            if package_name in _SOURCE_SURFACE_BUNDLES:
+                continue
+            if (
+                not _PACKAGE_NAME_RE.fullmatch(package_name)
+                or package_name in _RESERVED_PLUGIN_PACKAGES
+                or package_name in bundles
+            ):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"DeepSeek Harness source bundle is invalid: {package_name!r}",
+                )
+            bundles.append(package_name)
+
+        package_names = sorted(
+            (set(configured_dependencies) | set(bundles))
+            - _SOURCE_SURFACE_BUNDLES
+        )
+        target_profile = home / "profiles" / _PROFILE_NAME
+        dependency_snapshots: list[dict[str, object]] = []
+        runtime_modules = managed_dsh_runtime() / "node_modules"
+        for package_name in package_names:
+            if (
+                not _PACKAGE_NAME_RE.fullmatch(package_name)
+                or package_name in _RESERVED_PLUGIN_PACKAGES
+            ):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"DeepSeek Harness source Plugin is invalid: {package_name!r}",
+                )
+            runtime_package = runtime_modules / Path(*package_name.split("/"))
+            source_package = cls._resolve_source_package(
+                source_home=source_home,
+                source_profile=source_profile,
+                package_name=package_name,
+            )
+            source_version = cls._package_version(source_package, package_name)
+            if path_entry_exists(runtime_package):
+                runtime_version = cls._package_version(runtime_package, package_name)
+                if runtime_version != source_version:
+                    raise AgentTeamError(
+                        "HARNESS_CAPABILITY_VERSION_CONFLICT",
+                        f"DeepSeek Harness Plugin {package_name!r} requires "
+                        f"{source_version}, but the managed runtime provides "
+                        f"{runtime_version}",
+                    )
+                continue
+            target = cls._package_target(target_profile, package_name)
+            dependency_snapshots.append(
+                {
+                    "name": package_name,
+                    "version": source_version,
+                    "path": target.relative_to(home).as_posix(),
+                    "snapshot": copy_capability_path(source_package, target),
+                }
+            )
+
+        profile_patch = cls._optional_regular(
+            source_profile / "cordis.patch.yml",
+            default=b"[]\n",
+        )
+        home_patch = cls._optional_regular(
+            source_home / "cordis.patch.yml",
+            default=b"[]\n",
+        )
+        target_profile.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write(
+            target_profile / "cordis.patch.yml",
+            profile_patch,
+            immutable=True,
+        )
+        atomic_write(home / "cordis.patch.yml", home_patch, immutable=True)
+        return {
+            "schema_version": 1,
+            "adapter": cls.adapter_id,
+            "run_dir": str(run_dir.resolve(strict=True)),
+            "role_id": role_id,
+            "source_profile": profile_name,
+            "bundles": bundles,
+            "dependencies": dependency_snapshots,
+            "profile_patch_sha256": sha256_bytes(profile_patch),
+            "home_patch_sha256": sha256_bytes(home_patch),
+            "environment_names": list(
+                environment_reference_names(
+                    [
+                        profile_patch.decode("utf-8", errors="ignore"),
+                        home_patch.decode("utf-8", errors="ignore"),
+                    ]
+                )
+            ),
+        }
+
+    @classmethod
+    def _read_user_capabilities(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, Any]:
+        value = read_json(home / _CAPABILITY_STATE_FILE)
+        required = {
+            "schema_version",
+            "adapter",
+            "run_dir",
+            "role_id",
+            "source_profile",
+            "bundles",
+            "dependencies",
+            "profile_patch_sha256",
+            "home_patch_sha256",
+            "environment_names",
+        }
+        dependencies = value.get("dependencies")
+        bundles = value.get("bundles")
+        environment_names = value.get("environment_names")
+        if (
+            set(value) != required
+            or value.get("schema_version") != 1
+            or value.get("adapter") != cls.adapter_id
+            or value.get("run_dir") != str(run_dir.resolve(strict=True))
+            or value.get("role_id") != role_id
+            or not isinstance(value.get("source_profile"), str)
+            or not isinstance(bundles, list)
+            or not all(
+                isinstance(name, str)
+                and _PACKAGE_NAME_RE.fullmatch(name)
+                and name not in _RESERVED_PLUGIN_PACKAGES
+                for name in bundles
+            )
+            or len(set(bundles)) != len(bundles)
+            or not isinstance(dependencies, list)
+            or not isinstance(environment_names, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                for name in environment_names
+            )
+        ):
+            raise IntegrityError("DeepSeek Harness user capability snapshot is invalid")
+        profile = home / "profiles" / _PROFILE_NAME
+        for key, path in (
+            ("profile_patch_sha256", profile / "cordis.patch.yml"),
+            ("home_patch_sha256", home / "cordis.patch.yml"),
+        ):
+            expected = value.get(key)
+            if (
+                not isinstance(expected, str)
+                or len(expected) != 64
+                or sha256_bytes(read_regular(path)) != expected
+            ):
+                raise IntegrityError(
+                    "DeepSeek Harness Plugin/MCP patch changed after snapshot"
+                )
+        for dependency in dependencies:
+            if (
+                not isinstance(dependency, dict)
+                or set(dependency) != {"name", "version", "path", "snapshot"}
+                or not isinstance(dependency.get("name"), str)
+                or not _PACKAGE_NAME_RE.fullmatch(dependency["name"])
+                or dependency["name"] in _RESERVED_PLUGIN_PACKAGES
+                or not isinstance(dependency.get("version"), str)
+                or not dependency["version"]
+                or not isinstance(dependency.get("path"), str)
+                or Path(dependency["path"]).is_absolute()
+                or any(
+                    part in {"", ".", ".."}
+                    for part in dependency["path"].split("/")
+                )
+                or not isinstance(dependency.get("snapshot"), dict)
+            ):
+                raise IntegrityError(
+                    "DeepSeek Harness user Plugin snapshot is invalid"
+                )
+            assert_capability_path(
+                home / dependency["path"],
+                dependency["snapshot"],
+                subject=f"DeepSeek Harness Plugin {dependency['name']!r}",
+            )
+        return value
+
+    @classmethod
+    def _clone_user_capabilities(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        source_home: Path,
+        target_home: Path,
+    ) -> dict[str, Any]:
+        state = cls._read_user_capabilities(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=source_home,
+        )
+        target_profile = target_home / "profiles" / _PROFILE_NAME
+        ensure_dir(target_profile)
+        for relative in (
+            Path("profiles", _PROFILE_NAME, "cordis.patch.yml"),
+            Path("cordis.patch.yml"),
+        ):
+            atomic_write(
+                target_home / relative,
+                read_regular(source_home / relative),
+                immutable=True,
+            )
+        for dependency in state["dependencies"]:
+            target = target_home / dependency["path"]
+            descriptor = copy_capability_path(
+                source_home / dependency["path"],
+                target,
+            )
+            if descriptor != dependency["snapshot"]:
+                raise IntegrityError(
+                    "cloned DeepSeek Harness Plugin differs from its snapshot"
+                )
+        atomic_json(
+            target_home / _CAPABILITY_STATE_FILE,
+            state,
+            immutable=True,
+        )
+        return cls._read_user_capabilities(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=target_home,
+        )
+
+    def prepare_capability_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        managed_dsh_runtime_report()
+        for directory in self._home_hierarchy(run_dir, role_id, 1):
+            ensure_dir(directory)
+            info = directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise IntegrityError(
+                    f"DeepSeek Harness state directory is unsafe: {directory}"
+                )
+            directory.chmod(0o700)
+        home = self._home(run_dir, role_id, 1)
+        marker_path = home / "agent-team-home.json"
+        marker = self._marker(run_dir, role_id, 1)
+        if path_entry_exists(marker_path):
+            if read_json(marker_path) != marker:
+                raise IntegrityError(
+                    f"DeepSeek Harness home belongs to another frozen Run: {home}"
+                )
+        else:
+            atomic_json(marker_path, marker, immutable=True)
+        ensure_dir(home / "profiles" / _PROFILE_NAME)
+        capability_path = home / _CAPABILITY_STATE_FILE
+        if path_entry_exists(capability_path):
+            self._read_user_capabilities(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+        else:
+            atomic_json(
+                capability_path,
+                self._new_user_capabilities(
+                    run_dir=run_dir,
+                    role_id=role_id,
+                    home=home,
+                ),
+                immutable=True,
+            )
+
     def prepare_run_state(
         self,
         *,
@@ -610,6 +1054,11 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             role_id=role_id,
             launch_mode=launch_mode,
             session_generation=session_generation,
+        )
+        self.prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
         )
         # Validate the exact managed runtime before creating any role state.
         managed_dsh_runtime_report()
@@ -639,6 +1088,19 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         profile = home / "profiles" / _PROFILE_NAME
         ensure_dir(profile)
         profile.chmod(0o700)
+        if session_generation == 1:
+            capabilities = self._read_user_capabilities(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+        else:
+            capabilities = self._clone_user_capabilities(
+                run_dir=run_dir,
+                role_id=role_id,
+                source_home=self._home(run_dir, role_id, 1),
+                target_home=home,
+            )
         team = load_team(run_dir)
         role = team.roles[role_id]
         candidate: dict[str, Any] | None = None
@@ -656,6 +1118,15 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
                     workspace=team.workspace,
                     source_relative=role.dsh_plugin,
                 )
+                if candidate["package"] in {
+                    dependency["name"]
+                    for dependency in capabilities["dependencies"]
+                } or candidate["package"] in capabilities["bundles"]:
+                    raise RoutePreflightError(
+                        "DSH_PLUGIN_CONFLICT",
+                        "workspace DSH plugin conflicts with a copied user Plugin: "
+                        f"{candidate['package']}",
+                    )
                 target = self._package_target(profile, candidate["package"])
                 self._copy_plugin(
                     source,
@@ -669,10 +1140,9 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             )
         atomic_write(
             profile / "package.json",
-            canonical_json_bytes(self._profile_manifest(candidate)),
+            canonical_json_bytes(self._profile_manifest(candidate, capabilities)),
             immutable=True,
         )
-        atomic_write(profile / "cordis.patch.yml", b"[]\n", immutable=True)
         atomic_write(
             profile / "pnpm-workspace.yaml",
             b"packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n",
@@ -716,6 +1186,11 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
             )
         team = load_team(run_dir)
         role = team.roles[context.role_id]
+        capabilities = self._read_user_capabilities(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            home=home,
+        )
         candidate_state = home / _PLUGIN_STATE_FILE
         candidate = (
             self._validate_candidate_snapshot(
@@ -727,19 +1202,36 @@ class DeepSeekHarnessAdapter(HarnessAdapter):
         )
         if (role.dsh_plugin is None) != (candidate is None):
             raise IntegrityError("DeepSeek Harness plugin snapshot does not match role")
+        profile = home / "profiles" / _PROFILE_NAME
         if candidate is not None:
-            profile = home / "profiles" / _PROFILE_NAME
             target = self._package_target(profile, candidate["package"])
             if _tree_manifest(target) != candidate["manifest"]:
                 raise IntegrityError(
                     "DeepSeek Harness installed plugin changed after provisioning"
                 )
-            expected_manifest = canonical_json_bytes(self._profile_manifest(candidate))
-            if read_regular(profile / "package.json") != expected_manifest:
-                raise IntegrityError(
-                    "DeepSeek Harness profile changed after plugin provisioning"
-                )
+        expected_manifest = canonical_json_bytes(
+            self._profile_manifest(candidate, capabilities)
+        )
+        if read_regular(profile / "package.json") != expected_manifest:
+            raise IntegrityError(
+                "DeepSeek Harness profile changed after plugin provisioning"
+            )
         return home
+
+    def worker_environment_names(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        options: HarnessLaunchOptions | None = None,
+    ) -> tuple[str, ...]:
+        del options
+        capabilities = self._read_user_capabilities(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=self._home(run_dir, role_id, 1),
+        )
+        return tuple(capabilities["environment_names"])
 
     @staticmethod
     def _session_id(context: TurnLaunchContext) -> str:

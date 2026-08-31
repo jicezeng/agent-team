@@ -56,6 +56,9 @@ Agent consuming the context window.
 - **Native, independent Agents.** Every role runs in its real interactive
   Harness with a private configuration and Session; selected Sessions can
   resume on later Turns.
+- **Native capabilities come with them.** Enabled Plugin and MCP configuration
+  is frozen before Kickoff for every External role, then loaded from private
+  Run-owned state in Codex, Claude Code, OpenCode, and DeepSeek Harness.
 - **Durable truth.** Immutable Run inputs and an append-only Event Journal—not
   terminal text or notifications—determine state and reconstruct the audit
   trail.

@@ -97,12 +97,16 @@ continuation Run。Role 直接调用受管
 DSH 中的插件；不从模型 Bash 启动子 DSH，也不把父 DSH Credential 转交给工具进程。
 
 Adapter 在每一 Session Generation 首次接收路由前创建私有 `DSH_HOME`，复制 bundled
-TUI，并冻结以下 Profile：
+TUI。首次 Kickoff 前，它还会从 `headless` 用户 Profile（可由
+`AGENT_TEAM_DSH_SOURCE_PROFILE` 覆盖）复制额外 Bundle、依赖包和 Cordis Plugin/MCP
+patch，并将同一不可变快照复制到后续 Session Generation。最终 Profile：
 
-- 只加载 `@deepseek-ai/dsh-base`、`@agent-team/dsh-tui`，以及该 Role 显式声明、
-  本代激活时冻结的至多一个 Workspace DSH Bundle；
+- 加载 `@deepseek-ai/dsh-base`、冻结的用户 Plugin/MCP Bundle、
+  `@agent-team/dsh-tui`，以及该 Role 显式声明、本代激活时冻结的至多一个 Workspace
+  DSH Bundle；
 - 禁用 HMR、Telemetry、Title LLM 和会话内 Permission 切换；
-- 禁用用户 Profile、Skill、Subagent、Workflow 与 Ralph，避免未受管递归 Worker；
+- 不直接运行或修改用户 Profile；禁用 Skill、Subagent、Workflow 与 Ralph，避免未受管
+  递归 Worker；
 - Session 使用无压缩私有 JSONL Store；
 - Approval 固定为 `never`；Sandbox Mode 只由 Launch Profile 环境决定。
 
@@ -244,6 +248,7 @@ External 方向的证据见
 - 不通过 Python SDK、JSON-RPC Bridge 或 DSH Subagent Provider 控制 External Role；
 - 不支持 DSH Headless External Role；
 - 不把 TUI 文本、`[thinking]` 或 Tool 状态升级为业务事件；
-- 不复制用户 DSH Profile、Credential Store 或 Session Store；
+- 不复用或修改用户 DSH Profile、Credential Store 或 Session Store；只把所选 Profile
+  的 Plugin/MCP Bundle 与 patch 复制成 Run 私有快照；
 - 不宣称受限 DSH Profile 是读取、网络或进程 Sandbox；
 - 不改变单 Token、单 Worktree、无 Fan-out/Join 的 Agent-Team v0.1 边界。

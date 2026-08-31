@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Any
 
 from agent_team.assets import effective_agent_team_cli, effective_claude_plugin
 from agent_team.config import (
@@ -40,6 +42,11 @@ from .base import (
     TurnLaunchContext,
     workspace_from_run_dir,
 )
+from .capability_snapshot import (
+    assert_capability_path,
+    copy_capability_path,
+    environment_reference_names,
+)
 
 _ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
 _CLAUDE_PROVIDER_FLAGS = {
@@ -53,6 +60,8 @@ _CLAUDE_ROUTE_FLAGS = (
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_MANTLE",
 )
+_CAPABILITY_STATE_FILE = "agent-team-capabilities.json"
+_MCP_CONFIG_FILE = "agent-team-mcp.json"
 
 
 def claude_internal_tmpdir() -> Path:
@@ -205,7 +214,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
             "credentials": "environment names only; values remain ephemeral",
         }
         details["runtime_isolation"] = {
-            "interactive_config": "private per Run and role",
+            "config": "private per Run and role in both launch modes",
             "user_state": (
                 "private snapshot with only the exact pretrusted Workspace"
             ),
@@ -216,6 +225,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
                 "macOS Keychain or private mode-0600 credential copy"
             ),
             "session_resume": "native within private CLAUDE_CONFIG_DIR",
+            "user_capabilities": "enabled Plugins and MCP copied before kickoff",
         }
         return CapabilityReport(
             adapter_id=report.adapter_id,
@@ -236,21 +246,18 @@ class ClaudeCodeAdapter(HarnessAdapter):
     ) -> str:
         base = super().profile_fingerprint(profile, session_policy, launch_mode)
         contract = {
-            "interactive_runtime_state": (
-                {
-                    "schema_version": 1,
-                    "CLAUDE_CONFIG_DIR": "private per Run and role",
-                    "source": "private snapshot of user state",
-                    "projects": "exact trusted Workspace only",
-                    "run_confirmation": (
-                        "private bypassPermissionsModeAccepted"
-                        if profile == "full-access"
-                        else "not recorded"
-                    ),
-                }
-                if launch_mode == "interactive"
-                else None
-            )
+            "runtime_state": {
+                "schema_version": 2,
+                "CLAUDE_CONFIG_DIR": "private per Run and role",
+                "source": "private snapshot of user state",
+                "projects": "exact trusted Workspace only",
+                "capabilities": "enabled Plugin trees and merged MCP config",
+                "run_confirmation": (
+                    "private bypassPermissionsModeAccepted"
+                    if profile == "full-access"
+                    else "not recorded"
+                ),
+            }
         }
         components = [base.encode(), canonical_json_bytes(contract)]
         framed = b"".join(
@@ -452,6 +459,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         # Run to mutate ~/.claude.json. Project history is deliberately
         # replaced by the one Workspace whose trust was already preflighted.
         state = dict(cls._read_user_state())
+        state.pop("mcpServers", None)
         state["projects"] = {
             str(workspace.resolve(strict=True)): {
                 "hasTrustDialogAccepted": True,
@@ -465,6 +473,315 @@ class ClaudeCodeAdapter(HarnessAdapter):
         else:
             state.pop("bypassPermissionsModeAccepted", None)
         return state
+
+    @staticmethod
+    def _read_optional_user_json(path: Path, *, subject: str) -> dict[str, Any]:
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_UNREADABLE",
+                f"cannot read {subject}: {path}",
+            ) from exc
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"{subject} is invalid: {path}",
+            ) from exc
+        if not isinstance(value, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                f"{subject} must be an object: {path}",
+            )
+        return value
+
+    @classmethod
+    def _enabled_user_plugins(cls, workspace: Path) -> dict[str, bool]:
+        sources = (
+            cls._source_config_home() / "settings.json",
+            workspace / ".claude" / "settings.json",
+            workspace / ".claude" / "settings.local.json",
+        )
+        enabled: dict[str, bool] = {}
+        for source in sources:
+            value = cls._read_optional_user_json(
+                source,
+                subject="Claude Code settings",
+            )
+            configured = value.get("enabledPlugins", {})
+            if not isinstance(configured, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"Claude Code enabledPlugins must be an object: {source}",
+                )
+            for plugin_id, state in configured.items():
+                if not isinstance(plugin_id, str) or not isinstance(state, bool):
+                    raise AgentTeamError(
+                        "HARNESS_USER_CONFIG_INVALID",
+                        f"Claude Code enabledPlugins is invalid: {source}",
+                    )
+                enabled[plugin_id] = state
+        return enabled
+
+    @classmethod
+    def _plugin_install_paths(
+        cls,
+        workspace: Path,
+    ) -> tuple[tuple[str, Path], ...]:
+        enabled = cls._enabled_user_plugins(workspace)
+        if not any(enabled.values()):
+            return ()
+        registry_path = cls._source_config_home() / "plugins" / "installed_plugins.json"
+        registry = cls._read_optional_user_json(
+            registry_path,
+            subject="Claude Code installed Plugin registry",
+        )
+        plugins = registry.get("plugins", {})
+        if not isinstance(plugins, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code installed Plugin registry plugins must be an object",
+            )
+        resolved_workspace = workspace.resolve(strict=True)
+        selected: list[tuple[str, Path]] = []
+        for plugin_id, is_enabled in sorted(enabled.items()):
+            if not is_enabled:
+                continue
+            candidates = plugins.get(plugin_id)
+            if not isinstance(candidates, list):
+                raise AgentTeamError(
+                    "HARNESS_CAPABILITY_UNAVAILABLE",
+                    f"enabled Claude Code Plugin is not installed: {plugin_id}",
+                )
+            ranked: list[tuple[int, int, Path]] = []
+            for index, candidate in enumerate(candidates):
+                if not isinstance(candidate, dict):
+                    continue
+                install_path = candidate.get("installPath")
+                scope = candidate.get("scope")
+                if not isinstance(install_path, str) or not install_path:
+                    continue
+                rank = 1 if scope == "user" else 0
+                project_path = candidate.get("projectPath")
+                if scope in {"project", "local"} and isinstance(project_path, str):
+                    try:
+                        resolved_project = Path(project_path).expanduser().resolve(
+                            strict=True
+                        )
+                    except OSError:
+                        continue
+                    if resolved_project == resolved_workspace:
+                        rank = 3 if scope == "local" else 2
+                if rank:
+                    ranked.append((rank, index, Path(install_path)))
+            if not ranked:
+                raise AgentTeamError(
+                    "HARNESS_CAPABILITY_UNAVAILABLE",
+                    f"enabled Claude Code Plugin has no installation for this "
+                    f"Workspace: {plugin_id}",
+                )
+            selected.append((plugin_id, max(ranked, key=lambda item: item[:2])[2]))
+        return tuple(selected)
+
+    @classmethod
+    def _merged_mcp_servers(cls, workspace: Path) -> dict[str, object]:
+        state = cls._read_user_state()
+        merged: dict[str, object] = {}
+
+        def merge(value: object, *, subject: str) -> None:
+            if value is None:
+                return
+            if not isinstance(value, dict):
+                raise AgentTeamError(
+                    "HARNESS_USER_CONFIG_INVALID",
+                    f"{subject} mcpServers must be an object",
+                )
+            for name, server in value.items():
+                if not isinstance(name, str) or not isinstance(server, dict):
+                    raise AgentTeamError(
+                        "HARNESS_USER_CONFIG_INVALID",
+                        f"{subject} mcpServers is invalid",
+                    )
+                merged[name] = server
+
+        merge(state.get("mcpServers"), subject="Claude Code user state")
+        projects = state.get("projects", {})
+        if not isinstance(projects, dict):
+            raise AgentTeamError(
+                "HARNESS_USER_CONFIG_INVALID",
+                "Claude Code user state projects must be an object",
+            )
+        resolved = workspace.resolve(strict=True)
+        for candidate in reversed((resolved, *resolved.parents)):
+            project = projects.get(str(candidate))
+            if isinstance(project, dict):
+                merge(
+                    project.get("mcpServers"),
+                    subject=f"Claude Code project state {candidate}",
+                )
+        project_mcp = cls._read_optional_user_json(
+            workspace / ".mcp.json",
+            subject="Claude Code project MCP config",
+        )
+        merge(project_mcp.get("mcpServers"), subject="Claude Code project MCP config")
+        return merged
+
+    @classmethod
+    def _read_capability_state(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> dict[str, Any]:
+        value = read_json(home / _CAPABILITY_STATE_FILE)
+        required = {
+            "schema_version",
+            "adapter",
+            "run_dir",
+            "role_id",
+            "mcp_config_sha256",
+            "plugins",
+            "environment_names",
+        }
+        plugins = value.get("plugins")
+        environment_names = value.get("environment_names")
+        if (
+            set(value) != required
+            or value.get("schema_version") != 1
+            or value.get("adapter") != cls.adapter_id
+            or value.get("run_dir") != str(run_dir.resolve(strict=True))
+            or value.get("role_id") != role_id
+            or not isinstance(value.get("mcp_config_sha256"), str)
+            or len(value["mcp_config_sha256"]) != 64
+            or not isinstance(plugins, list)
+            or not isinstance(environment_names, list)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                for name in environment_names
+            )
+        ):
+            raise IntegrityError("Claude Code capability snapshot is invalid")
+        if (
+            sha256_bytes(read_regular(home / _MCP_CONFIG_FILE))
+            != value["mcp_config_sha256"]
+        ):
+            raise IntegrityError("Claude Code MCP config changed after snapshot")
+        for plugin in plugins:
+            if (
+                not isinstance(plugin, dict)
+                or set(plugin) != {"id", "path", "snapshot"}
+                or not isinstance(plugin.get("id"), str)
+                or not isinstance(plugin.get("path"), str)
+                or Path(plugin["path"]).is_absolute()
+                or any(part in {"", ".", ".."} for part in plugin["path"].split("/"))
+                or not isinstance(plugin.get("snapshot"), dict)
+            ):
+                raise IntegrityError("Claude Code Plugin capability snapshot is invalid")
+            assert_capability_path(
+                home / plugin["path"],
+                plugin["snapshot"],
+                subject=f"Claude Code Plugin {plugin['id']!r}",
+            )
+        return value
+
+    def prepare_capability_state(
+        self,
+        *,
+        run_dir: Path,
+        role_id: str,
+        launch_mode: str,
+    ) -> None:
+        super().prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        workspace = workspace_from_run_dir(run_dir)
+        profile = self._role_profile(run_dir, role_id)
+        for directory in self._runtime_hierarchy(run_dir, role_id):
+            ensure_dir(directory)
+            info = directory.lstat()
+            if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                raise IntegrityError(
+                    f"Claude Code state directory is unsafe: {directory}"
+                )
+            directory.chmod(0o700)
+        home = self._runtime_home(run_dir, role_id)
+        marker_path = home / "agent-team-home.json"
+        marker = self._runtime_marker(run_dir, role_id)
+        if path_entry_exists(marker_path):
+            if read_json(marker_path) != marker:
+                raise IntegrityError(
+                    f"Claude Code home belongs to another Run: {home}"
+                )
+        else:
+            atomic_json(marker_path, marker, immutable=True)
+        capability_path = home / _CAPABILITY_STATE_FILE
+        if path_entry_exists(capability_path):
+            self._read_capability_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+            return
+
+        atomic_json(
+            home / ".config.json",
+            self._private_runtime_state(workspace=workspace, profile=profile),
+            immutable=True,
+        )
+        mcp = {"mcpServers": self._merged_mcp_servers(workspace)}
+        mcp_bytes = canonical_json_bytes(mcp)
+        atomic_write(home / _MCP_CONFIG_FILE, mcp_bytes, immutable=True)
+        plugin_snapshots: list[dict[str, object]] = []
+        for index, (plugin_id, source) in enumerate(
+            self._plugin_install_paths(workspace)
+        ):
+            target = home / "agent-team-plugins" / f"{index:04d}"
+            plugin_snapshots.append(
+                {
+                    "id": plugin_id,
+                    "path": target.relative_to(home).as_posix(),
+                    "snapshot": copy_capability_path(source, target),
+                }
+            )
+        atomic_json(
+            capability_path,
+            {
+                "schema_version": 1,
+                "adapter": self.adapter_id,
+                "run_dir": str(run_dir.resolve(strict=True)),
+                "role_id": role_id,
+                "mcp_config_sha256": sha256_bytes(mcp_bytes),
+                "plugins": plugin_snapshots,
+                "environment_names": list(environment_reference_names(mcp)),
+            },
+            immutable=True,
+        )
+
+    @classmethod
+    def _capability_launch_args(
+        cls,
+        *,
+        run_dir: Path,
+        role_id: str,
+        home: Path,
+    ) -> tuple[str, ...]:
+        state = cls._read_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
+        args: list[str] = ["--mcp-config", str(home / _MCP_CONFIG_FILE)]
+        for plugin in state["plugins"]:
+            args.extend(("--plugin-dir", str(home / plugin["path"])))
+        return tuple(args)
 
     @classmethod
     def _assert_runtime_home(
@@ -517,6 +834,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
             raise IntegrityError(
                 "Claude Code external Provider state contains Claude credentials"
             )
+        cls._read_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
         return home
 
     def prepare_run_state(
@@ -538,58 +860,37 @@ class ClaudeCodeAdapter(HarnessAdapter):
             self._assert_interactive_workspace_trusted(workspace)
         options = self._role_launch_options(run_dir, role_id)
         self.assert_launch_prerequisites(options)
-        if launch_mode == "interactive":
-            profile = self._role_profile(run_dir, role_id)
-            for directory in self._runtime_hierarchy(run_dir, role_id):
-                ensure_dir(directory)
-                info = directory.lstat()
-                if directory.is_symlink() or not stat.S_ISDIR(info.st_mode):
-                    raise IntegrityError(
-                        f"Claude Code state directory is unsafe: {directory}"
-                    )
-                directory.chmod(0o700)
-            home = self._runtime_home(run_dir, role_id)
-            marker_path = home / "agent-team-home.json"
-            marker = self._runtime_marker(run_dir, role_id)
-            if path_entry_exists(marker_path):
-                if read_json(marker_path) != marker:
-                    raise IntegrityError(
-                        f"Claude Code home belongs to another Run: {home}"
-                    )
-            else:
-                atomic_json(marker_path, marker, immutable=True)
-            atomic_json(
-                home / ".config.json",
-                self._private_runtime_state(
-                    workspace=workspace,
-                    profile=profile,
-                ),
-            )
-            source_credentials = self._source_config_home() / ".credentials.json"
-            if self.authentication_required(options) and path_entry_exists(
-                source_credentials
+        self.prepare_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            launch_mode=launch_mode,
+        )
+        home = self._runtime_home(run_dir, role_id)
+        source_credentials = self._source_config_home() / ".credentials.json"
+        if self.authentication_required(options) and path_entry_exists(
+            source_credentials
+        ):
+            try:
+                source_info = source_credentials.lstat()
+            except OSError as exc:
+                raise AgentTeamError(
+                    "HARNESS_AUTH_STATE_UNREADABLE",
+                    "cannot read Claude Code authentication state",
+                ) from exc
+            if (
+                source_credentials.is_symlink()
+                or not stat.S_ISREG(source_info.st_mode)
+                or stat.S_IMODE(source_info.st_mode) & 0o077
             ):
-                try:
-                    source_info = source_credentials.lstat()
-                except OSError as exc:
-                    raise AgentTeamError(
-                        "HARNESS_AUTH_STATE_UNREADABLE",
-                        "cannot read Claude Code authentication state",
-                    ) from exc
-                if (
-                    source_credentials.is_symlink()
-                    or not stat.S_ISREG(source_info.st_mode)
-                    or stat.S_IMODE(source_info.st_mode) & 0o077
-                ):
-                    raise AgentTeamError(
-                        "HARNESS_AUTH_STATE_UNSAFE",
-                        "Claude Code authentication state is not a private regular file",
-                    )
-                atomic_write(
-                    home / ".credentials.json",
-                    read_regular(source_credentials),
-                    mode=0o600,
+                raise AgentTeamError(
+                    "HARNESS_AUTH_STATE_UNSAFE",
+                    "Claude Code authentication state is not a private regular file",
                 )
+            atomic_write(
+                home / ".credentials.json",
+                read_regular(source_credentials),
+                mode=0o600,
+            )
 
     def finalize_run_state(
         self,
@@ -603,8 +904,6 @@ class ClaudeCodeAdapter(HarnessAdapter):
             role_id=role_id,
             launch_mode=launch_mode,
         )
-        if launch_mode != "interactive":
-            return
         home = self._runtime_home(run_dir, role_id)
         marker_path = home / "agent-team-home.json"
         if (
@@ -614,6 +913,11 @@ class ClaudeCodeAdapter(HarnessAdapter):
             raise IntegrityError(
                 f"Claude Code private state is not owned by this Run: {home}"
             )
+        self._read_capability_state(
+            run_dir=run_dir,
+            role_id=role_id,
+            home=home,
+        )
         for directory, child_dirs, files in os.walk(
             home,
             topdown=False,
@@ -647,9 +951,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         launch_mode: str,
     ) -> bool:
         self.assert_launch_mode(launch_mode)
-        return launch_mode == "interactive" and path_entry_exists(
-            self._runtime_home(run_dir, role_id)
-        )
+        return path_entry_exists(self._runtime_home(run_dir, role_id))
 
     @staticmethod
     def _boolean_environment(name: str) -> bool | None:
@@ -1052,7 +1354,18 @@ class ClaudeCodeAdapter(HarnessAdapter):
             options or self._role_launch_options(run_dir, role_id)
         )
         self.assert_launch_options(selected)
-        return self._provider_environment_names(selected)
+        names = set(self._provider_environment_names(selected))
+        home = self._runtime_home(run_dir, role_id)
+        # Provider-only callers may inspect Worker forwarding before Run
+        # preflight. Existing capability state is never accepted unchecked.
+        if path_entry_exists(home / _CAPABILITY_STATE_FILE):
+            state = self._read_capability_state(
+                run_dir=run_dir,
+                role_id=role_id,
+                home=home,
+            )
+            names.update(state["environment_names"])
+        return tuple(sorted(names))
 
     def prepare_launch(self, context: TurnLaunchContext) -> LaunchSpec:
         self.assert_launch_mode(context.launch_mode)
@@ -1071,20 +1384,24 @@ class ClaudeCodeAdapter(HarnessAdapter):
         )
         self.assert_launch_options(options)
         options = self._effective_provider_options(options)
-        runtime_home: Path | None = None
+        workspace = Path(context.workspace)
+        run_dir = Path(context.turn_dir).parent.parent
         if context.launch_mode == "interactive":
             # Recheck on every Turn so a revoked or corrupted trust decision
             # fails closed before Claude starts a native TUI.
-            workspace = Path(context.workspace)
             self._assert_interactive_workspace_trusted(workspace)
-            run_dir = Path(context.turn_dir).parent.parent
-            runtime_home = self._assert_runtime_home(
-                run_dir=run_dir,
-                role_id=context.role_id,
-                workspace=workspace,
-                profile=context.launch_profile,
-                requires_claude_auth=self.authentication_required(options),
-            )
+        runtime_home = self._assert_runtime_home(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            workspace=workspace,
+            profile=context.launch_profile,
+            requires_claude_auth=self.authentication_required(options),
+        )
+        capability_args = self._capability_launch_args(
+            run_dir=run_dir,
+            role_id=context.role_id,
+            home=runtime_home,
+        )
         executable = str(self.executable())
         mapping = self.profile_mappings(context.launch_mode)[context.launch_profile]
         selection: tuple[str, ...] = (
@@ -1096,11 +1413,23 @@ class ClaudeCodeAdapter(HarnessAdapter):
             prompt_file = str(Path(context.turn_dir) / "process" / "prompt.md")
             if context.session_ref and context.session_policy == "resume":
                 session_ref = context.session_ref
-                argv = (*base, *mapping["resume"], "--resume", session_ref)
+                argv = (
+                    *base,
+                    *mapping["resume"],
+                    *capability_args,
+                    "--resume",
+                    session_ref,
+                )
                 starts_new = False
             else:
                 session_ref = str(uuid.uuid4())
-                argv = (*base, *mapping["start"], "--session-id", session_ref)
+                argv = (
+                    *base,
+                    *mapping["start"],
+                    *capability_args,
+                    "--session-id",
+                    session_ref,
+                )
                 starts_new = True
         else:
             base = (
@@ -1115,11 +1444,23 @@ class ClaudeCodeAdapter(HarnessAdapter):
             )
             if context.session_ref and context.session_policy == "resume":
                 session_ref = context.session_ref
-                argv = (*base, *mapping["resume"], "--resume", session_ref)
+                argv = (
+                    *base,
+                    *mapping["resume"],
+                    *capability_args,
+                    "--resume",
+                    session_ref,
+                )
                 starts_new = False
             else:
                 session_ref = str(uuid.uuid4())
-                argv = (*base, *mapping["start"], "--session-id", session_ref)
+                argv = (
+                    *base,
+                    *mapping["start"],
+                    *capability_args,
+                    "--session-id",
+                    session_ref,
+                )
                 starts_new = True
         env = {
             "AGENT_TEAM_RUN_ID": context.run_id,
@@ -1132,8 +1473,7 @@ class ClaudeCodeAdapter(HarnessAdapter):
         }
         if options.reasoning_effort is not None:
             env["CLAUDE_CODE_EFFORT_LEVEL"] = options.reasoning_effort
-        if runtime_home is not None:
-            env["CLAUDE_CONFIG_DIR"] = str(runtime_home)
+        env["CLAUDE_CONFIG_DIR"] = str(runtime_home)
         env.update(self._provider_environment(options))
         return LaunchSpec(
             adapter_id=self.adapter_id,

@@ -76,6 +76,12 @@ session.
 Specify `resume` or `fresh` for every External role and explain why. Origin
 roles use the embedded host session.
 
+When the task needs Chrome or another session-owned browser-control capability,
+name exactly one capable External role as the browser owner and set it to
+`resume`. Only that role may operate browser tabs; every other role must route
+browser requests to it by Handoff. Tab persistence or Handoff markers do not
+transfer ownership to another role or Session.
+
 If the selected Harness structurally reports an explicit output-budget stop,
 record that Agent-Team may create a new counted same-role Turn when a durable
 Session and all runtime safety gates exist. A `resume` role reuses the exact

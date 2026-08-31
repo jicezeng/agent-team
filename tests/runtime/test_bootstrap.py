@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_team.bootstrap import _assert_external_capability, initialize_run
+from agent_team.bootstrap import _assert_external_capability, initialize_run, start_run
 from agent_team.config import (
     REQUIRED_AUDIT_PAYLOAD_SECTIONS,
     ObservabilityPolicy,
@@ -159,6 +159,7 @@ def test_init_rejects_launcher_that_detaches_from_managed_group(
                 "fresh",
                 PROFILE,
                 PROFILE_HASH,
+                launch_mode="headless",
             )
         },
         initial_role="developer",
@@ -248,3 +249,61 @@ def test_capability_allows_provider_route_without_harness_account_auth(
     )
 
     _assert_external_capability(role)
+
+
+def test_start_freezes_capabilities_for_every_external_role_before_kickoff(
+    workspace: Path,
+    request_protocol: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, protocol = request_protocol
+    adapter = _BootstrapAdapter()
+    prepared: list[str] = []
+
+    def prepare_capabilities(*, run_dir: Path, role_id: str, **_kwargs: object) -> None:
+        assert not tuple((run_dir / "events").glob("*.json"))
+        prepared.append(role_id)
+
+    monkeypatch.setattr(adapter, "prepare_capability_state", prepare_capabilities)
+    monkeypatch.setattr("agent_team.bootstrap.get_adapter", lambda _adapter: adapter)
+    monkeypatch.setattr("agent_team.ownership.get_adapter", lambda _adapter: adapter)
+    monkeypatch.setattr("agent_team.bootstrap.tmux_executable", lambda: "/bin/true")
+    monkeypatch.setattr(
+        "agent_team.bootstrap.ensure_workers",
+        lambda _run_dir, _team, **_kwargs: {
+            "session": "test-session",
+            "created": [],
+            "existing": ["developer"],
+        },
+    )
+    monkeypatch.setattr("agent_team.bootstrap.signal_change", lambda *_args: False)
+    team = make_team(
+        run_id="at-worker-freeze-all-capabilities",
+        workspace=workspace,
+        origin_harness="codex",
+        roles={
+            role_id: Role(
+                role_id,
+                "external",
+                "codex",
+                "fresh",
+                PROFILE,
+                PROFILE_HASH,
+                launch_mode="headless",
+            )
+            for role_id in ("developer", "reviewer")
+        },
+        initial_role="developer",
+        max_turns=4,
+        max_wall_time_seconds=300,
+    )
+    run_dir = initialize_run(
+        team=team,
+        request_path=request,
+        protocol_path=protocol,
+    )
+
+    started = start_run(run_dir)
+
+    assert prepared == ["developer", "reviewer"]
+    assert started["kickoff_event"]["event_type"] == "kickoff"

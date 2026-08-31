@@ -38,6 +38,12 @@ External business Turn inside an existing Run:
    policies, initial role, routing loops, completion authority, final delivery,
    safety limits, and only the model, variant, or Codex model-provider choices
    the user made.
+   When the task needs Chrome or another session-owned browser-control
+   capability, designate exactly one capable External role as the browser
+   owner and give it the `resume` Session policy. Freeze in `PROTOCOL.md` that
+   only this role operates browser tabs and every other role routes browser
+   requests to it by Handoff. Tab persistence or Handoff markers do not
+   transfer ownership to another role or Session.
 3. Reject true parallel fan-out/join, multiple workspaces, non-Git roots,
    missing completion conditions, unavailable Harnesses, or dangerous
    ambiguity. Do not silently serialize requested parallel work.
